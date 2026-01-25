@@ -293,6 +293,121 @@ final class AudioDriftCorrector: @unchecked Sendable {
         }
     }
     
+    // MARK: - Smooth Resampling (v10.3)
+    
+    /// Perform smooth linear interpolation resampling to adjust effective sample rate.
+    /// This allows imperceptible speed adjustment (±0.5%) without audible artifacts.
+    ///
+    /// - Parameters:
+    ///   - input: Input buffer (Int16 samples)
+    ///   - inputCount: Number of input samples
+    ///   - output: Output buffer (must have capacity for outputCount samples)
+    ///   - outputCount: Desired number of output samples
+    /// - Returns: Actual number of samples written to output
+    func resampleLinear(
+        input: UnsafePointer<Int16>,
+        inputCount: Int,
+        output: UnsafeMutablePointer<Int16>,
+        outputCount: Int
+    ) -> Int {
+        guard inputCount > 1 && outputCount > 0 else { return 0 }
+        
+        // Rate ratio (< 1.0 = stretch audio = slow down, > 1.0 = compress = speed up)
+        let ratio = Float(inputCount - 1) / Float(outputCount - 1)
+        
+        for i in 0..<outputCount {
+            let srcPos = Float(i) * ratio
+            let srcIndex = Int(srcPos)
+            let frac = srcPos - Float(srcIndex)
+            
+            if srcIndex + 1 < inputCount {
+                // Linear interpolation between samples
+                let sample0 = Float(input[srcIndex])
+                let sample1 = Float(input[srcIndex + 1])
+                let interpolated = sample0 + frac * (sample1 - sample0)
+                output[i] = Int16(clamping: Int(interpolated))
+            } else {
+                // Edge case: use last sample
+                output[i] = input[inputCount - 1]
+            }
+        }
+        
+        return outputCount
+    }
+    
+    /// Calculate output sample count for smooth rate adjustment.
+    /// Adjusts by ±0.5% max for imperceptible speed change.
+    ///
+    /// - Parameters:
+    ///   - inputCount: Original sample count
+    ///   - driftMs: Current drift in milliseconds (positive = audio ahead)
+    /// - Returns: Target output sample count
+    func calculateResampledCount(inputCount: Int, driftMs: Double) -> Int {
+        // Max rate adjustment ±0.5% (imperceptible)
+        let maxAdjustment: Double = 0.005
+        
+        // Scale adjustment based on drift
+        let adjustmentScale = min(abs(driftMs) / aggressiveThresholdMs, 1.0)
+        var adjustment = adjustmentScale * maxAdjustment
+        
+        if driftMs < 0 {
+            // Audio behind: need fewer samples (speed up) → outputCount < inputCount
+            adjustment = -adjustment
+        }
+        // else: Audio ahead → keep positive adjustment (slow down)
+        
+        return Int(Double(inputCount) * (1.0 + adjustment))
+    }
+    
+    /// Insert silence microscopically to slow down audio playback.
+    /// Used when audio is ahead of video.
+    ///
+    /// - Parameters:
+    ///   - buffer: Buffer to modify (with extra capacity)
+    ///   - count: Current sample count
+    ///   - silenceSamples: Number of silence samples to insert
+    ///   - capacity: Total buffer capacity
+    /// - Returns: New total sample count
+    func insertMicroSilence(
+        buffer: UnsafeMutablePointer<Int16>,
+        count: Int,
+        silenceSamples: Int,
+        capacity: Int
+    ) -> Int {
+        let insertCount = min(silenceSamples, capacity - count)
+        guard insertCount > 0 else { return count }
+        
+        // Find optimal insertion point (near center to minimize perception)
+        let insertPoint = count / 2
+        
+        // Shift samples after insertion point
+        memmove(
+            buffer.advanced(by: insertPoint + insertCount),
+            buffer.advanced(by: insertPoint),
+            (count - insertPoint) * MemoryLayout<Int16>.stride
+        )
+        
+        // Insert zero samples (silence) with slight crossfade
+        let fadeLen = min(4, insertCount / 2)
+        for i in 0..<insertCount {
+            var value: Int16 = 0
+            
+            // Crossfade at edges
+            if i < fadeLen && insertPoint > 0 {
+                let factor = Float(fadeLen - i) / Float(fadeLen)
+                value = Int16(Float(buffer[insertPoint - 1]) * factor)
+            } else if i >= insertCount - fadeLen && insertPoint + insertCount < count + insertCount {
+                let factor = Float(i - (insertCount - fadeLen)) / Float(fadeLen)
+                value = Int16(Float(buffer[insertPoint + insertCount]) * factor)
+            }
+            
+            buffer[insertPoint + i] = value
+        }
+        
+        stats.samplesDuplicated += insertCount
+        return count + insertCount
+    }
+    
     // MARK: - Diagnostics
     
     /// Log current sync status

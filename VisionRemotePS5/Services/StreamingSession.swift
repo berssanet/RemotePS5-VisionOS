@@ -3,6 +3,7 @@ import Network
 import CryptoKit
 import Combine
 import CoreVideo
+import CoreMedia
 
 /// Manages the streaming session with a PlayStation console
 /// Implements the Remote Play protocol for PS5
@@ -155,6 +156,14 @@ class StreamingSession: ObservableObject {
     private func setupVideoDecoderCallback() {
         videoDecoder.onFrameDecoded = { [weak self] pixelBuffer in
             // CRITICAL: Called on VideoToolbox thread - do NOT dispatch to MainActor
+            guard let self = self else { return }
+            
+            // v10.3: Extract video PTS from CVPixelBuffer attachments for A/V sync
+            // VideoToolbox includes timing info in the presentation timestamp
+            let pts = self.extractVideoPTS(from: pixelBuffer)
+            if pts > 0 {
+                self.avSyncController.onVideoFramePresented(pts: pts)
+            }
             
             // v10.3: Direct update to VideoTextureCoordinator (bypasses SwiftUI)
             // This ensures Decoder → MetalFX → RealityKit runs independently of SwiftUI layout
@@ -163,13 +172,13 @@ class StreamingSession: ObservableObject {
             }
             
             // Also forward to external handler for custom processing chains
-            self?.onFrameReady?(pixelBuffer)
+            self.onFrameReady?(pixelBuffer)
             
             // Update frame rate on main actor (infrequent, safe to dispatch)
             // Only dispatch every 60 frames to minimize overhead
-            let frameCount = self?.videoDecoder.droppedFrameCount ?? 0
+            let frameCount = self.videoDecoder.droppedFrameCount
             if frameCount % 60 == 0 {
-                let currentFrameRate = self?.videoDecoder.frameRate ?? 0
+                let currentFrameRate = self.videoDecoder.frameRate
                 if currentFrameRate > 0 {
                     Task { @MainActor [weak self] in
                         self?.frameRate = currentFrameRate
@@ -177,6 +186,26 @@ class StreamingSession: ObservableObject {
                 }
             }
         }
+    }
+    
+    /// Extract PTS (Presentation Timestamp) from CVPixelBuffer.
+    /// Returns time in seconds, or 0 if not available.
+    private func extractVideoPTS(from pixelBuffer: CVPixelBuffer) -> Double {
+        // Try to get timing info from attachments
+        if let attachments = CVBufferCopyAttachments(pixelBuffer, .shouldPropagate) as? [String: Any] {
+            // Check for CMSampleBuffer timing info (if forwarded)
+            if let timeValue = attachments["PresentationTimeStamp"] as? CMTime {
+                return CMTimeGetSeconds(timeValue)
+            }
+        }
+        
+        // Fallback: Use system time as PTS (less accurate but functional)
+        // This works because video frames arrive at roughly real-time pace
+        var timebase = mach_timebase_info()
+        mach_timebase_info(&timebase)
+        let now = mach_absolute_time()
+        let nanos = now * UInt64(timebase.numer) / UInt64(timebase.denom)
+        return Double(nanos) / 1_000_000_000.0
     }
     
     deinit {
@@ -699,6 +728,10 @@ class StreamingSession: ObservableObject {
         let audioDecryptor = StreamingDecryptor(bufferPool: audioBufferPool)
         audioDecryptor.setKey(sessionKey)
         
+        // v10.3: Track audio packets for drift statistics
+        var audioPacketCount: UInt64 = 0
+        var lastDriftLogTime: UInt64 = 0
+        
         while state == .streaming && !Task.isCancelled {
             if let audioConnection = audioConnection {
                 do {
@@ -708,11 +741,41 @@ class StreamingSession: ObservableObject {
                     if let decryptedBuffer = audioDecryptor.decrypt(data) {
                         defer { decryptedBuffer.release() }
                         
+                        audioPacketCount += 1
+                        
+                        // v10.3: Extract PTS from audio packet header (if present)
+                        // Opus packets from PS5 typically have 8-byte header: [4 bytes seq][4 bytes pts]
+                        let audioData = decryptedBuffer.data
+                        if audioData.count >= 8 {
+                            let pts = audioData.withUnsafeBytes { ptr -> Double in
+                                let ptsRaw = ptr.load(fromByteOffset: 4, as: UInt32.self)
+                                // Convert to seconds (90kHz clock typical for media)
+                                return Double(ptsRaw) / 90000.0
+                            }
+                            
+                            // Update A/V sync controller with audio PTS
+                            avSyncController.onAudioPacketReceived(pts: pts)
+                            
+                            // Check for drift and log periodically
+                            if audioPacketCount % 100 == 0 {
+                                let driftMs = avSyncController.driftCorrector.calculateDriftMs()
+                                
+                                // Log if significant drift detected
+                                if abs(driftMs) > 20.0 {
+                                    let now = mach_absolute_time()
+                                    if now - lastDriftLogTime > 1_000_000_000 { // 1 second
+                                        print("[Session] ⚠️ A/V drift: \(String(format: "%+.1f", driftMs))ms")
+                                        lastDriftLogTime = now
+                                    }
+                                }
+                            }
+                        }
+                        
                         // Decode and play audio
-                        audioDecoder.decodeAndPlay(decryptedBuffer.data)
+                        audioDecoder.decodeAndPlay(audioData)
                         
                         // Callback for additional processing
-                        onAudioFrame?(decryptedBuffer.data)
+                        onAudioFrame?(audioData)
                     }
                 } catch {
                     if !Task.isCancelled {
@@ -726,6 +789,10 @@ class StreamingSession: ObservableObject {
         
         print("[Session] Audio receive loop ended")
         print("[Session] Final \(audioBufferPool.statistics)")
+        
+        // v10.3: Log final A/V sync statistics
+        let stats = avSyncController.driftCorrector.stats
+        print("[Session] A/V Sync: corrections=\(stats.correctionCount), skipped=\(stats.samplesSkipped), duplicated=\(stats.samplesDuplicated), emergencyDrops=\(stats.emergencyDrops)")
     }
     
     private func receiveUDP(from connection: NWConnection) async throws -> Data {
