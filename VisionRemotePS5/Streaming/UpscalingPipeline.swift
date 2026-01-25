@@ -35,11 +35,9 @@ final class UpscalingPipeline: ObservableObject {
     
     static let shared = UpscalingPipeline()
     
-    // MARK: - Published Properties
+    // MARK: - Published Properties (Slow State Only - Low Frequency Updates)
     
     @Published var isEnabled: Bool = false
-    @Published var upscaledTexture: MTLTexture?
-    @Published var textureFrameId: UInt64 = 0
     @Published var processingTimeMs: Double = 0
     
     /// Current upscaling mode
@@ -50,6 +48,19 @@ final class UpscalingPipeline: ObservableObject {
     
     /// CAS sharpening strength (0.0-1.0)
     @Published var sharpenStrength: Float = 0.5
+    
+    // MARK: - High-Performance Texture Callback (Bypasses SwiftUI)
+    
+    /// Called on GPU thread when upscaled texture is ready.
+    /// This is the HOT PATH - do NOT dispatch to MainActor from here.
+    /// - Warning: Called from Metal pipeline thread. Must be thread-safe.
+    var onTextureReady: ((MTLTexture) -> Void)?
+    
+    /// Last upscaled texture (non-published, for direct access)
+    private(set) var upscaledTexture: MTLTexture?
+    
+    /// Frame counter (non-published)
+    private(set) var textureFrameId: UInt64 = 0
     
     // MARK: - Private Properties
     
@@ -161,6 +172,9 @@ final class UpscalingPipeline: ObservableObject {
             frameCount += 1
             upscaledTexture = texture
             textureFrameId = frameCount
+            
+            // v10.3: Direct callback - bypasses SwiftUI state management
+            onTextureReady?(texture)
             
             if frameCount == 1 {
                 let hdrStatus = isP010 ? "HDR" : "SDR"

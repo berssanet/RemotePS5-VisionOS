@@ -138,21 +138,34 @@ class StreamingSession: ObservableObject {
     // MARK: - Initialization
     
     init() {
-        print("[Session] Initialized")
+        print("[Session] Initialized v10.3 (Direct Texture Pipeline)")
         setupVideoDecoderCallback()
     }
     
-    /// Configure VideoDecoder callback to forward frames to coordinator
+    /// Configure VideoDecoder callback for direct texture update.
+    /// This is the HOT PATH: VideoToolbox → VideoTextureCoordinator (bypasses SwiftUI state)
     private func setupVideoDecoderCallback() {
         videoDecoder.onFrameDecoded = { [weak self] pixelBuffer in
-            // Called on VideoToolbox thread - forward to external handler
+            // CRITICAL: Called on VideoToolbox thread - do NOT dispatch to MainActor
+            
+            // v10.3: Direct update to VideoTextureCoordinator (bypasses SwiftUI)
+            // This ensures Decoder → MetalFX → RealityKit runs independently of SwiftUI layout
+            if #available(visionOS 2.0, *) {
+                VideoTextureCoordinator.shared.updateTexture(from: pixelBuffer)
+            }
+            
+            // Also forward to external handler for custom processing chains
             self?.onFrameReady?(pixelBuffer)
             
             // Update frame rate on main actor (infrequent, safe to dispatch)
-            let currentFrameRate = self?.videoDecoder.frameRate ?? 0
-            if currentFrameRate > 0 {
-                Task { @MainActor [weak self] in
-                    self?.frameRate = currentFrameRate
+            // Only dispatch every 60 frames to minimize overhead
+            let frameCount = self?.videoDecoder.droppedFrameCount ?? 0
+            if frameCount % 60 == 0 {
+                let currentFrameRate = self?.videoDecoder.frameRate ?? 0
+                if currentFrameRate > 0 {
+                    Task { @MainActor [weak self] in
+                        self?.frameRate = currentFrameRate
+                    }
                 }
             }
         }

@@ -56,14 +56,8 @@ struct StreamingView: View {
             viewModel.stopStreaming()
             upscalingPipeline.disable()
         }
-        .onChange(of: viewModel.currentFrame) { _, newFrame in
-            // Process frame through MetalFX upscaling only when enabled
-            guard let frame = newFrame else { return }
-            
-            if use4KUpscaling && upscalingPipeline.isEnabled {
-                _ = upscalingPipeline.processFrame(frame)
-            }
-        }
+        // v10.3: Removed onChange(of: currentFrame) - frames now processed directly
+        // in StreamingSession.setupVideoDecoderCallback() via VideoTextureCoordinator
     }
     
     // MARK: - Top Control Bar
@@ -189,19 +183,24 @@ struct StreamingView: View {
                     )
                 }
             
-        } else if let frame = viewModel.currentFrame {
-            // 1080p PATH: Native resolution with VideoFrameView
-            VideoFrameView(pixelBuffer: frame)
-                .aspectRatio(16/9, contentMode: .fit)
-                .cornerRadius(12)
-                .padding(.horizontal, 16)
-                .overlay(alignment: .topLeading) {
-                    if use4KUpscaling && !upscalingPipeline.isEnabled {
-                        resolutionBadge(text: "4K N/A", color: .orange)
-                    } else {
-                        resolutionBadge(text: "1080p", color: .gray)
-                    }
-                }
+        } else if viewModel.isConnected {
+            // v10.3: Connected but texture not ready yet
+            // Video frames are now processed directly via VideoTextureCoordinator
+            // This view will update when upscaledTexture becomes available
+            VStack(spacing: 10) {
+                ProgressView()
+                    .scaleEffect(1.5)
+                Text("Buffering...")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .aspectRatio(16/9, contentMode: .fit)
+            .cornerRadius(12)
+            .background(Color.black.opacity(0.3))
+            .overlay(alignment: .topLeading) {
+                resolutionBadge(text: "1080p", color: .gray)
+            }
                 
         } else {
             // Loading/connecting state
@@ -377,7 +376,9 @@ struct ControllerButtonView: View {
 
 @MainActor
 class StreamingViewModel: ObservableObject, StreamingServiceDelegate {
-    @Published var currentFrame: CVPixelBuffer?
+    // v10.3: Removed @Published currentFrame - frames now go directly to VideoTextureCoordinator
+    // This eliminates SwiftUI re-renders for every frame (60fps → 0 updates)
+    
     @Published var statusMessage = "Connecting..."
     @Published var isConnected = false
     @Published var showControls = true
@@ -482,11 +483,10 @@ class StreamingViewModel: ObservableObject, StreamingServiceDelegate {
     }
     
     nonisolated func streamingService(_ service: StreamingService, didReceiveVideoFrame frame: CVPixelBuffer, timestamp: UInt64) {
-        Task { @MainActor in
-            self.currentFrame = frame
-            // Post notification for immersive view
-            NotificationCenter.default.post(name: .videoFrameReceived, object: frame)
-        }
+        // v10.3: Frames now go directly to VideoTextureCoordinator via StreamingSession
+        // This eliminates MainActor dispatch overhead for 60fps video
+        // Only post notification for views that need to know about frame availability
+        NotificationCenter.default.post(name: .videoFrameReceived, object: nil)
     }
     
     nonisolated func streamingService(_ service: StreamingService, didReceiveAudioData data: Data, sampleRate: Int, channels: Int) {
