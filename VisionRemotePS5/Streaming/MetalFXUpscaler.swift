@@ -278,9 +278,16 @@ final class MetalFXUpscaler {
         var ycbcrMatrix: CFString?
         
         if let attachments = attachments as? [CFString: Any] {
-            colorPrimaries = attachments[kCVImageBufferColorPrimariesKey] as? CFString
-            transferFunction = attachments[kCVImageBufferTransferFunctionKey] as? CFString
-            ycbcrMatrix = attachments[kCVImageBufferYCbCrMatrixKey] as? CFString
+            // CFString values - use direct access and cast
+            if let cp = attachments[kCVImageBufferColorPrimariesKey] {
+                colorPrimaries = (cp as! CFString)
+            }
+            if let tf = attachments[kCVImageBufferTransferFunctionKey] {
+                transferFunction = (tf as! CFString)
+            }
+            if let mat = attachments[kCVImageBufferYCbCrMatrixKey] {
+                ycbcrMatrix = (mat as! CFString)
+            }
         }
         
         let metadata = HDRColorMetadata(

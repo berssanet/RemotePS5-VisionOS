@@ -23,6 +23,8 @@ import Metal
 ///
 /// The `updateTexture(from: CVPixelBuffer)` method is THREAD-SAFE and can be called
 /// directly from the VideoToolbox decoder callback without dispatching to MainActor.
+///
+/// **HDR Support**: Uses `.bgra10_xr` (Extended Range) format for EDR values > 1.0
 @available(visionOS 2.0, *)
 final class VideoTextureCoordinator: @unchecked Sendable {
     static let shared = VideoTextureCoordinator()
@@ -35,6 +37,22 @@ final class VideoTextureCoordinator: @unchecked Sendable {
     private var textureResource: TextureResource?
     private var commandQueue: MTLCommandQueue?
     private var textureSize: (Int, Int) = (0, 0)
+    
+    // MARK: - MTLEvent Synchronization
+    
+    /// Shared event for GPU-GPU synchronization with upstream pipeline
+    private var syncEvent: MTLSharedEvent?
+    
+    /// Last event value waited for
+    private var lastEventValue: UInt64 = 0
+    
+    // MARK: - HDR Configuration
+    
+    /// Pixel format for HDR Extended Range (supports EDR > 1.0)
+    static let hdrPixelFormat: MTLPixelFormat = .bgra10_xr
+    
+    /// Whether HDR mode is enabled
+    var hdrEnabled: Bool = true
     
     // MARK: - State
     
@@ -61,6 +79,9 @@ final class VideoTextureCoordinator: @unchecked Sendable {
         self.device = device
         self.commandQueue = device.makeCommandQueue()
         
+        // Create shared event for GPU sync
+        self.syncEvent = device.makeSharedEvent()
+        
         // Create CVMetalTextureCache for zero-copy pixel buffer -> texture conversion
         var cache: CVMetalTextureCache?
         let status = CVMetalTextureCacheCreate(
@@ -73,7 +94,7 @@ final class VideoTextureCoordinator: @unchecked Sendable {
         
         if status == kCVReturnSuccess, let cache = cache {
             self.textureCache = cache
-            print("[VideoTextureCoordinator] ✅ Metal initialized with texture cache")
+            print("[VideoTextureCoordinator] ✅ Metal initialized (HDR: bgra10_xr, MTLEvent enabled)")
         } else {
             print("[VideoTextureCoordinator] ⚠️ Failed to create texture cache: \(status)")
         }
@@ -117,13 +138,16 @@ final class VideoTextureCoordinator: @unchecked Sendable {
         let height = CVPixelBufferGetHeight(pixelBuffer)
         
         // Create MTLTexture from CVPixelBuffer (zero-copy via IOSurface)
+        // Use bgra10_xr for HDR Extended Range support
+        let pixelFormat: MTLPixelFormat = hdrEnabled ? Self.hdrPixelFormat : .bgra8Unorm
+        
         var cvTexture: CVMetalTexture?
         let status = CVMetalTextureCacheCreateTextureFromImage(
             kCFAllocatorDefault,
             textureCache,
             pixelBuffer,
             nil,
-            .bgra8Unorm,
+            pixelFormat,
             width,
             height,
             0,
@@ -138,6 +162,46 @@ final class VideoTextureCoordinator: @unchecked Sendable {
         
         // Forward to existing MTLTexture-based pipeline
         updateTexture(from: metalTexture)
+    }
+    
+    /// Update texture with MTLEvent synchronization (waits for upstream GPU work)
+    func updateTexture(from pixelBuffer: CVPixelBuffer, waitForEvent event: MTLSharedEvent, value: UInt64) {
+        guard let textureCache = textureCache,
+              let queue = commandQueue else { return }
+        
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        
+        let pixelFormat: MTLPixelFormat = hdrEnabled ? Self.hdrPixelFormat : .bgra8Unorm
+        
+        var cvTexture: CVMetalTexture?
+        let status = CVMetalTextureCacheCreateTextureFromImage(
+            kCFAllocatorDefault,
+            textureCache,
+            pixelBuffer,
+            nil,
+            pixelFormat,
+            width,
+            height,
+            0,
+            &cvTexture
+        )
+        
+        guard status == kCVReturnSuccess,
+              let cvTexture = cvTexture,
+              let metalTexture = CVMetalTextureGetTexture(cvTexture) else {
+            return
+        }
+        
+        // Create command buffer that waits for upstream event
+        guard let commandBuffer = queue.makeCommandBuffer() else { return }
+        
+        // Wait for upstream GPU work (e.g., MetalFX upscaling)
+        commandBuffer.encodeWaitForEvent(event, value: value)
+        lastEventValue = value
+        
+        // Forward texture update
+        updateTexture(from: metalTexture, commandBuffer: commandBuffer)
     }
     
     /// Update texture from MTLTexture source
@@ -155,7 +219,7 @@ final class VideoTextureCoordinator: @unchecked Sendable {
         
         if !needsInit {
             // Fast path: already initialized with same size
-            copyTextureContent(from: sourceTexture)
+            copyTextureContent(from: sourceTexture, commandBuffer: nil)
             return
         }
         
@@ -170,11 +234,30 @@ final class VideoTextureCoordinator: @unchecked Sendable {
         }
     }
     
+    /// Update with existing command buffer (for MTLEvent chaining)
+    func updateTexture(from sourceTexture: MTLTexture, commandBuffer: MTLCommandBuffer?) {
+        lock.lock()
+        let initialized = isInitialized
+        lock.unlock()
+        
+        if initialized {
+            copyTextureContent(from: sourceTexture, commandBuffer: commandBuffer)
+        } else {
+            // Initialize first
+            Task { @MainActor in
+                await initializeTexture(from: sourceTexture)
+            }
+        }
+    }
+    
     @MainActor
     private func initializeTexture(from sourceTexture: MTLTexture) async {
         do {
+            // Use bgra10_xr for HDR Extended Range (supports EDR values > 1.0)
+            let pixelFormat: MTLPixelFormat = hdrEnabled ? Self.hdrPixelFormat : .bgra8Unorm
+            
             let descriptor = LowLevelTexture.Descriptor(
-                pixelFormat: .bgra8Unorm,
+                pixelFormat: pixelFormat,
                 width: sourceTexture.width,
                 height: sourceTexture.height,
                 depth: 1,
@@ -195,13 +278,14 @@ final class VideoTextureCoordinator: @unchecked Sendable {
             
             hasValidTexture = true
             
-            print("[VideoTextureCoordinator] ✅ Texture: \(sourceTexture.width)x\(sourceTexture.height)")
+            let formatName = hdrEnabled ? "bgra10_xr (HDR/EDR)" : "bgra8Unorm (SDR)"
+            print("[VideoTextureCoordinator] ✅ Texture: \(sourceTexture.width)x\(sourceTexture.height) [\(formatName)]")
             
-            // Apply texture to entity
+            // Apply texture to entity with EDR support
             applyToEntity()
             
             // Copy initial content
-            copyTextureContent(from: sourceTexture)
+            copyTextureContent(from: sourceTexture, commandBuffer: nil)
             
         } catch {
             lock.lock()
@@ -215,31 +299,55 @@ final class VideoTextureCoordinator: @unchecked Sendable {
     func applyToEntity() {
         guard let entity = videoEntity, let resource = textureResource else { return }
         
+        // Create UnlitMaterial configured for EDR/HDR
+        // UnlitMaterial supports values > 1.0 when using Extended Range textures
         var material = UnlitMaterial()
+        
+        // Apply texture with proper color handling
         material.color = .init(texture: .init(resource))
+        
+        // Note: RealityKit UnlitMaterial automatically handles Extended Range
+        // when the input texture is in a compatible format (bgra10_xr)
+        // Values > 1.0 will be rendered as HDR on capable displays
+        
         entity.model?.materials = [material]
+        
+        print("[VideoTextureCoordinator] 🎨 Material applied (EDR enabled: \(hdrEnabled))")
     }
     
-    private func copyTextureContent(from sourceTexture: MTLTexture) {
+    private func copyTextureContent(from sourceTexture: MTLTexture, commandBuffer existingBuffer: MTLCommandBuffer?) {
         lock.lock()
         let initialized = isInitialized
         lock.unlock()
         
         guard initialized else { return }
         
-        // LowLevelTexture.replace requires MainActor - dispatch the GPU work there
-        // This is fast (just command buffer encoding) so latency impact is minimal
-        Task { @MainActor in
-            self.performTextureCopy(from: sourceTexture)
+        // If we have an existing command buffer (from MTLEvent chain), use it
+        // Otherwise dispatch to MainActor for a new command buffer
+        if let existingBuffer = existingBuffer {
+            Task { @MainActor in
+                self.performTextureCopy(from: sourceTexture, using: existingBuffer)
+            }
+        } else {
+            Task { @MainActor in
+                self.performTextureCopy(from: sourceTexture, using: nil)
+            }
         }
     }
     
     @MainActor
-    private func performTextureCopy(from sourceTexture: MTLTexture) {
+    private func performTextureCopy(from sourceTexture: MTLTexture, using existingBuffer: MTLCommandBuffer?) {
         guard let llTexture = lowLevelTexture,
               let queue = commandQueue else { return }
         
-        guard let commandBuffer = queue.makeCommandBuffer() else { return }
+        // Use existing buffer or create new one
+        let commandBuffer: MTLCommandBuffer
+        if let existing = existingBuffer {
+            commandBuffer = existing
+        } else {
+            guard let newBuffer = queue.makeCommandBuffer() else { return }
+            commandBuffer = newBuffer
+        }
         
         let destTexture = llTexture.replace(using: commandBuffer)
         
@@ -261,7 +369,11 @@ final class VideoTextureCoordinator: @unchecked Sendable {
         )
         
         blitEncoder.endEncoding()
-        commandBuffer.commit()
+        
+        // Only commit if we created the buffer
+        if existingBuffer == nil {
+            commandBuffer.commit()
+        }
     }
     
     /// Reset when streaming stops
