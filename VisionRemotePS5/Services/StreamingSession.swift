@@ -50,6 +50,14 @@ class StreamingSession: ObservableObject {
         StreamingDecryptor(bufferPool: videoBufferPool)
     }()
     
+    // MARK: - v10.3 Zero-Copy Network Infrastructure
+    
+    /// Network buffer pool for UDP reception (avoids Data allocations)
+    private let networkBufferPool = NetworkBufferPool(bufferSize: 65536, poolSize: 32)
+    
+    /// Zero-copy decryptor that operates on raw buffer pointers
+    private let zeroCopyDecryptor = ZeroCopyAESGCMDecryptor(outputBufferSize: 131072, poolSize: 16)
+    
     // MARK: - Audio/Video Sync
     
     /// A/V Sync controller for PTS-based drift correction
@@ -636,36 +644,37 @@ class StreamingSession: ObservableObject {
     }
     
     private func videoReceiveLoop() async {
-        print("[Session] Starting video receive loop (buffer pooling enabled)")
+        print("[Session] Starting video receive loop v10.3 (zero-copy decryption enabled)")
         
-        // Update decryptor key if session key is set
+        // Update both decryptors with session key
         streamingDecryptor.setKey(sessionKey)
+        zeroCopyDecryptor.setKey(sessionKey)
         
         var frameCounter: UInt64 = 0
         
         while state == .streaming && !Task.isCancelled {
             if let videoConnection = videoConnection {
                 do {
-                    // Receive raw UDP data (NWConnection manages its own buffer)
+                    // Receive raw UDP data
                     let data = try await receiveUDP(from: videoConnection)
                     
-                    // Decrypt using pooled buffers (zero-allocation in steady state)
-                    if let decryptedBuffer = streamingDecryptor.decrypt(data) {
+                    // v10.3: Use zero-copy decryptor for best performance
+                    if let decryptedBuffer = zeroCopyDecryptor.decrypt(data: data) {
                         defer { decryptedBuffer.release() }
                         
                         packetsReceived += 1
                         frameCounter += 1
                         
-                        // Decode video frame using buffer's data view
-                        // The Data is a zero-copy view into the pooled buffer
-                        try videoDecoder.decode(decryptedBuffer.data)
+                        // Decode video frame using zero-copy data view
+                        try videoDecoder.decode(decryptedBuffer.dataView)
                         
                         // Callback for raw data processing (optional)
-                        onVideoFrame?(decryptedBuffer.data)
+                        onVideoFrame?(decryptedBuffer.dataView)
                         
                         // Log pool stats periodically
                         if frameCounter % 1000 == 0 {
-                            print("[Session] \(videoBufferPool.statistics)")
+                            print("[Session] \(networkBufferPool.statistics)")
+                            print("[Session] \(zeroCopyDecryptor.statistics)")
                         }
                     }
                 } catch {
@@ -680,7 +689,7 @@ class StreamingSession: ObservableObject {
         }
         
         print("[Session] Video receive loop ended")
-        print("[Session] Final \(videoBufferPool.statistics)")
+        print("[Session] Final \(zeroCopyDecryptor.statistics)")
     }
     
     private func audioReceiveLoop() async {
