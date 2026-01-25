@@ -1,0 +1,42 @@
+# ===== macOS =====
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# ===== Xcode =====
+## Build generated
+build/
+DerivedData/
+*.dSYM.zip
+*.dSYM
+
+## User settings
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+*.xccheckout
+
+## Swift Package Manager
+.build/
+Package.resolved
+.swiftpm/
+
+# ===== Project-specific documentation (not part of the app) =====
+GEMINI.md
+TODO.md
+
+# ===== Debug logs =====
+chiaki_connection_log.txt
+chiaki_verbose_log.txt
+*.log
+
+# ===== Third-party source dependencies (should be submodules or fetched) =====
+chiaki-ng/
+mbedtls-src/
+
+# ===== IDE & Editor =====
+.idea/
+*.swp
+*.swo
+*~

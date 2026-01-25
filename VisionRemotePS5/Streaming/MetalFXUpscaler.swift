@@ -1,0 +1,338 @@
+//
+//  MetalFXUpscaler.swift
+//  VisionRemotePS5
+//
+//  GPU upscaling from 1080p to 4K using MetalFX Spatial Scaler.
+//  NOTE: MTLFXTemporalScaler is NOT available on visionOS, only Spatial Scaler is supported.
+//  Uses perceptual color processing for high-quality upscaling.
+//  Supports HDR with .bgra10_xr (Extended Range) pixel format.
+//  Zero-copy: output texture is private (GPU-only) for maximum performance.
+//
+
+import Foundation
+import Metal
+import MetalFX
+import CoreVideo
+
+/// Upscaling mode selection
+/// NOTE: Only .spatial is available on visionOS
+enum UpscalingMode {
+    case spatial   // MetalFX Spatial Scaler (visionOS supported)
+    case temporal  // Not available on visionOS
+}
+
+/// HDR configuration for the upscaler
+struct MetalFXHDRConfig {
+    /// Enable HDR processing with extended range formats
+    var hdrEnabled: Bool = false
+    
+    /// Pixel format for SDR mode
+    static let sdrFormat: MTLPixelFormat = .bgra8Unorm
+    
+    /// Pixel format for HDR mode (Apple Extended Range - supports values > 1.0)
+    static let hdrFormat: MTLPixelFormat = .bgra10_xr
+    
+    /// Get the appropriate format based on HDR state
+    var colorFormat: MTLPixelFormat {
+        return hdrEnabled ? Self.hdrFormat : Self.sdrFormat
+    }
+    
+    var outputFormat: MTLPixelFormat {
+        return hdrEnabled ? Self.hdrFormat : Self.sdrFormat
+    }
+}
+
+/// MetalFX-based upscaler for PS5 Remote Play video stream.
+/// Upscales 1080p BGRA frames to 4K resolution with optional HDR support.
+final class MetalFXUpscaler {
+    
+    // MARK: - Constants
+    
+    static let inputWidth = 1920
+    static let inputHeight = 1080
+    static let outputWidth = 3840
+    static let outputHeight = 2160
+    
+    // MARK: - Metal Resources
+    
+    private let device: MTLDevice
+    private let commandQueue: MTLCommandQueue
+    private var textureCache: CVMetalTextureCache?
+    
+    // MARK: - MetalFX Scaler
+    
+    private var spatialScaler: MTLFXSpatialScaler?
+    
+    // MARK: - Output Texture (Private - GPU only, used directly for rendering)
+    
+    private var outputTexture: MTLTexture?
+    
+    // MARK: - Mode Selection
+    
+    /// Current upscaling mode (always .spatial on visionOS)
+    private(set) var mode: UpscalingMode = .spatial
+    
+    // MARK: - HDR Configuration
+    
+    /// HDR configuration (can be changed at runtime)
+    private(set) var hdrConfig: MetalFXHDRConfig
+    
+    /// Current pixel format based on HDR state
+    var currentPixelFormat: MTLPixelFormat {
+        return hdrConfig.colorFormat
+    }
+    
+    // MARK: - State
+    
+    private var frameCount: UInt64 = 0
+    
+    /// Triple buffer pool for non-blocking GPU sync
+    private var tripleBuffer: TripleBufferPool?
+    
+    /// Callback invoked when upscaling completes (non-blocking)
+    var onUpscaleComplete: ((MTLTexture) -> Void)?
+    
+    // MARK: - Initialization
+    
+    init?(hdrEnabled: Bool = false) {
+        self.hdrConfig = MetalFXHDRConfig(hdrEnabled: hdrEnabled)
+        
+        print("[MetalFXUpscaler] 🚀 Starting initialization (HDR: \(hdrEnabled ? "enabled" : "disabled"))...")
+        
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            print("[MetalFXUpscaler] ❌ No Metal device available")
+            return nil
+        }
+        print("[MetalFXUpscaler] ✅ Metal device: \(device.name)")
+        
+        guard let commandQueue = device.makeCommandQueue() else {
+            print("[MetalFXUpscaler] ❌ Failed to create command queue")
+            return nil
+        }
+        
+        self.device = device
+        self.commandQueue = commandQueue
+        
+        // Create texture cache for CVPixelBuffer conversion
+        var cache: CVMetalTextureCache?
+        let status = CVMetalTextureCacheCreate(nil, nil, device, nil, &cache)
+        guard status == kCVReturnSuccess, let textureCache = cache else {
+            print("[MetalFXUpscaler] ❌ Failed to create texture cache: \(status)")
+            return nil
+        }
+        self.textureCache = textureCache
+        print("[MetalFXUpscaler] ✅ Texture cache created")
+        
+        // Create output texture - private storage for MetalFX (required)
+        // Use HDR format (.bgra10_xr) if HDR enabled, otherwise SDR (.bgra8Unorm)
+        let outputPixelFormat = hdrConfig.outputFormat
+        
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: outputPixelFormat,
+            width: Self.outputWidth,
+            height: Self.outputHeight,
+            mipmapped: false
+        )
+        descriptor.usage = [.shaderRead, .shaderWrite, .renderTarget]
+        descriptor.storageMode = .private
+        
+        guard let output = device.makeTexture(descriptor: descriptor) else {
+            print("[MetalFXUpscaler] ❌ Failed to create output texture")
+            return nil
+        }
+        self.outputTexture = output
+        let formatName = hdrEnabled ? "bgra10_xr (HDR)" : "bgra8Unorm (SDR)"
+        print("[MetalFXUpscaler] ✅ Output texture created: \(Self.outputWidth)x\(Self.outputHeight) [\(formatName)]")
+        
+        // Initialize Spatial Scaler (only option on visionOS)
+        // NOTE: MTLFXTemporalScaler is NOT available on visionOS
+        guard initializeSpatialScaler() else {
+            return nil
+        }
+        self.mode = .spatial
+        
+        // Create triple buffer pool with matching format
+        self.tripleBuffer = TripleBufferPool(
+            device: device,
+            width: Self.outputWidth,
+            height: Self.outputHeight,
+            pixelFormat: hdrConfig.outputFormat
+        )
+        
+        let hdrStatus = hdrEnabled ? "HDR (bgra10_xr)" : "SDR (bgra8Unorm)"
+        print("[MetalFXUpscaler] ✅ Initialized (SPATIAL mode - visionOS)")
+        print("[MetalFXUpscaler]   Input: \(Self.inputWidth)x\(Self.inputHeight)")
+        print("[MetalFXUpscaler]   Output: \(Self.outputWidth)x\(Self.outputHeight)")
+        print("[MetalFXUpscaler]   Format: \(hdrStatus)")
+        print("[MetalFXUpscaler]   ⚠️ Temporal Scaler not available on visionOS")
+    }
+    
+    // MARK: - Scaler Initialization
+    
+    private func initializeSpatialScaler() -> Bool {
+        guard MTLFXSpatialScalerDescriptor.supportsDevice(device) else {
+            print("[MetalFXUpscaler] ❌ MetalFX Spatial Scaler not supported")
+            return false
+        }
+        print("[MetalFXUpscaler] ✅ MetalFX Spatial Scaler supported")
+        
+        let descriptor = MTLFXSpatialScalerDescriptor()
+        descriptor.inputWidth = Self.inputWidth
+        descriptor.inputHeight = Self.inputHeight
+        descriptor.outputWidth = Self.outputWidth
+        descriptor.outputHeight = Self.outputHeight
+        
+        // Use HDR-capable format when HDR is enabled
+        // .bgra10_xr supports Extended Range (values > 1.0) for HDR content
+        descriptor.colorTextureFormat = hdrConfig.colorFormat
+        descriptor.outputTextureFormat = hdrConfig.outputFormat
+        descriptor.colorProcessingMode = .perceptual
+        
+        guard let scaler = descriptor.makeSpatialScaler(device: device) else {
+            print("[MetalFXUpscaler] ❌ Failed to create Spatial Scaler")
+            return false
+        }
+        self.spatialScaler = scaler
+        print("[MetalFXUpscaler] ✅ Spatial Scaler created")
+        return true
+    }
+    
+    // MARK: - Mode Control
+    
+    /// Switch upscaling mode
+    /// NOTE: On visionOS, only .spatial is supported
+    func setMode(_ newMode: UpscalingMode) {
+        if newMode == .temporal {
+            print("[MetalFXUpscaler] ⚠️ Temporal mode not available on visionOS, using Spatial")
+        }
+        // Always use spatial on visionOS
+        mode = .spatial
+    }
+    
+    // MARK: - Upscaling
+    
+    /// Upscale a CVPixelBuffer from 1080p to 4K
+    func upscale(_ pixelBuffer: CVPixelBuffer) -> MTLTexture? {
+        guard let spatialScaler = spatialScaler,
+              let textureCache = textureCache,
+              let outputTexture = self.outputTexture else {
+            print("[MetalFXUpscaler] ⚠️ upscale: missing resources")
+            return nil
+        }
+        
+        frameCount += 1
+        
+        // Get pixel buffer info
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        let format = CVPixelBufferGetPixelFormatType(pixelBuffer)
+        
+        // Log first frame details
+        if frameCount == 1 {
+            let ioSurface = CVPixelBufferGetIOSurface(pixelBuffer)
+            let zeroCopyStatus = ioSurface != nil ? "✅ Zero-copy" : "⚠️ No IOSurface"
+            print("[MetalFXUpscaler] 📹 First frame: \(width)x\(height), format=\(formatName(format)), \(zeroCopyStatus)")
+        }
+        
+        // Create Metal texture from CVPixelBuffer
+        // Use appropriate format for HDR vs SDR
+        var cvTexture: CVMetalTexture?
+        let inputFormat = hdrConfig.colorFormat
+        let status = CVMetalTextureCacheCreateTextureFromImage(
+            nil, textureCache, pixelBuffer, nil,
+            inputFormat, width, height, 0, &cvTexture
+        )
+        
+        guard status == kCVReturnSuccess, let cvTexture = cvTexture,
+              let inputTexture = CVMetalTextureGetTexture(cvTexture) else {
+            if frameCount <= 5 {
+                print("[MetalFXUpscaler] ❌ Failed to create texture from CVPixelBuffer: \(status)")
+            }
+            return nil
+        }
+        
+        // Create command buffer
+        guard let commandBuffer = commandQueue.makeCommandBuffer() else {
+            return nil
+        }
+        
+        // Apply Spatial Scaler
+        spatialScaler.colorTexture = inputTexture
+        spatialScaler.outputTexture = outputTexture
+        spatialScaler.encode(commandBuffer: commandBuffer)
+        
+        let frameNum = frameCount
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        
+        if frameNum % 60 == 0 {
+            print("[MetalFXUpscaler] 📊 Frame \(frameNum) processed (SPATIAL)")
+        }
+        
+        return outputTexture
+    }
+    
+    // MARK: - Scene Cut (no-op for Spatial Scaler)
+    
+    /// Signal a scene cut - no effect for Spatial Scaler (no temporal history)
+    func signalSceneCut() {
+        // Spatial Scaler has no temporal history, nothing to reset
+    }
+    
+    // MARK: - HDR Control
+    
+    /// Enable or disable HDR mode
+    /// Note: Requires reinitializing textures and scaler for format change
+    func setHDREnabled(_ enabled: Bool) {
+        guard enabled != hdrConfig.hdrEnabled else { return }
+        
+        hdrConfig.hdrEnabled = enabled
+        
+        // Reinitialize scaler with new format
+        if !initializeSpatialScaler() {
+            print("[MetalFXUpscaler] ❌ Failed to reinitialize scaler for HDR change")
+        }
+        
+        // Recreate output texture with new format
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: hdrConfig.outputFormat,
+            width: Self.outputWidth,
+            height: Self.outputHeight,
+            mipmapped: false
+        )
+        descriptor.usage = [.shaderRead, .shaderWrite, .renderTarget]
+        descriptor.storageMode = .private
+        
+        if let newOutput = device.makeTexture(descriptor: descriptor) {
+            outputTexture = newOutput
+            let formatName = enabled ? "bgra10_xr (HDR)" : "bgra8Unorm (SDR)"
+            print("[MetalFXUpscaler] ✅ HDR mode changed, new format: \(formatName)")
+        }
+    }
+    
+    /// Check if HDR is currently enabled
+    var isHDREnabled: Bool {
+        return hdrConfig.hdrEnabled
+    }
+    
+    // MARK: - Utilities
+    
+    private func formatName(_ format: OSType) -> String {
+        switch format {
+        case kCVPixelFormatType_32BGRA:
+            return "BGRA"
+        case kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange:
+            return "YUV420 (Video Range)"
+        case kCVPixelFormatType_420YpCbCr8BiPlanarFullRange:
+            return "YUV420 (Full Range)"
+        default:
+            return "Unknown(\(format))"
+        }
+    }
+    
+    func flush() {
+        if let cache = textureCache {
+            CVMetalTextureCacheFlush(cache, 0)
+        }
+    }
+}

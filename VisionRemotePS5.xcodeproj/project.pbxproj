@@ -1,0 +1,731 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		APP001 /* VisionRemotePS5App.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC001 /* VisionRemotePS5App.swift */; };
+		APP002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC002 /* ContentView.swift */; };
+		APP003 /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC003 /* HomeView.swift */; };
+		APP004 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC004 /* SettingsView.swift */; };
+		APP005 /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC005 /* LoginView.swift */; };
+		APP006 /* PairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC006 /* PairingView.swift */; };
+		APP007 /* StreamingImmersiveView.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC007 /* StreamingImmersiveView.swift */; };
+		APP008 /* Console.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC008 /* Console.swift */; };
+		APP009 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = RES001 /* Assets.xcassets */; };
+		APP010 /* ConsoleDiscoveryService.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC009 /* ConsoleDiscoveryService.swift */; };
+		APP011 /* PSNAuthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC010 /* PSNAuthService.swift */; };
+		APP012 /* StreamingSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC011 /* StreamingSession.swift */; };
+		APP013 /* VideoDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC012 /* VideoDecoder.swift */; };
+		APP014 /* AudioDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC013 /* AudioDecoder.swift */; };
+		APP015 /* GameControllerManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC014 /* GameControllerManager.swift */; };
+		APP016 /* RegistrationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC015 /* RegistrationService.swift */; };
+		APP017 /* ChiakiCrypto.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC016 /* ChiakiCrypto.swift */; };
+		CHKFRM001 /* Chiaki.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = CHKFRMREF001 /* Chiaki.xcframework */; };
+		CHKFSES001 /* ChiakiFullSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = CHKFSESSRC001 /* ChiakiFullSession.swift */; };
+		CNSSTO001 /* ConsoleStorageService.swift in Sources */ = {isa = PBXBuildFile; fileRef = CNSSRC001 /* ConsoleStorageService.swift */; };
+		EF48D8DA2F0FD3F8009C702E /* ChiakiCore.c in Sources */ = {isa = PBXBuildFile; fileRef = EF48D8D92F0FD3F8009C702E /* ChiakiCore.c */; };
+		AUDRINGBUFSRC001 /* AudioRingBuffer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AUDRINGBUFREF001 /* AudioRingBuffer.swift */; };
+		LOWLATAUDSRC001 /* LowLatencyAudioPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = LOWLATAUDREF001 /* LowLatencyAudioPlayer.swift */; };
+		EF5C41952F0645B0007A7B67 /* PSNSessionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF5C41942F0645B0007A7B67 /* PSNSessionManager.swift */; };
+		EF5C41972F0645C3007A7B67 /* HolepunchService.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF5C41962F0645C3007A7B67 /* HolepunchService.swift */; };
+		EF5C41992F0645D2007A7B67 /* PSNConnectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF5C41982F0645D2007A7B67 /* PSNConnectionView.swift */; };
+		EF5C419B2F0645E0007A7B67 /* PSNWebSocketService.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF5C419A2F0645E0007A7B67 /* PSNWebSocketService.swift */; };
+		SHADER001 /* YUVToRGB.metal in Sources */ = {isa = PBXBuildFile; fileRef = SHADERSRC001 /* YUVToRGB.metal */; };
+		SIMP001 /* SimpleTestView.swift in Sources */ = {isa = PBXBuildFile; fileRef = SIMPSRC001 /* SimpleTestView.swift */; };
+		STRMSVC001 /* StreamingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = STRMSRCSVC001 /* StreamingService.swift */; };
+		STRMVIEW001 /* StreamingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = STRMSRCVIEW001 /* StreamingView.swift */; };
+		TST001 /* ChiakiCryptoTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TSTSRC001 /* ChiakiCryptoTests.swift */; };
+		TST002 /* ChiakiBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TSTSRC002 /* ChiakiBridgeTests.swift */; };
+		TST003 /* RegistrationServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TSTSRC003 /* RegistrationServiceTests.swift */; };
+		TST004 /* ConsoleDiscoveryServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TSTSRC004 /* ConsoleDiscoveryServiceTests.swift */; };
+		TST005 /* PSNAuthServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TSTSRC005 /* PSNAuthServiceTests.swift */; };
+		TST006 /* ConsoleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TSTSRC006 /* ConsoleTests.swift */; };
+		WOLSVC001 /* WakeOnLanService.swift in Sources */ = {isa = PBXBuildFile; fileRef = WOLSRCSVC001 /* WakeOnLanService.swift */; };
+		MFXUPSRC001 /* MetalFXUpscaler.swift in Sources */ = {isa = PBXBuildFile; fileRef = MFXUPREF001 /* MetalFXUpscaler.swift */; };
+		UPSPIPESRC001 /* UpscalingPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = UPSPIPEREF001 /* UpscalingPipeline.swift */; };
+		MTLTEXVIEWSRC001 /* MetalTextureView.swift in Sources */ = {isa = PBXBuildFile; fileRef = MTLTEXVIEWREF001 /* MetalTextureView.swift */; };
+		RKVIDEOVIEWSRC001 /* RealityKitVideoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = RKVIDEOVIEWREF001 /* RealityKitVideoView.swift */; };
+		TRIPLEBUFSRC001 /* TripleBufferPool.swift in Sources */ = {isa = PBXBuildFile; fileRef = TRIPLEBUFREF001 /* TripleBufferPool.swift */; };
+		FRMPCRSRC001 /* FramePacer.swift in Sources */ = {isa = PBXBuildFile; fileRef = FRMPCRREF001 /* FramePacer.swift */; };
+		MOTESTSRC001 /* MotionEstimator.swift in Sources */ = {isa = PBXBuildFile; fileRef = MOTESTREF001 /* MotionEstimator.swift */; };
+		ENHUPSRC001 /* EnhancedUpscaler.swift in Sources */ = {isa = PBXBuildFile; fileRef = ENHUPREF001 /* EnhancedUpscaler.swift */; };
+		COLSPCCNVSRC001 /* ColorSpaceConverter.swift in Sources */ = {isa = PBXBuildFile; fileRef = COLSPCCNVREF001 /* ColorSpaceConverter.swift */; };
+		SAFEBUFPOOLSRC001 /* SafeBufferPool.swift in Sources */ = {isa = PBXBuildFile; fileRef = SAFEBUFPOOLREF001 /* SafeBufferPool.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		TSTPROXY001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = PRJ001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = TGT001;
+			remoteInfo = VisionRemotePS5;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		CHKFRMREF001 /* Chiaki.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Chiaki.xcframework; path = VisionRemotePS5/Frameworks/Chiaki.xcframework; sourceTree = SOURCE_ROOT; };
+		CHKFSESSRC001 /* ChiakiFullSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChiakiFullSession.swift; sourceTree = "<group>"; };
+		CHKSRC001 /* ChiakiBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChiakiBridge.swift; sourceTree = "<group>"; };
+		CNSSRC001 /* ConsoleStorageService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConsoleStorageService.swift; sourceTree = "<group>"; };
+		EF48D8D92F0FD3F8009C702E /* ChiakiCore.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = ChiakiCore.c; sourceTree = "<group>"; };
+		EF5C41942F0645B0007A7B67 /* PSNSessionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PSNSessionManager.swift; sourceTree = "<group>"; };
+		EF5C41962F0645C3007A7B67 /* HolepunchService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HolepunchService.swift; sourceTree = "<group>"; };
+		EF5C41982F0645D2007A7B67 /* PSNConnectionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PSNConnectionView.swift; sourceTree = "<group>"; };
+		EF5C419A2F0645E0007A7B67 /* PSNWebSocketService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PSNWebSocketService.swift; sourceTree = "<group>"; };
+		SHADERSRC001 /* YUVToRGB.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = YUVToRGB.metal; sourceTree = "<group>"; };
+		PRD001 /* VisionRemotePS5.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = VisionRemotePS5.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		PRD002 /* VisionRemotePS5Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = VisionRemotePS5Tests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		RES001 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		RES002 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		SIMPSRC001 /* SimpleTestView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimpleTestView.swift; sourceTree = "<group>"; };
+		SRC001 /* VisionRemotePS5App.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisionRemotePS5App.swift; sourceTree = "<group>"; };
+		SRC002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		SRC003 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
+		SRC004 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		SRC005 /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
+		SRC006 /* PairingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingView.swift; sourceTree = "<group>"; };
+		SRC007 /* StreamingImmersiveView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamingImmersiveView.swift; sourceTree = "<group>"; };
+		SRC008 /* Console.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Console.swift; sourceTree = "<group>"; };
+		SRC009 /* ConsoleDiscoveryService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConsoleDiscoveryService.swift; sourceTree = "<group>"; };
+		SRC010 /* PSNAuthService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PSNAuthService.swift; sourceTree = "<group>"; };
+		SRC011 /* StreamingSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamingSession.swift; sourceTree = "<group>"; };
+		SRC012 /* VideoDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoDecoder.swift; sourceTree = "<group>"; };
+		SRC013 /* AudioDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioDecoder.swift; sourceTree = "<group>"; };
+		SRC014 /* GameControllerManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameControllerManager.swift; sourceTree = "<group>"; };
+		SRC015 /* RegistrationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RegistrationService.swift; sourceTree = "<group>"; };
+		SRC016 /* ChiakiCrypto.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChiakiCrypto.swift; sourceTree = "<group>"; };
+		STRMSRCSVC001 /* StreamingService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamingService.swift; sourceTree = "<group>"; };
+		STRMSRCVIEW001 /* StreamingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamingView.swift; sourceTree = "<group>"; };
+		TSTSRC001 /* ChiakiCryptoTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChiakiCryptoTests.swift; sourceTree = "<group>"; };
+		TSTSRC002 /* ChiakiBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChiakiBridgeTests.swift; sourceTree = "<group>"; };
+		TSTSRC003 /* RegistrationServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RegistrationServiceTests.swift; sourceTree = "<group>"; };
+		TSTSRC004 /* ConsoleDiscoveryServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConsoleDiscoveryServiceTests.swift; sourceTree = "<group>"; };
+		TSTSRC005 /* PSNAuthServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PSNAuthServiceTests.swift; sourceTree = "<group>"; };
+		TSTSRC006 /* ConsoleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConsoleTests.swift; sourceTree = "<group>"; };
+		WOLSRCSVC001 /* WakeOnLanService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WakeOnLanService.swift; sourceTree = "<group>"; };
+		AUDRINGBUFREF001 /* AudioRingBuffer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRingBuffer.swift; sourceTree = "<group>"; };
+		LOWLATAUDREF001 /* LowLatencyAudioPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LowLatencyAudioPlayer.swift; sourceTree = "<group>"; };
+		MFXUPREF001 /* MetalFXUpscaler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetalFXUpscaler.swift; sourceTree = "<group>"; };
+		UPSPIPEREF001 /* UpscalingPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpscalingPipeline.swift; sourceTree = "<group>"; };
+		MTLTEXVIEWREF001 /* MetalTextureView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetalTextureView.swift; sourceTree = "<group>"; };
+		RKVIDEOVIEWREF001 /* RealityKitVideoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RealityKitVideoView.swift; sourceTree = "<group>"; };
+		TRIPLEBUFREF001 /* TripleBufferPool.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripleBufferPool.swift; sourceTree = "<group>"; };
+		FRMPCRREF001 /* FramePacer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FramePacer.swift; sourceTree = "<group>"; };
+		MOTESTREF001 /* MotionEstimator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MotionEstimator.swift; sourceTree = "<group>"; };
+		ENHUPREF001 /* EnhancedUpscaler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnhancedUpscaler.swift; sourceTree = "<group>"; };
+		COLSPCCNVREF001 /* ColorSpaceConverter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ColorSpaceConverter.swift; sourceTree = "<group>"; };
+		SAFEBUFPOOLREF001 /* SafeBufferPool.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SafeBufferPool.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		FRM001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				CHKFRM001 /* Chiaki.xcframework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FRM002 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		EF9426EB2F1456F5006C689C /* Shaders */ = {
+			isa = PBXGroup;
+			children = (
+				SHADERSRC001 /* YUVToRGB.metal */,
+			);
+			path = Shaders;
+			sourceTree = "<group>";
+		};
+		GRP001 = {
+			isa = PBXGroup;
+			children = (
+				GRP002 /* VisionRemotePS5 */,
+				GRP010 /* VisionRemotePS5Tests */,
+				GRP007 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		GRP002 /* VisionRemotePS5 */ = {
+			isa = PBXGroup;
+			children = (
+				EF9426EB2F1456F5006C689C /* Shaders */,
+				SRC001 /* VisionRemotePS5App.swift */,
+				GRP003 /* Views */,
+				GRP004 /* Models */,
+				GRP005 /* Services */,
+				GRP008 /* Streaming */,
+				GRP009 /* Controllers */,
+			GRP011 /* Chiaki */,
+				GRP012 /* Rendering */,
+				GRP006 /* Resources */,
+				RES002 /* Info.plist */,
+			);
+			path = VisionRemotePS5;
+			sourceTree = "<group>";
+		};
+		GRP003 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				EF5C41982F0645D2007A7B67 /* PSNConnectionView.swift */,
+				SRC002 /* ContentView.swift */,
+				SRC003 /* HomeView.swift */,
+				SRC004 /* SettingsView.swift */,
+				SRC005 /* LoginView.swift */,
+				SRC006 /* PairingView.swift */,
+				SRC007 /* StreamingImmersiveView.swift */,
+				SIMPSRC001 /* SimpleTestView.swift */,
+				STRMSRCVIEW001 /* StreamingView.swift */,
+				MTLTEXVIEWREF001 /* MetalTextureView.swift */,
+				RKVIDEOVIEWREF001 /* RealityKitVideoView.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		GRP004 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				SRC008 /* Console.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		GRP005 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				EF5C41962F0645C3007A7B67 /* HolepunchService.swift */,
+				EF5C41942F0645B0007A7B67 /* PSNSessionManager.swift */,
+				EF5C419A2F0645E0007A7B67 /* PSNWebSocketService.swift */,
+				SRC009 /* ConsoleDiscoveryService.swift */,
+				SRC010 /* PSNAuthService.swift */,
+				SRC011 /* StreamingSession.swift */,
+				SRC015 /* RegistrationService.swift */,
+				SRC016 /* ChiakiCrypto.swift */,
+				STRMSRCSVC001 /* StreamingService.swift */,
+				CNSSRC001 /* ConsoleStorageService.swift */,
+				CHKFSESSRC001 /* ChiakiFullSession.swift */,
+				WOLSRCSVC001 /* WakeOnLanService.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		GRP006 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				RES001 /* Assets.xcassets */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		GRP007 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				PRD001 /* VisionRemotePS5.app */,
+				PRD002 /* VisionRemotePS5Tests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		GRP008 /* Streaming */ = {
+			isa = PBXGroup;
+			children = (
+				SRC012 /* VideoDecoder.swift */,
+				SRC013 /* AudioDecoder.swift */,
+				UPSPIPEREF001 /* UpscalingPipeline.swift */,
+				MFXUPREF001 /* MetalFXUpscaler.swift */,
+				TRIPLEBUFREF001 /* TripleBufferPool.swift */,
+				FRMPCRREF001 /* FramePacer.swift */,
+				MOTESTREF001 /* MotionEstimator.swift */,
+				ENHUPREF001 /* EnhancedUpscaler.swift */,
+				COLSPCCNVREF001 /* ColorSpaceConverter.swift */,
+				AUDRINGBUFREF001 /* AudioRingBuffer.swift */,
+				LOWLATAUDREF001 /* LowLatencyAudioPlayer.swift */,
+				SAFEBUFPOOLREF001 /* SafeBufferPool.swift */,
+			);
+			path = Streaming;
+			sourceTree = "<group>";
+		};
+		GRP009 /* Controllers */ = {
+			isa = PBXGroup;
+			children = (
+				SRC014 /* GameControllerManager.swift */,
+			);
+			path = Controllers;
+			sourceTree = "<group>";
+		};
+		GRP010 /* VisionRemotePS5Tests */ = {
+			isa = PBXGroup;
+			children = (
+				TSTSRC001 /* ChiakiCryptoTests.swift */,
+				TSTSRC002 /* ChiakiBridgeTests.swift */,
+				TSTSRC003 /* RegistrationServiceTests.swift */,
+				TSTSRC004 /* ConsoleDiscoveryServiceTests.swift */,
+				TSTSRC005 /* PSNAuthServiceTests.swift */,
+				TSTSRC006 /* ConsoleTests.swift */,
+			);
+			path = VisionRemotePS5Tests;
+			sourceTree = "<group>";
+		};
+		GRP011 /* Chiaki */ = {
+			isa = PBXGroup;
+			children = (
+				EF48D8D92F0FD3F8009C702E /* ChiakiCore.c */,
+				CHKSRC001 /* ChiakiBridge.swift */,
+				CHKFRMREF001 /* Chiaki.xcframework */,
+			);
+			path = Chiaki;
+			sourceTree = "<group>";
+		};
+		GRP012 /* Rendering */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			path = Rendering;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		TGT001 /* VisionRemotePS5 */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = CFG003 /* Build configuration list for PBXNativeTarget "VisionRemotePS5" */;
+			buildPhases = (
+				SRC099 /* Sources */,
+				FRM001 /* Frameworks */,
+				RES099 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = VisionRemotePS5;
+			productName = VisionRemotePS5;
+			productReference = PRD001 /* VisionRemotePS5.app */;
+			productType = "com.apple.product-type.application";
+		};
+		TGT002 /* VisionRemotePS5Tests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = CFG007 /* Build configuration list for PBXNativeTarget "VisionRemotePS5Tests" */;
+			buildPhases = (
+				TST099 /* Sources */,
+				FRM002 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				TSTDEP001 /* PBXTargetDependency */,
+			);
+			name = VisionRemotePS5Tests;
+			productName = VisionRemotePS5Tests;
+			productReference = PRD002 /* VisionRemotePS5Tests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		PRJ001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1540;
+				LastUpgradeCheck = 1540;
+				TargetAttributes = {
+					TGT001 = {
+						CreatedOnToolsVersion = 15.4;
+					};
+					TGT002 = {
+						CreatedOnToolsVersion = 15.4;
+						TestTargetID = TGT001;
+					};
+				};
+			};
+			buildConfigurationList = CFG001 /* Build configuration list for PBXProject "VisionRemotePS5" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+				"pt-BR",
+			);
+			mainGroup = GRP001;
+			productRefGroup = GRP007 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				TGT001 /* VisionRemotePS5 */,
+				TGT002 /* VisionRemotePS5Tests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		RES099 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				APP009 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		SRC099 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				APP001 /* VisionRemotePS5App.swift in Sources */,
+				APP002 /* ContentView.swift in Sources */,
+				EF5C41992F0645D2007A7B67 /* PSNConnectionView.swift in Sources */,
+				APP003 /* HomeView.swift in Sources */,
+				APP004 /* SettingsView.swift in Sources */,
+				APP005 /* LoginView.swift in Sources */,
+				APP006 /* PairingView.swift in Sources */,
+				APP007 /* StreamingImmersiveView.swift in Sources */,
+				APP008 /* Console.swift in Sources */,
+				EF5C41972F0645C3007A7B67 /* HolepunchService.swift in Sources */,
+				APP010 /* ConsoleDiscoveryService.swift in Sources */,
+				APP011 /* PSNAuthService.swift in Sources */,
+				APP012 /* StreamingSession.swift in Sources */,
+				EF48D8DA2F0FD3F8009C702E /* ChiakiCore.c in Sources */,
+				APP013 /* VideoDecoder.swift in Sources */,
+				APP014 /* AudioDecoder.swift in Sources */,
+				APP015 /* GameControllerManager.swift in Sources */,
+				EF5C41952F0645B0007A7B67 /* PSNSessionManager.swift in Sources */,
+				EF5C419B2F0645E0007A7B67 /* PSNWebSocketService.swift in Sources */,
+				APP016 /* RegistrationService.swift in Sources */,
+				APP017 /* ChiakiCrypto.swift in Sources */,
+				SIMP001 /* SimpleTestView.swift in Sources */,
+				STRMSVC001 /* StreamingService.swift in Sources */,
+				SHADER001 /* YUVToRGB.metal in Sources */,
+				STRMVIEW001 /* StreamingView.swift in Sources */,
+				CNSSTO001 /* ConsoleStorageService.swift in Sources */,
+				CHKFSES001 /* ChiakiFullSession.swift in Sources */,
+				WOLSVC001 /* WakeOnLanService.swift in Sources */,
+				MFXUPSRC001 /* MetalFXUpscaler.swift in Sources */,
+				UPSPIPESRC001 /* UpscalingPipeline.swift in Sources */,
+				MTLTEXVIEWSRC001 /* MetalTextureView.swift in Sources */,
+				RKVIDEOVIEWSRC001 /* RealityKitVideoView.swift in Sources */,
+				TRIPLEBUFSRC001 /* TripleBufferPool.swift in Sources */,
+				FRMPCRSRC001 /* FramePacer.swift in Sources */,
+				MOTESTSRC001 /* MotionEstimator.swift in Sources */,
+				ENHUPSRC001 /* EnhancedUpscaler.swift in Sources */,
+				COLSPCCNVSRC001 /* ColorSpaceConverter.swift in Sources */,
+				AUDRINGBUFSRC001 /* AudioRingBuffer.swift in Sources */,
+				LOWLATAUDSRC001 /* LowLatencyAudioPlayer.swift in Sources */,
+				SAFEBUFPOOLSRC001 /* SafeBufferPool.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		TST099 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				TST001 /* ChiakiCryptoTests.swift in Sources */,
+				TST002 /* ChiakiBridgeTests.swift in Sources */,
+				TST003 /* RegistrationServiceTests.swift in Sources */,
+				TST004 /* ConsoleDiscoveryServiceTests.swift in Sources */,
+				TST005 /* PSNAuthServiceTests.swift in Sources */,
+				TST006 /* ConsoleTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		TSTDEP001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = TGT001 /* VisionRemotePS5 */;
+			targetProxy = TSTPROXY001 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		CFG002 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = xros;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				XROS_DEPLOYMENT_TARGET = 2.6;
+			};
+			name = Debug;
+		};
+		CFG004 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = xros;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+				XROS_DEPLOYMENT_TARGET = 2.6;
+			};
+			name = Release;
+		};
+		CFG005 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = VisionRemotePS5/VisionRemotePS5.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = QKHSK8L9ZZ;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/VisionRemotePS5/Frameworks/Chiaki.xcframework/xros-arm64/Headers",
+					"$(PROJECT_DIR)/chiaki-ng/lib/include",
+					"$(PROJECT_DIR)/chiaki-ng/build-macos/lib/include",
+					"$(SRCROOT)/chiaki-ng/lib/include",
+					"$(SRCROOT)/chiaki-ng/third-party/jerasure/include",
+					"$(SRCROOT)/chiaki-ng/third-party/gf-complete/include",
+					"$(SRCROOT)/chiaki-ng/third-party/nanopb",
+					"$(SRCROOT)/chiaki-ng/build-macos/lib/protobuf",
+					"$(SRCROOT)/mbedtls-src/include",
+					"$(SRCROOT)/VisionRemotePS5/Chiaki",
+				);
+				INFOPLIST_FILE = VisionRemotePS5/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "PS Remote Play";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Required for voice chat during Remote Play sessions";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.visionremote.ps5;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "xros xrsimulator";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "VisionRemotePS5/Chiaki/VisionRemotePS5-Bridging-Header.h";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 7;
+			};
+			name = Debug;
+		};
+		CFG006 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = VisionRemotePS5/VisionRemotePS5.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = QKHSK8L9ZZ;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/VisionRemotePS5/Frameworks/Chiaki.xcframework/xros-arm64/Headers",
+					"$(PROJECT_DIR)/chiaki-ng/lib/include",
+					"$(PROJECT_DIR)/chiaki-ng/build-macos/lib/include",
+					"$(SRCROOT)/chiaki-ng/lib/include",
+					"$(SRCROOT)/chiaki-ng/third-party/jerasure/include",
+					"$(SRCROOT)/chiaki-ng/third-party/gf-complete/include",
+					"$(SRCROOT)/chiaki-ng/third-party/nanopb",
+					"$(SRCROOT)/chiaki-ng/build-macos/lib/protobuf",
+					"$(SRCROOT)/mbedtls-src/include",
+					"$(SRCROOT)/VisionRemotePS5/Chiaki",
+				);
+				INFOPLIST_FILE = VisionRemotePS5/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "PS Remote Play";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Required for voice chat during Remote Play sessions";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.visionremote.ps5;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "xros xrsimulator";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "VisionRemotePS5/Chiaki/VisionRemotePS5-Bridging-Header.h";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 7;
+			};
+			name = Release;
+		};
+		CFG008 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = QKHSK8L9ZZ;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.visionremote.ps5.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "xros xrsimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 7;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/VisionRemotePS5.app/VisionRemotePS5";
+			};
+			name = Debug;
+		};
+		CFG009 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = QKHSK8L9ZZ;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.visionremote.ps5.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "xros xrsimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 7;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/VisionRemotePS5.app/VisionRemotePS5";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		CFG001 /* Build configuration list for PBXProject "VisionRemotePS5" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				CFG002 /* Debug */,
+				CFG004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		CFG003 /* Build configuration list for PBXNativeTarget "VisionRemotePS5" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				CFG005 /* Debug */,
+				CFG006 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		CFG007 /* Build configuration list for PBXNativeTarget "VisionRemotePS5Tests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				CFG008 /* Debug */,
+				CFG009 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = PRJ001 /* Project object */;
+}

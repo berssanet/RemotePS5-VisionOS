@@ -1,0 +1,22 @@
+/// Chiaki C Core Module
+/// Exposes chiaki-ng C headers to Swift via C++ interoperability
+
+module ChiakiCore [system] {
+    /// Main headers for chiaki functionality
+    header "chiaki/common.h"
+    header "chiaki/config.h"
+    header "chiaki/log.h"
+    header "chiaki/thread.h"
+    header "chiaki/stoppipe.h"
+    header "chiaki/regist.h"
+    header "chiaki/rpcrypt.h"
+    header "chiaki/session.h"
+    header "chiaki/base64.h"
+    header "chiaki/http.h"
+    header "chiaki/random.h"
+    header "chiaki/time.h"
+    
+    export *
+    
+    link "ChiakiCore"
+}
