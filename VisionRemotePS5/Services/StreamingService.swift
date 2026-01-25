@@ -88,6 +88,7 @@ enum StreamingError: LocalizedError {
 
 // MARK: - Streaming Service
 
+@MainActor
 final class StreamingService: ObservableObject {
     
     // MARK: - Properties
@@ -907,7 +908,7 @@ final class StreamingService: ObservableObject {
                 case .ready:
                     print("[StreamingService] ✅ Stream connected (UDP)")
                     // Perform TAKION handshake before receiving
-                    Task {
+                    Task { @MainActor [weak self] in
                         do {
                             try await self?.performTakionHandshake()
                             self?.startReceivingStream()
