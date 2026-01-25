@@ -22,7 +22,9 @@ final class ConsoleDiscoveryServiceTests: XCTestCase {
         discoveryService = ConsoleDiscoveryService()
     }
     
+    @MainActor
     override func tearDownWithError() throws {
+        discoveryService?.stopDiscovery()
         discoveryService = nil
         try super.tearDownWithError()
     }
@@ -34,114 +36,159 @@ final class ConsoleDiscoveryServiceTests: XCTestCase {
         // Given a fresh service
         // Then no consoles should be discovered
         XCTAssertTrue(discoveryService.discoveredConsoles.isEmpty)
-        XCTAssertFalse(discoveryService.isScanning)
+        XCTAssertEqual(discoveryService.state, .idle)
+        XCTAssertFalse(discoveryService.isSearching)
     }
-    
-    // MARK: - DDP Response Parsing Tests
-    
-    func testParseDDPResponse_ValidPS5Response_ReturnsConsole() {
-        // Given a valid DDP response packet (simulated)
-        let validResponse = """
-        HTTP/1.1 200 OK
-        host-id:1234567890
-        host-name:PlayStation 5
-        host-type:PS5
-        device-discovery-protocol-version:00030010
-        system-version:09500001
-        running-app-name:
-        running-app-titleid:
-        
-        """
-        let responseData = validResponse.data(using: .utf8)!
-        
-        // When parsing
-        let console = discoveryService.parseDDPResponse(responseData, from: "192.168.1.50")
-        
-        // Then a console should be returned (or nil if parsing requires MAC)
-        // Note: This test may need adjustment based on actual implementation
-        if let console = console {
-            XCTAssertEqual(console.isPS5, true)
-        }
-    }
-    
-    func testParseDDPResponse_InvalidPacket_ReturnsNil() {
-        // Given an invalid packet
-        let invalidData = "Not a valid DDP response".data(using: .utf8)!
-        
-        // When parsing
-        let console = discoveryService.parseDDPResponse(invalidData, from: "192.168.1.50")
-        
-        // Then should return nil
-        XCTAssertNil(console, "Invalid packet should return nil")
-    }
-    
-    func testParseDDPResponse_EmptyData_ReturnsNil() {
-        // Given empty data
-        let emptyData = Data()
-        
-        // When parsing
-        let console = discoveryService.parseDDPResponse(emptyData, from: "192.168.1.50")
-        
-        // Then should return nil
-        XCTAssertNil(console, "Empty data should return nil")
-    }
-    
-    // MARK: - Discovery Packet Tests
-    
-    func testBuildDiscoveryPacket_ReturnsValidData() {
-        // When building discovery packet
-        let packet = discoveryService.buildDiscoveryPacket()
-        
-        // Then packet should not be empty
-        XCTAssertFalse(packet.isEmpty, "Discovery packet should not be empty")
-        
-        // And should contain DDP header
-        if let packetString = String(data: packet, encoding: .utf8) {
-            XCTAssertTrue(
-                packetString.contains("SRCH") || packetString.count > 0,
-                "Packet should contain DDP search command or be valid binary"
-            )
-        }
-    }
-    
-    func testBuildDiscoveryPacket_HasCorrectSize() {
-        // When building discovery packet
-        let packet = discoveryService.buildDiscoveryPacket()
-        
-        // Then packet should have reasonable size
-        XCTAssertGreaterThan(packet.count, 0, "Packet should have content")
-        XCTAssertLessThan(packet.count, 1000, "Packet should not be too large")
-    }
-    
-    // MARK: - Scanning State Tests
     
     @MainActor
-    func testStartScanning_SetsIsScanningTrue() async throws {
-        // When starting scan
-        discoveryService.startScanning()
+    func testInitialState_EmptyStatusMessage() {
+        // Given a fresh service
+        // Then status message should be empty
+        XCTAssertTrue(discoveryService.statusMessage.isEmpty)
+    }
+    
+    // MARK: - Discovery State Tests
+    
+    @MainActor
+    func testStartDiscovery_SetsSearchingState() async throws {
+        // When starting discovery
+        discoveryService.startDiscovery()
         
-        // Brief wait for state update
-        try await Task.sleep(nanoseconds: 100_000_000) // 0.1 seconds
+        // Then state should be searching
+        XCTAssertEqual(discoveryService.state, .searching)
+        XCTAssertTrue(discoveryService.isSearching)
         
-        // Then isScanning should be true
-        XCTAssertTrue(discoveryService.isScanning)
+        // And status message should be set
+        XCTAssertFalse(discoveryService.statusMessage.isEmpty)
         
         // Cleanup
-        discoveryService.stopScanning()
+        discoveryService.stopDiscovery()
     }
     
     @MainActor
-    func testStopScanning_SetsIsScanningFalse() async throws {
-        // Given a scanning service
-        discoveryService.startScanning()
-        try await Task.sleep(nanoseconds: 100_000_000)
+    func testStopDiscovery_SetsIdleState() async throws {
+        // Given a searching service
+        discoveryService.startDiscovery()
         
-        // When stopping scan
-        discoveryService.stopScanning()
-        try await Task.sleep(nanoseconds: 100_000_000)
+        // When stopping discovery
+        discoveryService.stopDiscovery()
         
-        // Then isScanning should be false
-        XCTAssertFalse(discoveryService.isScanning)
+        // Then state should be idle
+        XCTAssertEqual(discoveryService.state, .idle)
+        XCTAssertFalse(discoveryService.isSearching)
+    }
+    
+    @MainActor
+    func testStartDiscovery_WhenAlreadySearching_DoesNotRestart() async throws {
+        // Given a searching service
+        discoveryService.startDiscovery()
+        let initialState = discoveryService.state
+        
+        // When trying to start again
+        discoveryService.startDiscovery()
+        
+        // Then state should remain the same
+        XCTAssertEqual(discoveryService.state, initialState)
+        
+        // Cleanup
+        discoveryService.stopDiscovery()
+    }
+    
+    // MARK: - Clear Cache Tests
+    
+    @MainActor
+    func testClearCache_RemovesAllConsoles() async throws {
+        // Given a service with a manually added console
+        discoveryService.addConsoleManually(name: "Test PS5", ipAddress: "192.168.1.100")
+        XCTAssertFalse(discoveryService.discoveredConsoles.isEmpty)
+        
+        // When clearing cache
+        discoveryService.clearCache()
+        
+        // Then consoles should be empty
+        XCTAssertTrue(discoveryService.discoveredConsoles.isEmpty)
+        XCTAssertEqual(discoveryService.state, .idle)
+    }
+    
+    @MainActor
+    func testClearCache_ClearsStatusMessage() async throws {
+        // Given a service with status message
+        discoveryService.startDiscovery()
+        XCTAssertFalse(discoveryService.statusMessage.isEmpty)
+        
+        // When clearing cache
+        discoveryService.clearCache()
+        
+        // Then status message should be empty
+        XCTAssertTrue(discoveryService.statusMessage.isEmpty)
+    }
+    
+    // MARK: - Manual Console Addition Tests
+    
+    @MainActor
+    func testAddConsoleManually_AddsConsole() {
+        // Given a fresh service
+        XCTAssertTrue(discoveryService.discoveredConsoles.isEmpty)
+        
+        // When adding a console manually
+        discoveryService.addConsoleManually(name: "Test PS5", ipAddress: "192.168.1.100")
+        
+        // Then console should be added
+        XCTAssertEqual(discoveryService.discoveredConsoles.count, 1)
+        XCTAssertEqual(discoveryService.discoveredConsoles.first?.name, "Test PS5")
+        XCTAssertEqual(discoveryService.discoveredConsoles.first?.ipAddress, "192.168.1.100")
+    }
+    
+    @MainActor
+    func testAddConsoleManually_DuplicateIP_DoesNotAdd() {
+        // Given a service with one console
+        discoveryService.addConsoleManually(name: "First PS5", ipAddress: "192.168.1.100")
+        
+        // When adding another console with same IP
+        discoveryService.addConsoleManually(name: "Second PS5", ipAddress: "192.168.1.100")
+        
+        // Then only one console should exist
+        XCTAssertEqual(discoveryService.discoveredConsoles.count, 1)
+        XCTAssertEqual(discoveryService.discoveredConsoles.first?.name, "First PS5")
+    }
+    
+    @MainActor
+    func testAddConsoleManually_DifferentIPs_AddsBoth() {
+        // When adding consoles with different IPs
+        discoveryService.addConsoleManually(name: "PS5 #1", ipAddress: "192.168.1.100")
+        discoveryService.addConsoleManually(name: "PS5 #2", ipAddress: "192.168.1.101")
+        
+        // Then both should be added
+        XCTAssertEqual(discoveryService.discoveredConsoles.count, 2)
+    }
+    
+    @MainActor
+    func testAddConsoleManually_SetsDefaultType() {
+        // When adding a console
+        discoveryService.addConsoleManually(name: "Test PS5", ipAddress: "192.168.1.100")
+        
+        // Then type should be PS5 and status online
+        let console = discoveryService.discoveredConsoles.first
+        XCTAssertEqual(console?.type, .ps5)
+        XCTAssertEqual(console?.status, .online)
+    }
+}
+
+// MARK: - Discovery State Tests
+
+final class DiscoveryStateTests: XCTestCase {
+    
+    func testDiscoveryState_Equatable() {
+        // Given same states
+        XCTAssertEqual(DiscoveryState.idle, DiscoveryState.idle)
+        XCTAssertEqual(DiscoveryState.searching, DiscoveryState.searching)
+        XCTAssertEqual(DiscoveryState.completed(count: 2), DiscoveryState.completed(count: 2))
+        XCTAssertEqual(DiscoveryState.error("test"), DiscoveryState.error("test"))
+        
+        // Given different states
+        XCTAssertNotEqual(DiscoveryState.idle, DiscoveryState.searching)
+        XCTAssertNotEqual(DiscoveryState.completed(count: 1), DiscoveryState.completed(count: 2))
+        XCTAssertNotEqual(DiscoveryState.error("a"), DiscoveryState.error("b"))
     }
 }
 
@@ -149,22 +196,33 @@ final class ConsoleDiscoveryServiceTests: XCTestCase {
 
 final class ConsoleDiscoveryIntegrationTests: XCTestCase {
     
-    func testConsoleModel_FromDiscovery_HasRequiredFields() {
-        // Given discovered console data
+    func testConsoleModel_HasRequiredFields() {
+        // Given a console
         let console = Console(
-            id: UUID(),
             name: "Discovered PS5",
             ipAddress: "192.168.1.100",
             macAddress: "AA:BB:CC:DD:EE:FF",
-            model: .ps5,
-            status: .awake,
-            isPS5: true
+            type: .ps5,
+            status: .online
         )
         
         // Then all required fields should be set
         XCTAssertFalse(console.name.isEmpty)
         XCTAssertFalse(console.ipAddress.isEmpty)
         XCTAssertFalse(console.macAddress.isEmpty)
-        XCTAssertTrue(console.isPS5)
+        XCTAssertEqual(console.type, .ps5)
+        XCTAssertEqual(console.status, .online)
+    }
+    
+    func testConsoleType_AllCasesExist() {
+        // Then all console types should be accessible
+        let types: [Console.ConsoleType] = [.ps5, .ps5Digital, .ps4, .ps4Pro]
+        XCTAssertEqual(types.count, 4)
+    }
+    
+    func testConsoleStatus_AllCasesExist() {
+        // Then all console statuses should be accessible
+        let statuses: [Console.ConsoleStatus] = [.online, .standby, .offline]
+        XCTAssertEqual(statuses.count, 3)
     }
 }

@@ -8,6 +8,7 @@ typealias RegisteredHostInfo = ChiakiBridgeService.RegisteredHostInfo
 
 /// Service for registering/pairing with PlayStation consoles
 /// Implements the Chiaki registration protocol for PS5
+@MainActor
 final class RegistrationService: ObservableObject {
     
     // MARK: - Published Properties
@@ -92,7 +93,7 @@ final class RegistrationService: ObservableObject {
             registeredConsole.lastConnected = Date()
             
             // Step 5: Save console with ALL data using ConsoleStorageService
-            ConsoleStorageService.shared.saveRegisteredConsole(registeredConsole)
+            await ConsoleStorageService.shared.saveRegisteredConsole(registeredConsole)
             
             // Step 6: Save registered host info for streaming
             self.registeredHost = hostInfo
@@ -118,8 +119,8 @@ final class RegistrationService: ObservableObject {
     }
     
     /// Check if a console is registered
-    func isConsoleRegistered(_ console: Console) -> Bool {
-        return ConsoleStorageService.shared.isConsoleRegistered(ip: console.ipAddress)
+    func isConsoleRegistered(_ console: Console) async -> Bool {
+        return await ConsoleStorageService.shared.isConsoleRegistered(ip: console.ipAddress)
     }
     
     /// Get stored RP-Key for a console

@@ -2,18 +2,32 @@
 //  ConsoleStorageService.swift
 //  VisionRemotePS5
 //
-//  Persistent storage for registered PS5 consoles
-//  Stores all necessary data to reconnect without re-pairing
+//  Persistent storage for registered PS5 consoles using Swift Actor.
+//  Uses actor isolation for thread-safe access to UserDefaults and Keychain.
 //
 
 import Foundation
 import Security
 
-/// Service for persisting registered console data
-final class ConsoleStorageService {
+// MARK: - Console Storage Actor
+
+/// Actor for persisting registered console data with thread-safe isolation.
+///
+/// This actor guarantees:
+/// - **State isolation**: All properties are protected by actor isolation
+/// - **Serialized access**: Concurrent read/write operations are serialized automatically
+/// - **No data races**: Swift compiler enforces isolation at compile time
+///
+/// Usage:
+/// ```swift
+/// await ConsoleStorageService.shared.saveRegisteredConsole(console)
+/// let consoles = await ConsoleStorageService.shared.getRegisteredConsoles()
+/// ```
+actor ConsoleStorageService {
     
     // MARK: - Singleton
     
+    /// Shared instance of the storage service
     static let shared = ConsoleStorageService()
     
     // MARK: - Storage Keys
@@ -21,21 +35,27 @@ final class ConsoleStorageService {
     private let registeredConsolesKey = "registered_consoles"
     private let keychainServicePrefix = "com.visionremote.ps5"
     
-    // MARK: - UserDefaults
+    // MARK: - Cached State
+    
+    /// In-memory cache of registered consoles to avoid repeated disk reads
+    private var cachedConsoles: [Console]?
+    
+    // MARK: - UserDefaults (accessed from actor context)
     
     private let defaults = UserDefaults.standard
     
     // MARK: - Initialization
     
     private init() {
-        print("[ConsoleStorage] Service initialized")
+        print("[ConsoleStorage] Actor initialized")
     }
     
-    // MARK: - Public Methods
+    // MARK: - Public API
     
-    /// Save a registered console with all its data
+    /// Save a registered console with all its data.
+    /// - Parameter console: The console to save
     func saveRegisteredConsole(_ console: Console) {
-        var consoles = getRegisteredConsoles()
+        var consoles = loadConsolesFromDisk()
         
         // Update or add console
         if let index = consoles.firstIndex(where: { $0.id == console.id || $0.ipAddress == console.ipAddress }) {
@@ -47,7 +67,10 @@ final class ConsoleStorageService {
         }
         
         // Save to UserDefaults
-        saveConsoleList(consoles)
+        saveConsolesToDisk(consoles)
+        
+        // Update cache
+        cachedConsoles = consoles
         
         // Save RP-Key securely in Keychain
         if let rpKey = console.rpKey {
@@ -55,8 +78,77 @@ final class ConsoleStorageService {
         }
     }
     
-    /// Get all registered consoles
+    /// Get all registered consoles.
+    /// - Returns: Array of registered consoles with RP-Keys loaded
     func getRegisteredConsoles() -> [Console] {
+        // Return cached if available
+        if let cached = cachedConsoles {
+            return cached
+        }
+        
+        // Load from disk and cache
+        let consoles = loadConsolesFromDisk()
+        cachedConsoles = consoles
+        return consoles
+    }
+    
+    /// Get a specific registered console by IP address.
+    /// - Parameter ip: The IP address to search for
+    /// - Returns: The console if found
+    func getRegisteredConsole(byIP ip: String) -> Console? {
+        return getRegisteredConsoles().first { $0.ipAddress == ip }
+    }
+    
+    /// Get a specific registered console by ID.
+    /// - Parameter id: The UUID to search for
+    /// - Returns: The console if found
+    func getRegisteredConsole(byID id: UUID) -> Console? {
+        return getRegisteredConsoles().first { $0.id == id }
+    }
+    
+    /// Remove a registered console.
+    /// - Parameter console: The console to remove
+    func removeRegisteredConsole(_ console: Console) {
+        var consoles = getRegisteredConsoles()
+        consoles.removeAll { $0.id == console.id || $0.ipAddress == console.ipAddress }
+        
+        saveConsolesToDisk(consoles)
+        cachedConsoles = consoles
+        
+        // Remove RP-Key from Keychain
+        deleteRPKeyFromKeychain(for: console)
+        
+        print("[ConsoleStorage] Removed console: \(console.name)")
+    }
+    
+    /// Check if a console is registered with valid credentials.
+    /// - Parameter ip: The IP address to check
+    /// - Returns: True if console is registered with RP-Key
+    func isConsoleRegistered(ip: String) -> Bool {
+        return getRegisteredConsoles().contains { $0.ipAddress == ip && $0.rpKey != nil }
+    }
+    
+    /// Clear all registered consoles and their credentials.
+    func clearAllConsoles() {
+        let consoles = getRegisteredConsoles()
+        for console in consoles {
+            deleteRPKeyFromKeychain(for: console)
+        }
+        
+        defaults.removeObject(forKey: registeredConsolesKey)
+        cachedConsoles = []
+        
+        print("[ConsoleStorage] Cleared all consoles")
+    }
+    
+    /// Invalidate the cache, forcing a reload from disk on next access.
+    func invalidateCache() {
+        cachedConsoles = nil
+    }
+    
+    // MARK: - Private: Disk Operations
+    
+    private func loadConsolesFromDisk() -> [Console] {
         guard let data = defaults.data(forKey: registeredConsolesKey) else {
             return []
         }
@@ -76,51 +168,12 @@ final class ConsoleStorageService {
         }
     }
     
-    /// Get a specific registered console by IP
-    func getRegisteredConsole(byIP ip: String) -> Console? {
-        return getRegisteredConsoles().first { $0.ipAddress == ip }
-    }
-    
-    /// Get a specific registered console by ID
-    func getRegisteredConsole(byID id: UUID) -> Console? {
-        return getRegisteredConsoles().first { $0.id == id }
-    }
-    
-    /// Remove a registered console
-    func removeRegisteredConsole(_ console: Console) {
-        var consoles = getRegisteredConsoles()
-        consoles.removeAll { $0.id == console.id || $0.ipAddress == console.ipAddress }
-        saveConsoleList(consoles)
-        
-        // Remove RP-Key from Keychain
-        deleteRPKeyFromKeychain(for: console)
-        
-        print("[ConsoleStorage] Removed console: \(console.name)")
-    }
-    
-    /// Check if a console is registered
-    func isConsoleRegistered(ip: String) -> Bool {
-        return getRegisteredConsoles().contains { $0.ipAddress == ip && $0.rpKey != nil }
-    }
-    
-    /// Clear all registered consoles
-    func clearAllConsoles() {
-        let consoles = getRegisteredConsoles()
-        for console in consoles {
-            deleteRPKeyFromKeychain(for: console)
-        }
-        defaults.removeObject(forKey: registeredConsolesKey)
-        print("[ConsoleStorage] Cleared all consoles")
-    }
-    
-    // MARK: - Private Methods
-    
-    private func saveConsoleList(_ consoles: [Console]) {
+    private func saveConsolesToDisk(_ consoles: [Console]) {
         do {
             // Create copies without rpKey (stored separately in Keychain for security)
             var consolesToSave = consoles
             for i in 0..<consolesToSave.count {
-                consolesToSave[i].rpKey = nil // Don't store RP-Key in UserDefaults
+                consolesToSave[i].rpKey = nil
             }
             
             let data = try JSONEncoder().encode(consolesToSave)
@@ -131,7 +184,7 @@ final class ConsoleStorageService {
         }
     }
     
-    // MARK: - Keychain Operations
+    // MARK: - Private: Keychain Operations
     
     private func saveRPKeyToKeychain(_ rpKey: Data, for console: Console) {
         let service = "\(keychainServicePrefix).rpkey"
@@ -197,11 +250,57 @@ final class ConsoleStorageService {
     }
 }
 
-// MARK: - Console Extension for Codable Support
+// MARK: - Console Extension for Async Loading
 
 extension Console {
     /// Create a console from stored data with RP-Key from Keychain
-    static func loadFromStorage(ip: String) -> Console? {
-        return ConsoleStorageService.shared.getRegisteredConsole(byIP: ip)
+    /// - Parameter ip: IP address to load
+    /// - Returns: Console if found in storage
+    static func loadFromStorage(ip: String) async -> Console? {
+        return await ConsoleStorageService.shared.getRegisteredConsole(byIP: ip)
+    }
+}
+
+// MARK: - Synchronous Bridge (for non-async contexts)
+
+/// Provides synchronous access to ConsoleStorageService for legacy code paths.
+/// Use sparingly - prefer async/await syntax.
+extension ConsoleStorageService {
+    
+    /// Synchronously save a console (blocks calling thread).
+    /// - Warning: Use only when async is not possible.
+    nonisolated func saveRegisteredConsoleSync(_ console: Console) {
+        let semaphore = DispatchSemaphore(value: 0)
+        Task {
+            await self.saveRegisteredConsole(console)
+            semaphore.signal()
+        }
+        semaphore.wait()
+    }
+    
+    /// Synchronously get all registered consoles (blocks calling thread).
+    /// - Warning: Use only when async is not possible.
+    nonisolated func getRegisteredConsolesSync() -> [Console] {
+        let semaphore = DispatchSemaphore(value: 0)
+        var result: [Console] = []
+        Task {
+            result = await self.getRegisteredConsoles()
+            semaphore.signal()
+        }
+        semaphore.wait()
+        return result
+    }
+    
+    /// Synchronously check if console is registered (blocks calling thread).
+    /// - Warning: Use only when async is not possible.
+    nonisolated func isConsoleRegisteredSync(ip: String) -> Bool {
+        let semaphore = DispatchSemaphore(value: 0)
+        var result = false
+        Task {
+            result = await self.isConsoleRegistered(ip: ip)
+            semaphore.signal()
+        }
+        semaphore.wait()
+        return result
     }
 }

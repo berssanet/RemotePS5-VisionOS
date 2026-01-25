@@ -2,82 +2,134 @@ import Foundation
 import Network
 import Combine
 
-/// Service for discovering PlayStation consoles on the local network
-/// Uses UDP broadcast to find PS5 consoles via the DDP v3 protocol
+// MARK: - Discovery Configuration
+
+/// Configuration for console discovery behavior.
+struct DiscoveryConfiguration {
+    /// Timeout for each discovery probe (seconds).
+    let probeTimeout: TimeInterval
+    /// Maximum concurrent probes.
+    let maxConcurrentProbes: Int
+    /// Known IP addresses to probe directly.
+    let knownIPs: [String]
+    
+    static let `default` = DiscoveryConfiguration(
+        probeTimeout: 2.0,
+        maxConcurrentProbes: 8,
+        knownIPs: []
+    )
+}
+
+// MARK: - Discovery State
+
+enum DiscoveryState: Equatable {
+    case idle
+    case searching
+    case completed(count: Int)
+    case error(String)
+}
+
+// MARK: - Console Discovery Service
+
+/// Service for discovering PlayStation consoles on the local network.
+/// Uses UDP broadcast via the DDP (Device Discovery Protocol) to find PS5/PS4 consoles.
+///
+/// All network operations run on a dedicated background queue, ensuring the UI never blocks.
+@MainActor
 final class ConsoleDiscoveryService: ObservableObject {
     
-    // MARK: - Published Properties
+    // MARK: - Published State
+    
     @Published private(set) var discoveredConsoles: [Console] = []
-    @Published private(set) var isSearching: Bool = false
+    @Published private(set) var state: DiscoveryState = .idle
     @Published private(set) var statusMessage: String = ""
     
+    /// Convenience property for backward compatibility.
+    var isSearching: Bool { state == .searching }
+    
     // MARK: - Private Properties
-    private var searchTask: Task<Void, Never>?
-    private let discoveryQueue = DispatchQueue(label: "com.visionremote.discovery", qos: .userInitiated)
     
-    // DDP Protocol Constants
-    private let ps5SearchPort: UInt16 = 9302
-    private let ps4SearchPort: UInt16 = 987
+    private var discoveryTask: Task<Void, Never>?
+    private let configuration: DiscoveryConfiguration
     
-    // DDP v3 Search Packet for PS5
-    private let ddpV3SearchPacket = "SRCH * HTTP/1.1\r\nDevice-Discovery-Protocol-Version: 00030010\r\n\r\n"
+    /// Dedicated queue for network operations (off main thread).
+    private let networkQueue = DispatchQueue(
+        label: "com.visionremote.discovery.network",
+        qos: .userInitiated,
+        attributes: .concurrent
+    )
     
-    // DDP v2 Search Packet for PS4, also works for PS5
-    private let ddpV2SearchPacket = "SRCH * HTTP/1.1\r\ndevice-discovery-protocol-version:00020020\r\n\r\n"
+    // MARK: - DDP Protocol Constants
     
-    init() {
+    private enum DDPProtocol {
+        static let ps5Port: UInt16 = 9302
+        static let ps4Port: UInt16 = 987
+        
+        /// DDP v3 search packet (PS5 native).
+        static let v3SearchPacket = "SRCH * HTTP/1.1\r\nDevice-Discovery-Protocol-Version: 00030010\r\n\r\n"
+        
+        /// DDP v2 search packet (PS4, also works for PS5).
+        static let v2SearchPacket = "SRCH * HTTP/1.1\r\ndevice-discovery-protocol-version:00020020\r\n\r\n"
+    }
+    
+    // MARK: - Initialization
+    
+    init(configuration: DiscoveryConfiguration = .default) {
+        self.configuration = configuration
         print("[Discovery] Service initialized")
     }
     
     deinit {
-        searchTask?.cancel()
+        discoveryTask?.cancel()
         print("[Discovery] Service deinitialized")
     }
     
-    // MARK: - Public Methods
+    // MARK: - Public API
     
-    /// Start discovering consoles on the network
-    @MainActor
+    /// Start discovering consoles on the local network.
+    /// This method returns immediately; discovery runs asynchronously in the background.
     func startDiscovery() {
-        guard !isSearching else {
+        guard state != .searching else {
             print("[Discovery] Already searching")
             return
         }
         
-        isSearching = true
+        state = .searching
         statusMessage = "Searching for PlayStation consoles..."
         discoveredConsoles = []
         
-        print("[Discovery] Starting real DDP discovery...")
+        print("[Discovery] Starting DDP discovery...")
         
-        searchTask = Task {
-            await performDiscovery()
+        // Launch discovery in a detached task to ensure UI never blocks
+        discoveryTask = Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self = self else { return }
+            
+            let consoles = await self.performDiscovery()
+            
+            await MainActor.run {
+                self.handleDiscoveryComplete(consoles: consoles)
+            }
         }
     }
     
-    /// Stop any ongoing discovery
-    @MainActor
+    /// Stop any ongoing discovery.
     func stopDiscovery() {
-        searchTask?.cancel()
-        searchTask = nil
-        isSearching = false
+        discoveryTask?.cancel()
+        discoveryTask = nil
+        state = .idle
         statusMessage = "Search stopped"
         print("[Discovery] Discovery stopped")
     }
     
-    /// Clear all cached data
-    @MainActor
+    /// Clear all discovered consoles and reset state.
     func clearCache() {
-        searchTask?.cancel()
-        searchTask = nil
+        stopDiscovery()
         discoveredConsoles.removeAll()
-        isSearching = false
         statusMessage = ""
         print("[Discovery] Cache cleared")
     }
     
-    /// Add a console manually (for testing or manual pairing)
-    @MainActor
+    /// Add a console manually (for testing or manual pairing).
     func addConsoleManually(name: String, ipAddress: String) {
         let console = Console(
             name: name,
@@ -85,244 +137,246 @@ final class ConsoleDiscoveryService: ObservableObject {
             type: .ps5,
             status: .online
         )
+        
         if !discoveredConsoles.contains(where: { $0.ipAddress == ipAddress }) {
             discoveredConsoles.append(console)
+            statusMessage = "Console added: \(name)"
         }
-        statusMessage = "Console added: \(name)"
     }
     
-    /// Wake a console using Wake-on-LAN magic packet
-    /// - Parameter console: The console to wake (must have registKey for PS5)
-    /// - Returns: True if the wake packet was sent successfully
+    /// Wake a console using the PS5 wakeup protocol.
     func wakeConsole(_ console: Console) async -> Bool {
         return await WakeOnLanService.shared.wakeConsole(console)
     }
     
-    /// Wake a console by host IP and registKey (required for PS5)
-    /// For PS5, registKey is required. For PS4, falls back to traditional WoL with MAC.
-    func wakeConsole(host: String, registKey: Data, isPS5: Bool = true) async -> Bool {
-        return await WakeOnLanService.shared.wakeConsole(host: host, registKey: registKey, isPS5: isPS5)
+    // MARK: - Private: Discovery Logic
+    
+    /// Performs the actual discovery. Runs entirely off the main thread.
+    private nonisolated func performDiscovery() async -> [Console] {
+        let broadcastAddresses = getBroadcastAddresses() + ["255.255.255.255"]
+        print("[Discovery] Probing \(broadcastAddresses.count) broadcast addresses")
+        
+        // Use TaskGroup for concurrent probing with automatic cancellation handling
+        let consoles = await withTaskGroup(of: Console?.self, returning: [Console].self) { group in
+            var discovered: [Console] = []
+            var seenIPs = Set<String>()
+            
+            // Probe all broadcast addresses with both protocols
+            for address in broadcastAddresses {
+                // PS5 DDP v3 probe
+                group.addTask { [self] in
+                    await self.sendProbe(
+                        to: address,
+                        port: DDPProtocol.ps5Port,
+                        packet: DDPProtocol.v3SearchPacket
+                    )
+                }
+                
+                // PS4/PS5 DDP v2 probe
+                group.addTask { [self] in
+                    await self.sendProbe(
+                        to: address,
+                        port: DDPProtocol.ps4Port,
+                        packet: DDPProtocol.v2SearchPacket
+                    )
+                }
+            }
+            
+            // Also probe known IPs directly
+            for ip in configuration.knownIPs {
+                group.addTask { [self] in
+                    await self.sendProbe(
+                        to: ip,
+                        port: DDPProtocol.ps5Port,
+                        packet: DDPProtocol.v3SearchPacket
+                    )
+                }
+            }
+            
+            // Collect results, deduplicating by IP
+            for await console in group {
+                guard let console = console else { continue }
+                
+                if !seenIPs.contains(console.ipAddress) {
+                    seenIPs.insert(console.ipAddress)
+                    discovered.append(console)
+                    print("[Discovery] Found: \(console.name) at \(console.ipAddress)")
+                }
+            }
+            
+            return discovered
+        }
+        
+        return consoles
     }
     
-    // MARK: - Private Discovery Implementation
-    
-    private func performDiscovery() async {
-        // Get all broadcast addresses for local interfaces
-        let broadcastAddresses = getBroadcastAddresses()
-        print("[Discovery] Found broadcast addresses: \(broadcastAddresses)")
-        
-        // Create UDP connections for each broadcast address
-        var connections: [NWConnection] = []
-        var foundConsoles: [Console] = []
-        
-        // Add generic broadcast
-        let allAddresses = broadcastAddresses + ["255.255.255.255"]
-        
-        for address in allAddresses {
-            // Try PS5 port 9302
-            if let console = await sendDiscoveryPacket(to: address, port: ps5SearchPort, packet: ddpV3SearchPacket) {
-                if !foundConsoles.contains(where: { $0.ipAddress == console.ipAddress }) {
-                    foundConsoles.append(console)
-                    print("[Discovery] Found PS5: \(console.name) at \(console.ipAddress)")
-                }
-            }
-            
-            // Try PS4/PS5 port 987
-            if let console = await sendDiscoveryPacket(to: address, port: ps4SearchPort, packet: ddpV2SearchPacket) {
-                if !foundConsoles.contains(where: { $0.ipAddress == console.ipAddress }) {
-                    foundConsoles.append(console)
-                    print("[Discovery] Found console: \(console.name) at \(console.ipAddress)")
-                }
-            }
-            
-            // Check for cancellation
-            if Task.isCancelled { break }
-        }
-        
-        // Also try direct discovery to user's known IP
-        let knownIPs = ["192.168.100.33"] // Could be loaded from UserDefaults
-        for ip in knownIPs {
-            if let console = await sendDiscoveryPacket(to: ip, port: ps5SearchPort, packet: ddpV3SearchPacket) {
-                if !foundConsoles.contains(where: { $0.ipAddress == console.ipAddress }) {
-                    foundConsoles.append(console)
-                    print("[Discovery] Found PS5 at known IP: \(console.name) at \(console.ipAddress)")
-                }
-            }
-        }
-        
-        // Update UI on main thread
-        await MainActor.run {
-            self.discoveredConsoles = foundConsoles
-            self.isSearching = false
-            
-            if foundConsoles.isEmpty {
-                self.statusMessage = "No consoles found. Make sure your PS5 is on and Remote Play is enabled."
-            } else {
-                self.statusMessage = "Found \(foundConsoles.count) console(s)"
-            }
-            print("[Discovery] Discovery completed - found \(foundConsoles.count) consoles")
-        }
-    }
-    
-    private func sendDiscoveryPacket(to address: String, port: UInt16, packet: String) async -> Console? {
-        guard let data = packet.data(using: .utf8) else { return nil }
+    /// Send a single discovery probe and wait for response.
+    private nonisolated func sendProbe(to address: String, port: UInt16, packet: String) async -> Console? {
+        guard let packetData = packet.data(using: .utf8) else { return nil }
         
         let host = NWEndpoint.Host(address)
         let nwPort = NWEndpoint.Port(rawValue: port)!
         
-        // Create UDP connection
+        // Configure UDP connection
         let params = NWParameters.udp
         params.allowLocalEndpointReuse = true
+        params.requiredInterfaceType = .wifi  // Prefer WiFi for local discovery
         
         let connection = NWConnection(host: host, port: nwPort, using: params)
         
-        // Thread-safe box to prevent double continuation resume
-        final class ResumeGuard: @unchecked Sendable {
-            private let lock = NSLock()
-            private var _resumed = false
-            
-            func tryResume() -> Bool {
-                lock.lock()
-                defer { lock.unlock() }
-                if _resumed { return false }
-                _resumed = true
-                return true
-            }
-        }
-        
-        let guard_ = ResumeGuard()
-        
-        return await withCheckedContinuation { continuation in
-            var timeoutTask: Task<Void, Never>?
-            
-            timeoutTask = Task {
-                try? await Task.sleep(nanoseconds: 2_000_000_000) // 2 second timeout
-                if guard_.tryResume() {
-                    connection.cancel()
-                    continuation.resume(returning: nil)
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                let resumed = AtomicFlag()
+                
+                // Timeout handler
+                let timeoutTask = Task {
+                    try? await Task.sleep(nanoseconds: UInt64(configuration.probeTimeout * 1_000_000_000))
+                    if resumed.setIfFalse() {
+                        connection.cancel()
+                        continuation.resume(returning: nil)
+                    }
                 }
-            }
-            
-            connection.stateUpdateHandler = { [weak self] state in
-                switch state {
-                case .ready:
-                    // Send discovery packet
-                    connection.send(content: data, completion: .contentProcessed { error in
-                        if let error = error {
-                            print("[Discovery] Send error to \(address): \(error)")
-                            if guard_.tryResume() {
-                                timeoutTask?.cancel()
-                                connection.cancel()
-                                continuation.resume(returning: nil)
-                            }
-                            return
+                
+                connection.stateUpdateHandler = { [self] state in
+                    switch state {
+                    case .ready:
+                        self.handleConnectionReady(
+                            connection: connection,
+                            address: address,
+                            packetData: packetData,
+                            resumed: resumed,
+                            timeoutTask: timeoutTask,
+                            continuation: continuation
+                        )
+                        
+                    case .failed(let error):
+                        if resumed.setIfFalse() {
+                            timeoutTask.cancel()
+                            print("[Discovery] Probe failed to \(address):\(port) - \(error)")
+                            continuation.resume(returning: nil)
                         }
                         
-                        // Receive response
-                        connection.receiveMessage { data, _, _, error in
-                            timeoutTask?.cancel()
-                            connection.cancel()
-                            
-                            guard guard_.tryResume() else { return }
-                            
-                            if let error = error {
-                                print("[Discovery] Receive error from \(address): \(error)")
-                                continuation.resume(returning: nil)
-                                return
-                            }
-                            
-                            guard let data = data,
-                                  let response = String(data: data, encoding: .utf8) else {
-                                continuation.resume(returning: nil)
-                                return
-                            }
-                            
-                            print("[Discovery] Response from \(address):\n\(response)")
-                            
-                            // Parse response
-                            if let console = self?.parseDiscoveryResponse(response, fromAddress: address) {
-                                continuation.resume(returning: console)
-                            } else {
-                                continuation.resume(returning: nil)
-                            }
+                    case .cancelled:
+                        if resumed.setIfFalse() {
+                            timeoutTask.cancel()
+                            continuation.resume(returning: nil)
                         }
-                    })
-                    
-                case .failed(let error):
-                    if guard_.tryResume() {
-                        timeoutTask?.cancel()
-                        print("[Discovery] Connection failed to \(address): \(error)")
-                        continuation.resume(returning: nil)
+                        
+                    default:
+                        break
                     }
-                    
-                case .cancelled:
-                    if guard_.tryResume() {
-                        timeoutTask?.cancel()
-                        continuation.resume(returning: nil)
-                    }
-                    
-                default:
-                    break
                 }
+                
+                connection.start(queue: networkQueue)
             }
-            
-            connection.start(queue: discoveryQueue)
+        } onCancel: {
+            connection.cancel()
         }
     }
     
-    private func parseDiscoveryResponse(_ response: String, fromAddress address: String) -> Console? {
-        // DDP responses are HTTP-like headers
-        // Example:
+    /// Handle connection ready state - send packet and wait for response.
+    private nonisolated func handleConnectionReady(
+        connection: NWConnection,
+        address: String,
+        packetData: Data,
+        resumed: AtomicFlag,
+        timeoutTask: Task<Void, Never>,
+        continuation: CheckedContinuation<Console?, Never>
+    ) {
+        connection.send(content: packetData, completion: .contentProcessed { [self] error in
+            if let error = error {
+                if resumed.setIfFalse() {
+                    timeoutTask.cancel()
+                    connection.cancel()
+                    print("[Discovery] Send error to \(address): \(error)")
+                    continuation.resume(returning: nil)
+                }
+                return
+            }
+            
+            // Wait for response
+            connection.receiveMessage { data, _, _, error in
+                timeoutTask.cancel()
+                connection.cancel()
+                
+                guard resumed.setIfFalse() else { return }
+                
+                if let error = error {
+                    print("[Discovery] Receive error from \(address): \(error)")
+                    continuation.resume(returning: nil)
+                    return
+                }
+                
+                guard let data = data,
+                      let response = String(data: data, encoding: .utf8) else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                
+                let console = self.parseDiscoveryResponse(response, fromAddress: address)
+                continuation.resume(returning: console)
+            }
+        })
+    }
+    
+    /// Handle discovery completion on main thread.
+    private func handleDiscoveryComplete(consoles: [Console]) {
+        discoveredConsoles = consoles
+        
+        if consoles.isEmpty {
+            state = .completed(count: 0)
+            statusMessage = "No consoles found. Make sure your PS5 is on and Remote Play is enabled."
+        } else {
+            state = .completed(count: consoles.count)
+            statusMessage = "Found \(consoles.count) console(s)"
+        }
+        
+        print("[Discovery] Completed - found \(consoles.count) consoles")
+    }
+    
+    // MARK: - Private: Response Parsing
+    
+    /// Parse a DDP response into a Console object.
+    private nonisolated func parseDiscoveryResponse(_ response: String, fromAddress address: String) -> Console? {
+        // DDP responses are HTTP-like:
         // HTTP/1.1 200 Ok
         // host-id:1234567890ABCDEF
         // host-type:PS5
         // host-name:Living Room PS5
-        // host-request-port:997
-        // device-discovery-protocol-version:00030010
         
-        var headers: [String: String] = [:]
-        let lines = response.components(separatedBy: "\r\n")
-        
-        for line in lines {
-            if let colonRange = line.range(of: ":") {
-                let key = String(line[..<colonRange.lowerBound]).lowercased()
-                let value = String(line[colonRange.upperBound...]).trimmingCharacters(in: .whitespaces)
-                headers[key] = value
-            }
-        }
-        
-        // Check if this is a valid response
         guard response.contains("200 Ok") || response.contains("200 OK") else {
             return nil
         }
         
-        // Extract console info
-        let hostId = headers["host-id"] ?? ""
+        var headers: [String: String] = [:]
+        for line in response.components(separatedBy: "\r\n") {
+            if let colonIndex = line.firstIndex(of: ":") {
+                let key = String(line[..<colonIndex]).lowercased()
+                let value = String(line[line.index(after: colonIndex)...]).trimmingCharacters(in: .whitespaces)
+                headers[key] = value
+            }
+        }
+        
         let hostName = headers["host-name"] ?? "PlayStation"
+        let hostId = headers["host-id"] ?? ""
         let hostType = headers["host-type"]?.uppercased() ?? "PS5"
         
-        // Determine console type
-        let consoleType: Console.ConsoleType
-        switch hostType {
-        case "PS5":
-            consoleType = .ps5
-        case "PS5DIGITAL", "PS5 DIGITAL":
-            consoleType = .ps5Digital
-        case "PS4PRO", "PS4 PRO":
-            consoleType = .ps4Pro
-        case "PS4":
-            consoleType = .ps4
-        default:
-            consoleType = .ps5
-        }
+        let consoleType: Console.ConsoleType = {
+            switch hostType {
+            case "PS5": return .ps5
+            case "PS5DIGITAL", "PS5 DIGITAL": return .ps5Digital
+            case "PS4PRO", "PS4 PRO": return .ps4Pro
+            case "PS4": return .ps4
+            default: return .ps5
+            }
+        }()
         
-        // Determine status from response
-        let status: Console.ConsoleStatus
-        if response.contains("Standby") || headers["status"]?.lowercased() == "standby" {
-            status = .standby
-        } else {
-            status = .online
-        }
+        let status: Console.ConsoleStatus = {
+            if response.contains("Standby") || headers["status"]?.lowercased() == "standby" {
+                return .standby
+            }
+            return .online
+        }()
         
         return Console(
             name: hostName,
@@ -333,9 +387,10 @@ final class ConsoleDiscoveryService: ObservableObject {
         )
     }
     
-    // MARK: - Network Helpers
+    // MARK: - Private: Network Helpers
     
-    private func getBroadcastAddresses() -> [String] {
+    /// Get all broadcast addresses for local network interfaces.
+    private nonisolated func getBroadcastAddresses() -> [String] {
         var addresses: [String] = []
         
         var ifaddr: UnsafeMutablePointer<ifaddrs>?
@@ -344,48 +399,61 @@ final class ConsoleDiscoveryService: ObservableObject {
         }
         defer { freeifaddrs(ifaddr) }
         
-        var ptr = firstAddr
-        while true {
-            let interface = ptr.pointee
-            let family = interface.ifa_addr.pointee.sa_family
+        var ptr: UnsafeMutablePointer<ifaddrs>? = firstAddr
+        while let interface = ptr {
+            let iface = interface.pointee
+            let family = iface.ifa_addr.pointee.sa_family
             
-            // Check for IPv4
+            // IPv4 only
             if family == UInt8(AF_INET) {
-                // Get interface name
-                let name = String(cString: interface.ifa_name)
+                let name = String(cString: iface.ifa_name)
                 
                 // Skip loopback
-                guard name != "lo0" else {
-                    if let next = interface.ifa_next {
-                        ptr = next
-                        continue
-                    } else {
-                        break
-                    }
-                }
-                
-                // Check if interface has broadcast flag
-                let flags = Int32(interface.ifa_flags)
-                if (flags & IFF_BROADCAST) != 0, let broadcastAddr = interface.ifa_dstaddr {
-                    var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-                    if getnameinfo(broadcastAddr, socklen_t(broadcastAddr.pointee.sa_len),
-                                   &hostname, socklen_t(hostname.count),
-                                   nil, 0, NI_NUMERICHOST) == 0 {
-                        let address = String(cString: hostname)
-                        if !addresses.contains(address) {
-                            addresses.append(address)
+                if name != "lo0" {
+                    let flags = Int32(iface.ifa_flags)
+                    
+                    // Check for broadcast capability
+                    if (flags & IFF_BROADCAST) != 0, let broadcastAddr = iface.ifa_dstaddr {
+                        var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                        if getnameinfo(
+                            broadcastAddr,
+                            socklen_t(broadcastAddr.pointee.sa_len),
+                            &hostname,
+                            socklen_t(hostname.count),
+                            nil, 0,
+                            NI_NUMERICHOST
+                        ) == 0 {
+                            let address = String(cString: hostname)
+                            if !addresses.contains(address) {
+                                addresses.append(address)
+                            }
                         }
                     }
                 }
             }
             
-            if let next = interface.ifa_next {
-                ptr = next
-            } else {
-                break
-            }
+            ptr = iface.ifa_next
         }
         
         return addresses
+    }
+}
+
+// MARK: - Thread-Safe Atomic Flag
+
+/// A thread-safe flag for ensuring single resumption of continuations.
+private final class AtomicFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    
+    /// Atomically sets the flag to true if currently false.
+    /// - Returns: `true` if the flag was successfully set (was false), `false` if already set.
+    func setIfFalse() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        
+        if value { return false }
+        value = true
+        return true
     }
 }

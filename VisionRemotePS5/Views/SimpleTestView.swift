@@ -222,12 +222,14 @@ struct SimpleTestView: View {
             }
         }
         .onAppear {
-            loadSavedConsoles()
+            Task {
+                await loadSavedConsoles()
+            }
         }
     }
     
-    private func loadSavedConsoles() {
-        savedConsoles = ConsoleStorageService.shared.getRegisteredConsoles()
+    private func loadSavedConsoles() async {
+        savedConsoles = await ConsoleStorageService.shared.getRegisteredConsoles()
         print("[SimpleTestView] Loaded \(savedConsoles.count) saved consoles")
         
         // If there's a saved console for the current host, load it
@@ -254,7 +256,7 @@ struct SimpleTestView: View {
         statusMessage = "Connecting to \(host)..."
         showError = false
         
-        Task {
+        Task { @MainActor in
             do {
                 // Create a mock console object for testing
                 var console = Console(
@@ -281,46 +283,42 @@ struct SimpleTestView: View {
                     accountId: accountIdForRegistration
                 )
                 
-                await MainActor.run {
-                    isConnecting = false
-                    if success {
-                        // Update console with registration data
-                        if let hostInfo = registrationService.registeredHost {
-                            console.rpKey = hostInfo.rpKey
-                            console.registKey = hostInfo.registKey
-                            console.serverMAC = hostInfo.serverMAC
-                            console.nickname = hostInfo.nickname
-                            console.isPaired = true
-                        }
-                        
-                        // Save PSN Account ID (convert base64 to 8-byte Data)
-                        if !accountId.isEmpty, let accountIdData = Data(base64Encoded: accountId) {
-                            console.psnAccountId = accountIdData
-                            print("[SimpleTest] Saved PSN Account ID: \(accountIdData.map { String(format: "%02x", $0) }.joined())")
-                        } else {
-                            print("[SimpleTest] ⚠️ Failed to save PSN Account ID")
-                        }
-                        
-                        registeredConsole = console
-                        
-                        // Save to storage
-                        ConsoleStorageService.shared.saveRegisteredConsole(console)
-                        loadSavedConsoles()
-                        
-                        statusMessage = "✅ Successfully registered with PS5!"
-                        showError = false
-                    } else {
-                        statusMessage = "❌ Registration failed: \(registrationService.registrationError ?? "Unknown error")"
-                        showError = true
+                isConnecting = false
+                if success {
+                    // Update console with registration data
+                    if let hostInfo = registrationService.registeredHost {
+                        console.rpKey = hostInfo.rpKey
+                        console.registKey = hostInfo.registKey
+                        console.serverMAC = hostInfo.serverMAC
+                        console.nickname = hostInfo.nickname
+                        console.isPaired = true
                     }
+                    
+                    // Save PSN Account ID (convert base64 to 8-byte Data)
+                    if !accountId.isEmpty, let accountIdData = Data(base64Encoded: accountId) {
+                        console.psnAccountId = accountIdData
+                        print("[SimpleTest] Saved PSN Account ID: \(accountIdData.map { String(format: "%02x", $0) }.joined())")
+                    } else {
+                        print("[SimpleTest] ⚠️ Failed to save PSN Account ID")
+                    }
+                    
+                    registeredConsole = console
+                    
+                    // Save to storage
+                    await ConsoleStorageService.shared.saveRegisteredConsole(console)
+                    await loadSavedConsoles()
+                    
+                    statusMessage = "✅ Successfully registered with PS5!"
+                    showError = false
+                } else {
+                    statusMessage = "❌ Registration failed: \(registrationService.registrationError ?? "Unknown error")"
+                    showError = true
                 }
             } catch {
-                await MainActor.run {
-                    isConnecting = false
-                    statusMessage = "❌ Error: \(error.localizedDescription)"
-                    showError = true
-                    print("[SimpleTest] Error: \(error)")
-                }
+                isConnecting = false
+                statusMessage = "❌ Error: \(error.localizedDescription)"
+                showError = true
+                print("[SimpleTest] Error: \(error)")
             }
         }
     }
@@ -328,26 +326,30 @@ struct SimpleTestView: View {
     private func unregisterConsole() {
         guard let console = registeredConsole else { return }
         
-        // Remove from storage
-        ConsoleStorageService.shared.removeRegisteredConsole(console)
-        
-        // Clear current state
-        registeredConsole = nil
-        statusMessage = "Console unregistered. You can now register again."
-        showError = false
-        
-        // Reload saved consoles
-        loadSavedConsoles()
+        Task {
+            // Remove from storage
+            await ConsoleStorageService.shared.removeRegisteredConsole(console)
+            
+            // Clear current state
+            registeredConsole = nil
+            statusMessage = "Console unregistered. You can now register again."
+            showError = false
+            
+            // Reload saved consoles
+            await loadSavedConsoles()
+        }
     }
     
     private func deleteConsole(_ console: Console) {
-        // Remove from storage
-        ConsoleStorageService.shared.removeRegisteredConsole(console)
-        
-        // Reload saved consoles
-        loadSavedConsoles()
-        
-        statusMessage = "Console '\(console.nickname ?? console.name)' deleted."
+        Task {
+            // Remove from storage
+            await ConsoleStorageService.shared.removeRegisteredConsole(console)
+            
+            // Reload saved consoles
+            await loadSavedConsoles()
+            
+            statusMessage = "Console '\(console.nickname ?? console.name)' deleted."
+        }
     }
 }
 
