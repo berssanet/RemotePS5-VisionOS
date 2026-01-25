@@ -50,6 +50,11 @@ class StreamingSession: ObservableObject {
         StreamingDecryptor(bufferPool: videoBufferPool)
     }()
     
+    // MARK: - Audio/Video Sync
+    
+    /// A/V Sync controller for PTS-based drift correction
+    private let avSyncController = AudioVideoSyncController(sampleRate: 48000)
+    
     // Protocol constants
     private let controlPort: UInt16 = 9295
     private let videoPort: UInt16 = 9296

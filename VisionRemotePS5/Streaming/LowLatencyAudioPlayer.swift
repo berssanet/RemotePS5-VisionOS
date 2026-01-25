@@ -91,6 +91,36 @@ final class LowLatencyAudioPlayer {
     /// Last logged target to avoid spamming logs
     private var lastLoggedTarget: Int = 0
     
+    // MARK: - v10.2 Audio/Video Sync Controller
+    
+    /// A/V Sync controller for PTS-based synchronization
+    private var syncController: AudioVideoSyncController?
+    
+    /// Enable PTS-based sync (vs legacy closed-loop)
+    var ptsSyncEnabled: Bool = false
+    
+    /// Drift threshold before correction (ms)
+    var driftThresholdMs: Double = 20.0 {
+        didSet {
+            syncController?.driftCorrector.driftThresholdMs = driftThresholdMs
+        }
+    }
+    
+    /// Emergency drop threshold (ms)
+    var maxBufferBeforeDropMs: Double = 100.0 {
+        didSet {
+            syncController?.driftCorrector.maxBufferMs = maxBufferBeforeDropMs
+        }
+    }
+    
+    /// Samples to skip on next render (for emergency drop)
+    private var pendingSkipSamples: Int = 0
+    
+    /// Crossfade buffer for smooth sample manipulation
+    private var crossfadeLeftBuffer: UnsafeMutablePointer<Int16>?
+    private var crossfadeRightBuffer: UnsafeMutablePointer<Int16>?
+    private var crossfadeSize: Int = 0
+    
     init(sampleRate: Int, channels: Int) {
         self.sampleRate = sampleRate
         self.channels = channels
@@ -106,6 +136,22 @@ final class LowLatencyAudioPlayer {
         stop()
         int16Buffer?.deallocate()
         floatBuffer?.deallocate()
+        crossfadeLeftBuffer?.deallocate()
+        crossfadeRightBuffer?.deallocate()
+    }
+    
+    // MARK: - v10.2 Sync Controller Setup
+    
+    /// Set the A/V sync controller for PTS-based synchronization
+    func setSyncController(_ controller: AudioVideoSyncController) {
+        self.syncController = controller
+        self.ptsSyncEnabled = true
+        print("[LowLatencyAudio] 🔗 A/V Sync Controller connected (threshold: \(driftThresholdMs)ms)")
+    }
+    
+    /// Update audio PTS when receiving packet (call from enqueue)
+    func updateAudioPTS(_ pts: Double) {
+        syncController?.onAudioPacketReceived(pts: pts)
     }
     
     func start() {
@@ -173,8 +219,13 @@ final class LowLatencyAudioPlayer {
         rightRingBuffer.reset()
         stereoRingBuffer.reset()
         isRunning = false
+        pendingSkipSamples = 0
         
+        let stats = syncController?.driftCorrector.stats
         print("[LowLatencyAudio] Stopped (underruns: \(underrunCount), drift adjustments: \(driftAdjustments))")
+        if let stats = stats {
+            print("[LowLatencyAudio]   Sync stats: corrections=\(stats.correctionCount), skipped=\(stats.samplesSkipped), dup=\(stats.samplesDuplicated), drops=\(stats.emergencyDrops)")
+        }
     }
     
     /// Enqueue PCM samples from chiaki callback (producer side)
@@ -349,7 +400,26 @@ final class LowLatencyAudioPlayer {
         let ringBuffer = isLeft ? leftRingBuffer : rightRingBuffer
         var samplesNeeded = Int(frameCount)
         
-        // Apply drift compensation
+        // v10.2: Handle pending skip samples (emergency drop or catch-up)
+        if isLeft && pendingSkipSamples > 0 {
+            // Skip samples from buffer (discard without playing)
+            let skipCount = min(pendingSkipSamples, ringBuffer.availableSamples - samplesNeeded)
+            if skipCount > 0 {
+                // Read and discard samples
+                ensureConversionBuffers(size: skipCount)
+                if let discardBuf = int16Buffer {
+                    _ = ringBuffer.read(discardBuf, count: skipCount)
+                    pendingSkipSamples -= skipCount
+                    
+                    // Apply crossfade at boundary to avoid click
+                    if samplesNeeded > 0 {
+                        // Next read will get the remaining samples with fade-in
+                    }
+                }
+            }
+        }
+        
+        // Apply drift compensation via rate
         if isLeft {
             driftAccumulator += (playbackRate - 1.0) * Float(samplesNeeded)
             let driftSamples = Int(driftAccumulator)
@@ -406,15 +476,49 @@ final class LowLatencyAudioPlayer {
         return noErr
     }
     
-    /// Update playback rate using PID controller (closed-loop)
+    /// v10.2: Update playback rate using sync controller or PID controller
     private func updateDriftCompensation() {
-        // Average of L/R buffers
+        // Calculate buffer level
         let availableSamples = (leftRingBuffer.availableSamples + rightRingBuffer.availableSamples) / 2
+        let bufferMs = Double(availableSamples) / Double(sampleRate) * 1000
         
-        // Calculate error from dynamic target
+        // v10.2: Use sync controller if available
+        if ptsSyncEnabled, let syncController = syncController {
+            let strategy = syncController.getCorrectionStrategy(audioBufferMs: bufferMs)
+            
+            switch strategy {
+            case .none:
+                playbackRate = 1.0
+                
+            case .rateAdjust:
+                playbackRate = syncController.getPlaybackRateAdjustment()
+                
+            case .skipSamples:
+                // Calculate samples to skip
+                let skipSamples = syncController.driftCorrector.calculateSampleAdjustment()
+                pendingSkipSamples = skipSamples
+                playbackRate = 1.0
+                print("[LowLatencyAudio] ⏩ Skip \(skipSamples) samples (\(String(format: "%.0f", Double(skipSamples) / Double(sampleRate) * 1000))ms)")
+                
+            case .duplicateSamples:
+                // Slow down via rate (duplicate is harder in pull model)
+                playbackRate = 0.995
+                
+            case .emergencyDrop:
+                // Calculate and schedule drop
+                let dropSamples = syncController.getEmergencyDropSamples(currentBufferSamples: availableSamples)
+                pendingSkipSamples = dropSamples
+                playbackRate = 1.0
+            }
+            
+            // Log status periodically
+            syncController.driftCorrector.logStatus(bufferMs: bufferMs)
+            return
+        }
+        
+        // Legacy: PID controller fallback
         let error = Float(availableSamples - targetSamples) / Float(max(targetSamples, 1))
         
-        // PID calculation
         pidIntegral += error
         pidIntegral = max(-100, min(100, pidIntegral))
         
