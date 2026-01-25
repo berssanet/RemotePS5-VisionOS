@@ -23,22 +23,51 @@ enum UpscalingMode {
 
 /// HDR configuration for the upscaler
 struct MetalFXHDRConfig {
+    /// HDR precision mode
+    enum HDRPrecision: String {
+        case standard   // bgra10_xr - Good for most HDR content (2.0 EDR headroom)
+        case high       // rgba16Float - Maximum precision for extreme HDR (8.0+ EDR headroom)
+    }
+    
     /// Enable HDR processing with extended range formats
     var hdrEnabled: Bool = false
+    
+    /// HDR precision level (affects format choice)
+    var precision: HDRPrecision = .standard
+    
+    /// Maximum EDR headroom for HDR content (1.0 = SDR, 2.0+ = HDR)
+    /// Vision Pro Micro-OLED typically supports 2.0-4.0 EDR
+    var maxEDRHeadroom: Float = 2.0
     
     /// Pixel format for SDR mode
     static let sdrFormat: MTLPixelFormat = .bgra8Unorm
     
-    /// Pixel format for HDR mode (Apple Extended Range - supports values > 1.0)
+    /// Pixel format for standard HDR (Apple Extended Range - supports values > 1.0)
     static let hdrFormat: MTLPixelFormat = .bgra10_xr
     
-    /// Get the appropriate format based on HDR state
+    /// Pixel format for high-precision HDR (full 16-bit float for PQ/HLG)
+    static let hdrHighPrecisionFormat: MTLPixelFormat = .rgba16Float
+    
+    /// Get the appropriate format based on HDR state and precision
     var colorFormat: MTLPixelFormat {
-        return hdrEnabled ? Self.hdrFormat : Self.sdrFormat
+        guard hdrEnabled else { return Self.sdrFormat }
+        switch precision {
+        case .standard: return Self.hdrFormat
+        case .high: return Self.hdrHighPrecisionFormat
+        }
     }
     
     var outputFormat: MTLPixelFormat {
-        return hdrEnabled ? Self.hdrFormat : Self.sdrFormat
+        return colorFormat
+    }
+    
+    /// Description for logging
+    var description: String {
+        if !hdrEnabled { return "SDR (bgra8Unorm)" }
+        switch precision {
+        case .standard: return "HDR (bgra10_xr, EDR: \(maxEDRHeadroom))"
+        case .high: return "HDR High (rgba16Float, EDR: \(maxEDRHeadroom))"
+        }
     }
 }
 
@@ -63,6 +92,18 @@ struct HDRColorMetadata: Sendable {
                CFEqual(tf, kCVImageBufferTransferFunction_ITU_R_2100_HLG)
     }
     
+    /// Whether content uses PQ (Perceptual Quantizer) EOTF
+    var isPQ: Bool {
+        guard let tf = transferFunction else { return false }
+        return CFEqual(tf, kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ)
+    }
+    
+    /// Whether content uses HLG (Hybrid Log-Gamma)
+    var isHLG: Bool {
+        guard let tf = transferFunction else { return false }
+        return CFEqual(tf, kCVImageBufferTransferFunction_ITU_R_2100_HLG)
+    }
+    
     /// Whether content uses wide color gamut (BT.2020 or Display P3)
     var isWideGamut: Bool {
         guard let cp = colorPrimaries else { return false }
@@ -70,14 +111,56 @@ struct HDRColorMetadata: Sendable {
                CFEqual(cp, kCVImageBufferColorPrimaries_P3_D65)
     }
     
+    /// Whether content uses BT.2020 color primaries
+    var isBT2020: Bool {
+        guard let cp = colorPrimaries else { return false }
+        return CFEqual(cp, kCVImageBufferColorPrimaries_ITU_R_2020)
+    }
+    
     /// Create empty metadata
     static let unknown = HDRColorMetadata(colorPrimaries: nil, transferFunction: nil, ycbcrMatrix: nil)
+    
+    /// Create BT.2020 + PQ (standard HDR10)
+    static let hdr10 = HDRColorMetadata(
+        colorPrimaries: kCVImageBufferColorPrimaries_ITU_R_2020,
+        transferFunction: kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ,
+        ycbcrMatrix: kCVImageBufferYCbCrMatrix_ITU_R_2020
+    )
+    
+    /// Suggested EDR headroom based on transfer function
+    /// PQ: Can represent up to 10,000 nits, but typical content is 1,000-4,000 nits
+    /// HLG: Typically 1,000-2,000 nits
+    var suggestedEDRHeadroom: Float {
+        if isPQ { return 4.0 }  // 4x SDR white for typical HDR10 content
+        if isHLG { return 2.0 } // 2x SDR white for HLG
+        return 1.0 // SDR
+    }
+    
+    /// Get CGColorSpace for this content (visionOS 2.0+)
+    @available(visionOS 2.0, *)
+    var cgColorSpace: CGColorSpace? {
+        if isPQ && isBT2020 {
+            // BT.2020 + PQ = HDR10
+            return CGColorSpace(name: CGColorSpace.itur_2100_PQ)
+        } else if isHLG && isBT2020 {
+            // BT.2020 + HLG
+            return CGColorSpace(name: CGColorSpace.itur_2100_HLG)
+        } else if isBT2020 {
+            // BT.2020 without HDR transfer function
+            return CGColorSpace(name: CGColorSpace.itur_2020)
+        } else if let cp = colorPrimaries, CFEqual(cp, kCVImageBufferColorPrimaries_P3_D65) {
+            // Display P3
+            return CGColorSpace(name: CGColorSpace.displayP3)
+        }
+        // Default: sRGB
+        return CGColorSpace(name: CGColorSpace.sRGB)
+    }
     
     /// Debug description
     var description: String {
         let cp = colorPrimaries.map { String(describing: $0) } ?? "unknown"
         let tf = transferFunction.map { String(describing: $0) } ?? "unknown"
-        return "ColorMetadata(primaries: \(cp), transfer: \(tf), HDR: \(isHDR), WideGamut: \(isWideGamut))"
+        return "ColorMetadata(primaries: \(cp), transfer: \(tf), HDR: \(isHDR), EDR: \(suggestedEDRHeadroom))"
     }
 }
 

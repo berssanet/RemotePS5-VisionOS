@@ -51,8 +51,24 @@ final class VideoTextureCoordinator: @unchecked Sendable {
     /// Pixel format for HDR Extended Range (supports EDR > 1.0)
     static let hdrPixelFormat: MTLPixelFormat = .bgra10_xr
     
+    /// Pixel format for high-precision HDR (maximum fidelity)
+    static let hdrHighPrecisionFormat: MTLPixelFormat = .rgba16Float
+    
     /// Whether HDR mode is enabled
     var hdrEnabled: Bool = true
+    
+    /// Use high-precision format (rgba16Float) for maximum HDR fidelity
+    var useHighPrecision: Bool = false
+    
+    /// Current EDR headroom (1.0 = SDR, 2.0-4.0 = typical HDR)
+    /// Updated based on content metadata from MetalFXUpscaler
+    var currentEDRHeadroom: Float = 2.0
+    
+    /// Get the appropriate pixel format based on HDR mode and precision
+    var currentPixelFormat: MTLPixelFormat {
+        guard hdrEnabled else { return .bgra8Unorm }
+        return useHighPrecision ? Self.hdrHighPrecisionFormat : Self.hdrPixelFormat
+    }
     
     // MARK: - State
     
@@ -303,16 +319,33 @@ final class VideoTextureCoordinator: @unchecked Sendable {
         // UnlitMaterial supports values > 1.0 when using Extended Range textures
         var material = UnlitMaterial()
         
-        // Apply texture with proper color handling
-        material.color = .init(texture: .init(resource))
-        
-        // Note: RealityKit UnlitMaterial automatically handles Extended Range
-        // when the input texture is in a compatible format (bgra10_xr)
-        // Values > 1.0 will be rendered as HDR on capable displays
+        if hdrEnabled {
+            // HDR/EDR Configuration:
+            // 1. Use white tint to preserve HDR values (no color multiplication)
+            // 2. Set full opacity to ensure no alpha blending reduces brightness
+            // 3. The bgra10_xr texture format allows values > 1.0 (Extended Range)
+            //
+            // Vision Pro Micro-OLED can display up to ~4x SDR white (EDR headroom 4.0)
+            // PS5 HDR content typically uses BT.2020 + PQ with peak ~1000-4000 nits
+            
+            // Configure for maximum HDR fidelity
+            material.color = .init(
+                tint: .white.withAlphaComponent(1.0),  // Preserve HDR values
+                texture: .init(resource)
+            )
+            
+            // Blending mode: Use opaque for EDR to avoid alpha premultiplication
+            // reducing peak brightness. Values > 1.0 will "bloom" on HDR display.
+            material.blending = .opaque
+            
+            print("[VideoTextureCoordinator] 🎨 HDR Material applied (EDR-optimized, opaque blending)")
+        } else {
+            // SDR Configuration: Standard texture application
+            material.color = .init(texture: .init(resource))
+            print("[VideoTextureCoordinator] 🎨 SDR Material applied")
+        }
         
         entity.model?.materials = [material]
-        
-        print("[VideoTextureCoordinator] 🎨 Material applied (EDR enabled: \(hdrEnabled))")
     }
     
     private func copyTextureContent(from sourceTexture: MTLTexture, commandBuffer existingBuffer: MTLCommandBuffer?) {
