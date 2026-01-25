@@ -9,14 +9,13 @@ import CoreVideo
 @MainActor
 class StreamingSession: ObservableObject {
     
-    // MARK: - Published Properties
+    // MARK: - Published Properties (Slow State Only)
     @Published var state: SessionState = .disconnected
     @Published var quality: StreamQuality = .hd1080
     @Published var latency: Int = 0
     @Published var bitrate: Int = 0
     @Published var packetsReceived: UInt64 = 0
     @Published var lastError: Error?
-    @Published var lastVideoFrame: CVPixelBuffer?
     @Published var frameRate: Double = 0
     
     // MARK: - Decoders
@@ -43,7 +42,14 @@ class StreamingSession: ObservableObject {
     private let videoPort: UInt16 = 9296
     private let audioPort: UInt16 = 9297
     
-    // MARK: - Callbacks
+    // MARK: - High-Performance Callbacks (bypass SwiftUI)
+    
+    /// Called when a video frame is decoded and ready for rendering.
+    /// This is called on the VideoToolbox decoder thread, NOT MainActor.
+    /// - Warning: Must be thread-safe. Do not update SwiftUI state from here.
+    var onFrameReady: ((CVPixelBuffer) -> Void)?
+    
+    /// Legacy callbacks for raw data processing
     var onVideoFrame: ((Data) -> Void)?
     var onAudioFrame: ((Data) -> Void)?
     
@@ -97,6 +103,23 @@ class StreamingSession: ObservableObject {
     
     init() {
         print("[Session] Initialized")
+        setupVideoDecoderCallback()
+    }
+    
+    /// Configure VideoDecoder callback to forward frames to coordinator
+    private func setupVideoDecoderCallback() {
+        videoDecoder.onFrameDecoded = { [weak self] pixelBuffer in
+            // Called on VideoToolbox thread - forward to external handler
+            self?.onFrameReady?(pixelBuffer)
+            
+            // Update frame rate on main actor (infrequent, safe to dispatch)
+            let currentFrameRate = self?.videoDecoder.frameRate ?? 0
+            if currentFrameRate > 0 {
+                Task { @MainActor [weak self] in
+                    self?.frameRate = currentFrameRate
+                }
+            }
+        }
     }
     
     deinit {
@@ -188,7 +211,6 @@ class StreamingSession: ObservableObject {
         sessionKey = nil
         gmacKey = nil
         nonce = 0
-        lastVideoFrame = nil
     }
     
     /// Send controller input to the console
@@ -540,14 +562,10 @@ class StreamingSession: ObservableObject {
                     if let decrypted = decrypt(data) {
                         packetsReceived += 1
                         
-                        // Decode video frame
+                        // Decode video frame - callback will be invoked on decoder thread
                         try videoDecoder.decode(decrypted)
                         
-                        // Update published properties from decoder
-                        lastVideoFrame = videoDecoder.lastFrame
-                        frameRate = videoDecoder.frameRate
-                        
-                        // Callback for additional processing
+                        // Callback for raw data processing (optional)
                         onVideoFrame?(decrypted)
                     }
                 } catch {

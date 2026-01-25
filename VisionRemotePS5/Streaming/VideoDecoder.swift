@@ -27,36 +27,59 @@ enum VideoOutputFormat {
     }
 }
 
-class VideoDecoder: ObservableObject {
-    @Published var lastFrame: CVPixelBuffer?
-    @Published var frameRate: Double = 0
-    @Published var isDecoding = false
-    @Published var lastError: Error?
+/// High-performance video decoder using VideoToolbox.
+/// 
+/// Frame delivery uses a closure callback instead of @Published to bypass SwiftUI.
+/// This allows the render loop (Decoder -> MetalFX -> RealityKit) to run independently
+/// of SwiftUI layout updates.
+final class VideoDecoder {
+    
+    // MARK: - Slow State (Observable)
+    
+    /// Current frame rate (updated once per second)
+    private(set) var frameRate: Double = 0
+    
+    /// Whether decoder session is active
+    private(set) var isDecoding = false
+    
+    /// Last error encountered
+    private(set) var lastError: Error?
+    
+    /// Statistics for frame dropping
+    private(set) var droppedFrameCount: Int = 0
+    
+    // MARK: - High-Performance Frame Callback
+    
+    /// Called on decoder thread when a frame is ready. NOT on Main Thread.
+    /// This is the hot path - do not dispatch to MainActor from here.
+    /// - Warning: Called from VideoToolbox callback thread. Must be thread-safe.
+    var onFrameDecoded: ((CVPixelBuffer) -> Void)?
+    
+    // MARK: - Configuration
     
     /// Output format preference for HDR support
-    /// NOTE: P010 outputs YUV 4:2:0 10-bit, requires color space conversion before upscaling
     var preferredFormat: VideoOutputFormat = .hdr10bit
+    
+    // MARK: - Private Properties
     
     private var decompressionSession: VTDecompressionSession?
     private var formatDescription: CMVideoFormatDescription?
     private var codecType: CMVideoCodecType = kCMVideoCodecType_HEVC
     
     private var frameCount = 0
-    // v10.1: Use monotonic clock for accurate frame rate measurement
     private var lastFrameTime = CACurrentMediaTime()
     
     private var sps: Data?
     private var pps: Data?
-    private var vps: Data? // For HEVC
+    private var vps: Data?
     
-    // MARK: - Frame Dropping (Low-Latency Prioritization)
-    /// Maximum pending frames before dropping. Prioritizes latency over smoothness.
+    // MARK: - Frame Dropping
+    
     private let maxPendingFrames = 3
-    /// Thread-safe counter for frames currently in the decode pipeline
     private var pendingFrameCount: Int32 = 0
     private let pendingFrameLock = NSLock()
-    /// Statistics for frame dropping
-    @Published var droppedFrameCount: Int = 0
+    
+    // MARK: - Lifecycle
     
     init() {}
     
@@ -445,7 +468,7 @@ class VideoDecoder: ObservableObject {
             kCVPixelBufferIOSurfacePropertiesKey as String: [:] as [String: Any]
         ]
         
-        // Output callback
+        // Output callback - runs on VideoToolbox thread, NOT Main Thread
         var callback = VTDecompressionOutputCallbackRecord(
             decompressionOutputCallback: { outputRefCon, _, status, _, imageBuffer, _, _ in
                 guard status == noErr,
@@ -454,9 +477,9 @@ class VideoDecoder: ObservableObject {
                 
                 let decoderPtr = Unmanaged<VideoDecoder>.fromOpaque(decoder).takeUnretainedValue()
                 
-                Task { @MainActor in
-                    decoderPtr.handleDecodedFrame(imageBuffer)
-                }
+                // CRITICAL: Call directly on decoder thread - NO dispatch to MainActor
+                // This is the hot path for low-latency video
+                decoderPtr.handleDecodedFrame(imageBuffer)
             },
             decompressionOutputRefCon: Unmanaged.passUnretained(self).toOpaque()
         )
@@ -579,15 +602,17 @@ class VideoDecoder: ObservableObject {
         pendingFrameLock.unlock()
     }
     
+    /// Handle decoded frame - called on VideoToolbox thread
     private func handleDecodedFrame(_ pixelBuffer: CVPixelBuffer) {
         // Decrement pending frame counter (frame completed decoding)
         decrementPendingFrameCount()
         
-        lastFrame = pixelBuffer
+        // Invoke callback directly on decoder thread - no MainActor dispatch
+        // This is the hot path: Decoder -> MetalFX -> RealityKit
+        onFrameDecoded?(pixelBuffer)
         
-        // Calculate frame rate
+        // Calculate frame rate (thread-safe, only updates once per second)
         frameCount += 1
-        // v10.1: Monotonic clock for frame rate calculation
         let now = CACurrentMediaTime()
         let elapsed = now - lastFrameTime
         

@@ -12,26 +12,77 @@ import Metal
 
 // MARK: - Video Texture Coordinator
 
-/// Global coordinator that manages texture lifecycle independently of SwiftUI
+// MARK: - Video Texture Coordinator
+
+/// Global coordinator that manages texture lifecycle independently of SwiftUI.
+///
+/// This coordinator enables a high-performance rendering pipeline:
+/// - **Decoder Thread**: CVPixelBuffer from VideoToolbox
+/// - **Metal Pipeline**: Texture conversion and upscaling
+/// - **RealityKit**: Direct texture update via LowLevelTexture
+///
+/// The `updateTexture(from: CVPixelBuffer)` method is THREAD-SAFE and can be called
+/// directly from the VideoToolbox decoder callback without dispatching to MainActor.
 @available(visionOS 2.0, *)
-@MainActor
-final class VideoTextureCoordinator {
+final class VideoTextureCoordinator: @unchecked Sendable {
     static let shared = VideoTextureCoordinator()
     
+    // MARK: - Metal Resources
+    
+    private var device: MTLDevice?
+    private var textureCache: CVMetalTextureCache?
     private var lowLevelTexture: LowLevelTexture?
     private var textureResource: TextureResource?
     private var commandQueue: MTLCommandQueue?
     private var textureSize: (Int, Int) = (0, 0)
+    
+    // MARK: - State
+    
     private var isInitialized = false
     private var isInitializing = false
+    private let lock = NSLock()
     
-    // Entity managed by this coordinator - persists across view recreations
-    private(set) var videoEntity: ModelEntity?
-    private(set) var hasValidTexture = false
+    // MARK: - Entity (MainActor only)
     
-    private init() {}
+    @MainActor private(set) var videoEntity: ModelEntity?
+    @MainActor private(set) var hasValidTexture = false
+    
+    // MARK: - Initialization
+    
+    private init() {
+        setupMetal()
+    }
+    
+    private func setupMetal() {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            print("[VideoTextureCoordinator] ❌ No Metal device")
+            return
+        }
+        self.device = device
+        self.commandQueue = device.makeCommandQueue()
+        
+        // Create CVMetalTextureCache for zero-copy pixel buffer -> texture conversion
+        var cache: CVMetalTextureCache?
+        let status = CVMetalTextureCacheCreate(
+            kCFAllocatorDefault,
+            nil,
+            device,
+            nil,
+            &cache
+        )
+        
+        if status == kCVReturnSuccess, let cache = cache {
+            self.textureCache = cache
+            print("[VideoTextureCoordinator] ✅ Metal initialized with texture cache")
+        } else {
+            print("[VideoTextureCoordinator] ⚠️ Failed to create texture cache: \(status)")
+        }
+    }
+    
+    // MARK: - Entity Management (MainActor)
     
     /// Create the video entity ONCE, return existing if already created
+    @MainActor
     func getOrCreateEntity(width: Float, height: Float) -> ModelEntity {
         if let existing = videoEntity {
             return existing
@@ -54,31 +105,74 @@ final class VideoTextureCoordinator {
         return entity
     }
     
-    /// Update texture from source - call every frame
+    // MARK: - High-Performance Frame Update (Thread-Safe)
+    
+    /// Update texture directly from CVPixelBuffer.
+    /// **Thread-Safe**: Can be called from any thread (decoder callback).
+    /// This is the HOT PATH for the video pipeline.
+    func updateTexture(from pixelBuffer: CVPixelBuffer) {
+        guard let textureCache = textureCache else { return }
+        
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        
+        // Create MTLTexture from CVPixelBuffer (zero-copy via IOSurface)
+        var cvTexture: CVMetalTexture?
+        let status = CVMetalTextureCacheCreateTextureFromImage(
+            kCFAllocatorDefault,
+            textureCache,
+            pixelBuffer,
+            nil,
+            .bgra8Unorm,
+            width,
+            height,
+            0,
+            &cvTexture
+        )
+        
+        guard status == kCVReturnSuccess,
+              let cvTexture = cvTexture,
+              let metalTexture = CVMetalTextureGetTexture(cvTexture) else {
+            return
+        }
+        
+        // Forward to existing MTLTexture-based pipeline
+        updateTexture(from: metalTexture)
+    }
+    
+    /// Update texture from MTLTexture source
     func updateTexture(from sourceTexture: MTLTexture) {
         let newSize = (sourceTexture.width, sourceTexture.height)
         
-        // Fast path: already initialized with same size
-        if isInitialized && textureSize == newSize {
+        // Thread-safe check for initialization state
+        lock.lock()
+        let needsInit = !isInitialized || textureSize != newSize
+        let alreadyInitializing = isInitializing
+        if needsInit && !alreadyInitializing {
+            isInitializing = true
+        }
+        lock.unlock()
+        
+        if !needsInit {
+            // Fast path: already initialized with same size
             copyTextureContent(from: sourceTexture)
             return
         }
         
-        // Need initialization
-        guard !isInitializing else { return }
-        isInitializing = true
+        if alreadyInitializing {
+            // Already initializing, skip this frame
+            return
+        }
         
+        // Need initialization - dispatch to MainActor
         Task { @MainActor in
             await initializeTexture(from: sourceTexture)
         }
     }
     
+    @MainActor
     private func initializeTexture(from sourceTexture: MTLTexture) async {
         do {
-            if commandQueue == nil {
-                commandQueue = sourceTexture.device.makeCommandQueue()
-            }
-            
             let descriptor = LowLevelTexture.Descriptor(
                 pixelFormat: .bgra8Unorm,
                 width: sourceTexture.width,
@@ -91,11 +185,14 @@ final class VideoTextureCoordinator {
             let llTexture = try LowLevelTexture(descriptor: descriptor)
             let resource = try await TextureResource(from: llTexture)
             
+            lock.lock()
             lowLevelTexture = llTexture
             textureResource = resource
             textureSize = (sourceTexture.width, sourceTexture.height)
             isInitialized = true
             isInitializing = false
+            lock.unlock()
+            
             hasValidTexture = true
             
             print("[VideoTextureCoordinator] ✅ Texture: \(sourceTexture.width)x\(sourceTexture.height)")
@@ -107,11 +204,14 @@ final class VideoTextureCoordinator {
             copyTextureContent(from: sourceTexture)
             
         } catch {
+            lock.lock()
             isInitializing = false
+            lock.unlock()
             print("[VideoTextureCoordinator] ❌ Failed: \(error)")
         }
     }
     
+    @MainActor
     func applyToEntity() {
         guard let entity = videoEntity, let resource = textureResource else { return }
         
@@ -121,9 +221,23 @@ final class VideoTextureCoordinator {
     }
     
     private func copyTextureContent(from sourceTexture: MTLTexture) {
+        lock.lock()
+        let initialized = isInitialized
+        lock.unlock()
+        
+        guard initialized else { return }
+        
+        // LowLevelTexture.replace requires MainActor - dispatch the GPU work there
+        // This is fast (just command buffer encoding) so latency impact is minimal
+        Task { @MainActor in
+            self.performTextureCopy(from: sourceTexture)
+        }
+    }
+    
+    @MainActor
+    private func performTextureCopy(from sourceTexture: MTLTexture) {
         guard let llTexture = lowLevelTexture,
-              let queue = commandQueue,
-              isInitialized else { return }
+              let queue = commandQueue else { return }
         
         guard let commandBuffer = queue.makeCommandBuffer() else { return }
         
@@ -151,13 +265,16 @@ final class VideoTextureCoordinator {
     }
     
     /// Reset when streaming stops
+    @MainActor
     func reset() {
+        lock.lock()
         lowLevelTexture = nil
         textureResource = nil
-        commandQueue = nil
         textureSize = (0, 0)
         isInitialized = false
         isInitializing = false
+        lock.unlock()
+        
         videoEntity = nil
         hasValidTexture = false
         print("[VideoTextureCoordinator] 🔄 Reset")
