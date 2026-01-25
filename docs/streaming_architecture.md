@@ -1,7 +1,9 @@
 # VisionRemotePS5 Streaming Architecture
 ## PS5 Remote Play for Apple Vision Pro
 
-**Version 10.0 — January 18, 2026 (Complete Technical Reference)**
+**Version 10.3 — January 25, 2026 (Complete Technical Reference)**
+
+> **v10.3 Update**: See [v10_3_update_notes.md](./v10_3_update_notes.md) for detailed changes.
 
 ---
 
@@ -32,12 +34,14 @@ VisionRemotePS5 is a **native visionOS application** that streams PS5 gameplay t
 
 - **Ultra-low latency** (<50ms motion-to-photon target)
 - **Closed-Loop A/V Sync** (v10.0: Audio chases MEASURED video latency)
+- **PTS-Based Drift Correction** (v10.3: 20ms threshold, emergency drop at 100ms)
 - **Stereo Emitter Array** (v10.0: L/R positioned at screen edges for realistic soundstage)
 - **HDR support** (HDR10/P010 → EDR with luminance-preserving tone mapping)
-- **4K upscaling** (1080p → 4K via MetalFX Spatial Scaler)
+- **4K upscaling** (1080p → 4K via MetalFX Spatial Scaler with MTLEvent sync)
 - **Dynamic EDR Headroom** (v10.0: Adapts to display thermal state)
 - **DualSense support** (full button mapping + haptic feedback + adaptive triggers)
-- **120Hz Controller Polling** (v9.0+: Reduced input lag)
+- **120Hz Controller Polling** (v10.3: Dedicated off-MainActor thread)
+- **PS5 Haptic Feedback** (v10.3: Rumble motors + adaptive trigger effects)
 
 ### Technology Stack
 
