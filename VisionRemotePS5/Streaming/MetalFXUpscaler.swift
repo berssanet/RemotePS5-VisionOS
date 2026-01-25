@@ -42,6 +42,45 @@ struct MetalFXHDRConfig {
     }
 }
 
+// MARK: - HDR Color Metadata
+
+/// Color metadata extracted from CVPixelBuffer for HDR color management.
+/// These values describe how to interpret the pixel data.
+struct HDRColorMetadata: Sendable {
+    /// Color primaries (e.g., BT.709, BT.2020, Display P3)
+    let colorPrimaries: CFString?
+    
+    /// Transfer function (e.g., sRGB, PQ, HLG)
+    let transferFunction: CFString?
+    
+    /// YCbCr matrix (for YUV content)
+    let ycbcrMatrix: CFString?
+    
+    /// Whether content is HDR (PQ or HLG transfer function)
+    var isHDR: Bool {
+        guard let tf = transferFunction else { return false }
+        return CFEqual(tf, kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ) ||
+               CFEqual(tf, kCVImageBufferTransferFunction_ITU_R_2100_HLG)
+    }
+    
+    /// Whether content uses wide color gamut (BT.2020 or Display P3)
+    var isWideGamut: Bool {
+        guard let cp = colorPrimaries else { return false }
+        return CFEqual(cp, kCVImageBufferColorPrimaries_ITU_R_2020) ||
+               CFEqual(cp, kCVImageBufferColorPrimaries_P3_D65)
+    }
+    
+    /// Create empty metadata
+    static let unknown = HDRColorMetadata(colorPrimaries: nil, transferFunction: nil, ycbcrMatrix: nil)
+    
+    /// Debug description
+    var description: String {
+        let cp = colorPrimaries.map { String(describing: $0) } ?? "unknown"
+        let tf = transferFunction.map { String(describing: $0) } ?? "unknown"
+        return "ColorMetadata(primaries: \(cp), transfer: \(tf), HDR: \(isHDR), WideGamut: \(isWideGamut))"
+    }
+}
+
 /// MetalFX-based upscaler for PS5 Remote Play video stream.
 /// Upscales 1080p BGRA frames to 4K resolution with optional HDR support.
 final class MetalFXUpscaler {
@@ -88,6 +127,17 @@ final class MetalFXUpscaler {
     
     /// Triple buffer pool for non-blocking GPU sync
     private var tripleBuffer: TripleBufferPool?
+    
+    // MARK: - MTLEvent Synchronization
+    
+    /// Shared event for GPU-GPU synchronization (avoids CPU waits)
+    private var syncEvent: MTLSharedEvent?
+    
+    /// Event counter for frame synchronization
+    private var eventCounter: UInt64 = 0
+    
+    /// Last extracted color metadata
+    private(set) var lastColorMetadata: HDRColorMetadata = .unknown
     
     /// Callback invoked when upscaling completes (non-blocking)
     var onUpscaleComplete: ((MTLTexture) -> Void)?
@@ -159,6 +209,12 @@ final class MetalFXUpscaler {
             pixelFormat: hdrConfig.outputFormat
         )
         
+        // Create MTLSharedEvent for GPU-GPU synchronization
+        self.syncEvent = device.makeSharedEvent()
+        if syncEvent != nil {
+            print("[MetalFXUpscaler] ✅ MTLSharedEvent created for GPU sync")
+        }
+        
         let hdrStatus = hdrEnabled ? "HDR (bgra10_xr)" : "SDR (bgra8Unorm)"
         print("[MetalFXUpscaler] ✅ Initialized (SPATIAL mode - visionOS)")
         print("[MetalFXUpscaler]   Input: \(Self.inputWidth)x\(Self.inputHeight)")
@@ -211,7 +267,38 @@ final class MetalFXUpscaler {
     
     // MARK: - Upscaling
     
-    /// Upscale a CVPixelBuffer from 1080p to 4K
+    /// Extract color metadata from CVPixelBuffer
+    /// Call this before upscaling to capture HDR color properties
+    func extractColorMetadata(from pixelBuffer: CVPixelBuffer) -> HDRColorMetadata {
+        // Get color attachments from pixel buffer
+        let attachments = CVBufferCopyAttachments(pixelBuffer, .shouldPropagate)
+        
+        var colorPrimaries: CFString?
+        var transferFunction: CFString?
+        var ycbcrMatrix: CFString?
+        
+        if let attachments = attachments as? [CFString: Any] {
+            colorPrimaries = attachments[kCVImageBufferColorPrimariesKey] as? CFString
+            transferFunction = attachments[kCVImageBufferTransferFunctionKey] as? CFString
+            ycbcrMatrix = attachments[kCVImageBufferYCbCrMatrixKey] as? CFString
+        }
+        
+        let metadata = HDRColorMetadata(
+            colorPrimaries: colorPrimaries,
+            transferFunction: transferFunction,
+            ycbcrMatrix: ycbcrMatrix
+        )
+        
+        // Log first detection of HDR content
+        if metadata.isHDR && !lastColorMetadata.isHDR {
+            print("[MetalFXUpscaler] 🎨 HDR content detected: \(metadata.description)")
+        }
+        
+        lastColorMetadata = metadata
+        return metadata
+    }
+    
+    /// Upscale a CVPixelBuffer from 1080p to 4K (synchronous)
     func upscale(_ pixelBuffer: CVPixelBuffer) -> MTLTexture? {
         guard let spatialScaler = spatialScaler,
               let textureCache = textureCache,
@@ -221,6 +308,9 @@ final class MetalFXUpscaler {
         }
         
         frameCount += 1
+        
+        // Extract color metadata for HDR handling
+        _ = extractColorMetadata(from: pixelBuffer)
         
         // Get pixel buffer info
         let width = CVPixelBufferGetWidth(pixelBuffer)
@@ -232,10 +322,10 @@ final class MetalFXUpscaler {
             let ioSurface = CVPixelBufferGetIOSurface(pixelBuffer)
             let zeroCopyStatus = ioSurface != nil ? "✅ Zero-copy" : "⚠️ No IOSurface"
             print("[MetalFXUpscaler] 📹 First frame: \(width)x\(height), format=\(formatName(format)), \(zeroCopyStatus)")
+            print("[MetalFXUpscaler] 🎨 Color: \(lastColorMetadata.description)")
         }
         
         // Create Metal texture from CVPixelBuffer
-        // Use appropriate format for HDR vs SDR
         var cvTexture: CVMetalTexture?
         let inputFormat = hdrConfig.colorFormat
         let status = CVMetalTextureCacheCreateTextureFromImage(
@@ -270,6 +360,61 @@ final class MetalFXUpscaler {
         }
         
         return outputTexture
+    }
+    
+    /// Upscale with MTLEvent synchronization (non-blocking, GPU-GPU sync)
+    /// Returns the output texture and event counter for downstream synchronization
+    func upscaleAsync(_ pixelBuffer: CVPixelBuffer) -> (texture: MTLTexture, eventValue: UInt64)? {
+        guard let spatialScaler = spatialScaler,
+              let textureCache = textureCache,
+              let outputTexture = self.outputTexture,
+              let syncEvent = self.syncEvent else {
+            return nil
+        }
+        
+        frameCount += 1
+        eventCounter += 1
+        
+        // Extract color metadata
+        _ = extractColorMetadata(from: pixelBuffer)
+        
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        
+        // Create input texture
+        var cvTexture: CVMetalTexture?
+        let status = CVMetalTextureCacheCreateTextureFromImage(
+            nil, textureCache, pixelBuffer, nil,
+            hdrConfig.colorFormat, width, height, 0, &cvTexture
+        )
+        
+        guard status == kCVReturnSuccess, let cvTexture = cvTexture,
+              let inputTexture = CVMetalTextureGetTexture(cvTexture) else {
+            return nil
+        }
+        
+        guard let commandBuffer = commandQueue.makeCommandBuffer() else {
+            return nil
+        }
+        
+        // Encode upscaling
+        spatialScaler.colorTexture = inputTexture
+        spatialScaler.outputTexture = outputTexture
+        spatialScaler.encode(commandBuffer: commandBuffer)
+        
+        // Signal event when GPU work completes (no CPU wait needed)
+        let currentEventValue = eventCounter
+        commandBuffer.encodeSignalEvent(syncEvent, value: currentEventValue)
+        
+        commandBuffer.commit()
+        // NO waitUntilCompleted() - caller uses MTLEvent to sync
+        
+        return (outputTexture, currentEventValue)
+    }
+    
+    /// Get the shared event for downstream GPU synchronization
+    var sharedEvent: MTLSharedEvent? {
+        return syncEvent
     }
     
     // MARK: - Scene Cut (no-op for Spatial Scaler)
