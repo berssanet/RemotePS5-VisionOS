@@ -24,37 +24,39 @@
 		APP015 /* GameControllerManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC014 /* GameControllerManager.swift */; };
 		APP016 /* RegistrationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC015 /* RegistrationService.swift */; };
 		APP017 /* ChiakiCrypto.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC016 /* ChiakiCrypto.swift */; };
+		AUDRINGBUFSRC001 /* AudioRingBuffer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AUDRINGBUFREF001 /* AudioRingBuffer.swift */; };
 		CHKFRM001 /* Chiaki.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = CHKFRMREF001 /* Chiaki.xcframework */; };
 		CHKFSES001 /* ChiakiFullSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = CHKFSESSRC001 /* ChiakiFullSession.swift */; };
 		CNSSTO001 /* ConsoleStorageService.swift in Sources */ = {isa = PBXBuildFile; fileRef = CNSSRC001 /* ConsoleStorageService.swift */; };
+		COLSPCCNVSRC001 /* ColorSpaceConverter.swift in Sources */ = {isa = PBXBuildFile; fileRef = COLSPCCNVREF001 /* ColorSpaceConverter.swift */; };
+		EF3CB6992F26A797005E85E1 /* AESGCMDecryptor.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF3CB6972F26A797005E85E1 /* AESGCMDecryptor.swift */; };
+		EF3CB69A2F26A797005E85E1 /* StreamingBufferPool.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF3CB6982F26A797005E85E1 /* StreamingBufferPool.swift */; };
 		EF48D8DA2F0FD3F8009C702E /* ChiakiCore.c in Sources */ = {isa = PBXBuildFile; fileRef = EF48D8D92F0FD3F8009C702E /* ChiakiCore.c */; };
-		AUDRINGBUFSRC001 /* AudioRingBuffer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AUDRINGBUFREF001 /* AudioRingBuffer.swift */; };
-		LOWLATAUDSRC001 /* LowLatencyAudioPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = LOWLATAUDREF001 /* LowLatencyAudioPlayer.swift */; };
 		EF5C41952F0645B0007A7B67 /* PSNSessionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF5C41942F0645B0007A7B67 /* PSNSessionManager.swift */; };
 		EF5C41972F0645C3007A7B67 /* HolepunchService.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF5C41962F0645C3007A7B67 /* HolepunchService.swift */; };
 		EF5C41992F0645D2007A7B67 /* PSNConnectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF5C41982F0645D2007A7B67 /* PSNConnectionView.swift */; };
 		EF5C419B2F0645E0007A7B67 /* PSNWebSocketService.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF5C419A2F0645E0007A7B67 /* PSNWebSocketService.swift */; };
+		ENHUPSRC001 /* EnhancedUpscaler.swift in Sources */ = {isa = PBXBuildFile; fileRef = ENHUPREF001 /* EnhancedUpscaler.swift */; };
+		FRMPCRSRC001 /* FramePacer.swift in Sources */ = {isa = PBXBuildFile; fileRef = FRMPCRREF001 /* FramePacer.swift */; };
+		LOWLATAUDSRC001 /* LowLatencyAudioPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = LOWLATAUDREF001 /* LowLatencyAudioPlayer.swift */; };
+		MFXUPSRC001 /* MetalFXUpscaler.swift in Sources */ = {isa = PBXBuildFile; fileRef = MFXUPREF001 /* MetalFXUpscaler.swift */; };
+		MOTESTSRC001 /* MotionEstimator.swift in Sources */ = {isa = PBXBuildFile; fileRef = MOTESTREF001 /* MotionEstimator.swift */; };
+		MTLTEXVIEWSRC001 /* MetalTextureView.swift in Sources */ = {isa = PBXBuildFile; fileRef = MTLTEXVIEWREF001 /* MetalTextureView.swift */; };
+		RKVIDEOVIEWSRC001 /* RealityKitVideoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = RKVIDEOVIEWREF001 /* RealityKitVideoView.swift */; };
+		SAFEBUFPOOLSRC001 /* SafeBufferPool.swift in Sources */ = {isa = PBXBuildFile; fileRef = SAFEBUFPOOLREF001 /* SafeBufferPool.swift */; };
 		SHADER001 /* YUVToRGB.metal in Sources */ = {isa = PBXBuildFile; fileRef = SHADERSRC001 /* YUVToRGB.metal */; };
 		SIMP001 /* SimpleTestView.swift in Sources */ = {isa = PBXBuildFile; fileRef = SIMPSRC001 /* SimpleTestView.swift */; };
 		STRMSVC001 /* StreamingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = STRMSRCSVC001 /* StreamingService.swift */; };
 		STRMVIEW001 /* StreamingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = STRMSRCVIEW001 /* StreamingView.swift */; };
+		TRIPLEBUFSRC001 /* TripleBufferPool.swift in Sources */ = {isa = PBXBuildFile; fileRef = TRIPLEBUFREF001 /* TripleBufferPool.swift */; };
 		TST001 /* ChiakiCryptoTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TSTSRC001 /* ChiakiCryptoTests.swift */; };
 		TST002 /* ChiakiBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TSTSRC002 /* ChiakiBridgeTests.swift */; };
 		TST003 /* RegistrationServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TSTSRC003 /* RegistrationServiceTests.swift */; };
 		TST004 /* ConsoleDiscoveryServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TSTSRC004 /* ConsoleDiscoveryServiceTests.swift */; };
 		TST005 /* PSNAuthServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TSTSRC005 /* PSNAuthServiceTests.swift */; };
 		TST006 /* ConsoleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TSTSRC006 /* ConsoleTests.swift */; };
-		WOLSVC001 /* WakeOnLanService.swift in Sources */ = {isa = PBXBuildFile; fileRef = WOLSRCSVC001 /* WakeOnLanService.swift */; };
-		MFXUPSRC001 /* MetalFXUpscaler.swift in Sources */ = {isa = PBXBuildFile; fileRef = MFXUPREF001 /* MetalFXUpscaler.swift */; };
 		UPSPIPESRC001 /* UpscalingPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = UPSPIPEREF001 /* UpscalingPipeline.swift */; };
-		MTLTEXVIEWSRC001 /* MetalTextureView.swift in Sources */ = {isa = PBXBuildFile; fileRef = MTLTEXVIEWREF001 /* MetalTextureView.swift */; };
-		RKVIDEOVIEWSRC001 /* RealityKitVideoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = RKVIDEOVIEWREF001 /* RealityKitVideoView.swift */; };
-		TRIPLEBUFSRC001 /* TripleBufferPool.swift in Sources */ = {isa = PBXBuildFile; fileRef = TRIPLEBUFREF001 /* TripleBufferPool.swift */; };
-		FRMPCRSRC001 /* FramePacer.swift in Sources */ = {isa = PBXBuildFile; fileRef = FRMPCRREF001 /* FramePacer.swift */; };
-		MOTESTSRC001 /* MotionEstimator.swift in Sources */ = {isa = PBXBuildFile; fileRef = MOTESTREF001 /* MotionEstimator.swift */; };
-		ENHUPSRC001 /* EnhancedUpscaler.swift in Sources */ = {isa = PBXBuildFile; fileRef = ENHUPREF001 /* EnhancedUpscaler.swift */; };
-		COLSPCCNVSRC001 /* ColorSpaceConverter.swift in Sources */ = {isa = PBXBuildFile; fileRef = COLSPCCNVREF001 /* ColorSpaceConverter.swift */; };
-		SAFEBUFPOOLSRC001 /* SafeBufferPool.swift in Sources */ = {isa = PBXBuildFile; fileRef = SAFEBUFPOOLREF001 /* SafeBufferPool.swift */; };
+		WOLSVC001 /* WakeOnLanService.swift in Sources */ = {isa = PBXBuildFile; fileRef = WOLSRCSVC001 /* WakeOnLanService.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -68,20 +70,32 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		AUDRINGBUFREF001 /* AudioRingBuffer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRingBuffer.swift; sourceTree = "<group>"; };
 		CHKFRMREF001 /* Chiaki.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Chiaki.xcframework; path = VisionRemotePS5/Frameworks/Chiaki.xcframework; sourceTree = SOURCE_ROOT; };
 		CHKFSESSRC001 /* ChiakiFullSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChiakiFullSession.swift; sourceTree = "<group>"; };
 		CHKSRC001 /* ChiakiBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChiakiBridge.swift; sourceTree = "<group>"; };
 		CNSSRC001 /* ConsoleStorageService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConsoleStorageService.swift; sourceTree = "<group>"; };
+		COLSPCCNVREF001 /* ColorSpaceConverter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ColorSpaceConverter.swift; sourceTree = "<group>"; };
+		EF3CB6972F26A797005E85E1 /* AESGCMDecryptor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AESGCMDecryptor.swift; sourceTree = "<group>"; };
+		EF3CB6982F26A797005E85E1 /* StreamingBufferPool.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamingBufferPool.swift; sourceTree = "<group>"; };
 		EF48D8D92F0FD3F8009C702E /* ChiakiCore.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = ChiakiCore.c; sourceTree = "<group>"; };
 		EF5C41942F0645B0007A7B67 /* PSNSessionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PSNSessionManager.swift; sourceTree = "<group>"; };
 		EF5C41962F0645C3007A7B67 /* HolepunchService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HolepunchService.swift; sourceTree = "<group>"; };
 		EF5C41982F0645D2007A7B67 /* PSNConnectionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PSNConnectionView.swift; sourceTree = "<group>"; };
 		EF5C419A2F0645E0007A7B67 /* PSNWebSocketService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PSNWebSocketService.swift; sourceTree = "<group>"; };
-		SHADERSRC001 /* YUVToRGB.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = YUVToRGB.metal; sourceTree = "<group>"; };
+		ENHUPREF001 /* EnhancedUpscaler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnhancedUpscaler.swift; sourceTree = "<group>"; };
+		FRMPCRREF001 /* FramePacer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FramePacer.swift; sourceTree = "<group>"; };
+		LOWLATAUDREF001 /* LowLatencyAudioPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LowLatencyAudioPlayer.swift; sourceTree = "<group>"; };
+		MFXUPREF001 /* MetalFXUpscaler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetalFXUpscaler.swift; sourceTree = "<group>"; };
+		MOTESTREF001 /* MotionEstimator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MotionEstimator.swift; sourceTree = "<group>"; };
+		MTLTEXVIEWREF001 /* MetalTextureView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetalTextureView.swift; sourceTree = "<group>"; };
 		PRD001 /* VisionRemotePS5.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = VisionRemotePS5.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		PRD002 /* VisionRemotePS5Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = VisionRemotePS5Tests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		RES001 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		RES002 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		RKVIDEOVIEWREF001 /* RealityKitVideoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RealityKitVideoView.swift; sourceTree = "<group>"; };
+		SAFEBUFPOOLREF001 /* SafeBufferPool.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SafeBufferPool.swift; sourceTree = "<group>"; };
+		SHADERSRC001 /* YUVToRGB.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = YUVToRGB.metal; sourceTree = "<group>"; };
 		SIMPSRC001 /* SimpleTestView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimpleTestView.swift; sourceTree = "<group>"; };
 		SRC001 /* VisionRemotePS5App.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisionRemotePS5App.swift; sourceTree = "<group>"; };
 		SRC002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
@@ -101,25 +115,15 @@
 		SRC016 /* ChiakiCrypto.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChiakiCrypto.swift; sourceTree = "<group>"; };
 		STRMSRCSVC001 /* StreamingService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamingService.swift; sourceTree = "<group>"; };
 		STRMSRCVIEW001 /* StreamingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamingView.swift; sourceTree = "<group>"; };
+		TRIPLEBUFREF001 /* TripleBufferPool.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripleBufferPool.swift; sourceTree = "<group>"; };
 		TSTSRC001 /* ChiakiCryptoTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChiakiCryptoTests.swift; sourceTree = "<group>"; };
 		TSTSRC002 /* ChiakiBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChiakiBridgeTests.swift; sourceTree = "<group>"; };
 		TSTSRC003 /* RegistrationServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RegistrationServiceTests.swift; sourceTree = "<group>"; };
 		TSTSRC004 /* ConsoleDiscoveryServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConsoleDiscoveryServiceTests.swift; sourceTree = "<group>"; };
 		TSTSRC005 /* PSNAuthServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PSNAuthServiceTests.swift; sourceTree = "<group>"; };
 		TSTSRC006 /* ConsoleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConsoleTests.swift; sourceTree = "<group>"; };
-		WOLSRCSVC001 /* WakeOnLanService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WakeOnLanService.swift; sourceTree = "<group>"; };
-		AUDRINGBUFREF001 /* AudioRingBuffer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRingBuffer.swift; sourceTree = "<group>"; };
-		LOWLATAUDREF001 /* LowLatencyAudioPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LowLatencyAudioPlayer.swift; sourceTree = "<group>"; };
-		MFXUPREF001 /* MetalFXUpscaler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetalFXUpscaler.swift; sourceTree = "<group>"; };
 		UPSPIPEREF001 /* UpscalingPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpscalingPipeline.swift; sourceTree = "<group>"; };
-		MTLTEXVIEWREF001 /* MetalTextureView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetalTextureView.swift; sourceTree = "<group>"; };
-		RKVIDEOVIEWREF001 /* RealityKitVideoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RealityKitVideoView.swift; sourceTree = "<group>"; };
-		TRIPLEBUFREF001 /* TripleBufferPool.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripleBufferPool.swift; sourceTree = "<group>"; };
-		FRMPCRREF001 /* FramePacer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FramePacer.swift; sourceTree = "<group>"; };
-		MOTESTREF001 /* MotionEstimator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MotionEstimator.swift; sourceTree = "<group>"; };
-		ENHUPREF001 /* EnhancedUpscaler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnhancedUpscaler.swift; sourceTree = "<group>"; };
-		COLSPCCNVREF001 /* ColorSpaceConverter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ColorSpaceConverter.swift; sourceTree = "<group>"; };
-		SAFEBUFPOOLREF001 /* SafeBufferPool.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SafeBufferPool.swift; sourceTree = "<group>"; };
+		WOLSRCSVC001 /* WakeOnLanService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WakeOnLanService.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -168,7 +172,7 @@
 				GRP005 /* Services */,
 				GRP008 /* Streaming */,
 				GRP009 /* Controllers */,
-			GRP011 /* Chiaki */,
+				GRP011 /* Chiaki */,
 				GRP012 /* Rendering */,
 				GRP006 /* Resources */,
 				RES002 /* Info.plist */,
@@ -241,6 +245,8 @@
 		GRP008 /* Streaming */ = {
 			isa = PBXGroup;
 			children = (
+				EF3CB6972F26A797005E85E1 /* AESGCMDecryptor.swift */,
+				EF3CB6982F26A797005E85E1 /* StreamingBufferPool.swift */,
 				SRC012 /* VideoDecoder.swift */,
 				SRC013 /* AudioDecoder.swift */,
 				UPSPIPEREF001 /* UpscalingPipeline.swift */,
@@ -387,6 +393,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				EF3CB6992F26A797005E85E1 /* AESGCMDecryptor.swift in Sources */,
+				EF3CB69A2F26A797005E85E1 /* StreamingBufferPool.swift in Sources */,
 				APP001 /* VisionRemotePS5App.swift in Sources */,
 				APP002 /* ContentView.swift in Sources */,
 				EF5C41992F0645D2007A7B67 /* PSNConnectionView.swift in Sources */,

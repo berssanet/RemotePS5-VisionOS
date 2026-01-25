@@ -37,6 +37,19 @@ class StreamingSession: ObservableObject {
     private var gmacKey: Data?
     private var nonce: UInt64 = 0
     
+    // MARK: - Buffer Pools (High-Performance Streaming)
+    
+    /// Buffer pool for video packets (larger buffers for video frames)
+    private let videoBufferPool = StreamingBufferPool(bufferSize: 131072, poolSize: 16) // 128KB
+    
+    /// Buffer pool for audio packets (smaller buffers)
+    private let audioBufferPool = StreamingBufferPool(bufferSize: 8192, poolSize: 8) // 8KB
+    
+    /// Optimized decryptor with buffer reuse
+    private lazy var streamingDecryptor: StreamingDecryptor = {
+        StreamingDecryptor(bufferPool: videoBufferPool)
+    }()
+    
     // Protocol constants
     private let controlPort: UInt16 = 9295
     private let videoPort: UInt16 = 9296
@@ -553,20 +566,37 @@ class StreamingSession: ObservableObject {
     }
     
     private func videoReceiveLoop() async {
-        print("[Session] Starting video receive loop")
+        print("[Session] Starting video receive loop (buffer pooling enabled)")
+        
+        // Update decryptor key if session key is set
+        streamingDecryptor.setKey(sessionKey)
+        
+        var frameCounter: UInt64 = 0
         
         while state == .streaming && !Task.isCancelled {
             if let videoConnection = videoConnection {
                 do {
+                    // Receive raw UDP data (NWConnection manages its own buffer)
                     let data = try await receiveUDP(from: videoConnection)
-                    if let decrypted = decrypt(data) {
-                        packetsReceived += 1
+                    
+                    // Decrypt using pooled buffers (zero-allocation in steady state)
+                    if let decryptedBuffer = streamingDecryptor.decrypt(data) {
+                        defer { decryptedBuffer.release() }
                         
-                        // Decode video frame - callback will be invoked on decoder thread
-                        try videoDecoder.decode(decrypted)
+                        packetsReceived += 1
+                        frameCounter += 1
+                        
+                        // Decode video frame using buffer's data view
+                        // The Data is a zero-copy view into the pooled buffer
+                        try videoDecoder.decode(decryptedBuffer.data)
                         
                         // Callback for raw data processing (optional)
-                        onVideoFrame?(decrypted)
+                        onVideoFrame?(decryptedBuffer.data)
+                        
+                        // Log pool stats periodically
+                        if frameCounter % 1000 == 0 {
+                            print("[Session] \(videoBufferPool.statistics)")
+                        }
                     }
                 } catch {
                     if !Task.isCancelled {
@@ -580,21 +610,30 @@ class StreamingSession: ObservableObject {
         }
         
         print("[Session] Video receive loop ended")
+        print("[Session] Final \(videoBufferPool.statistics)")
     }
     
     private func audioReceiveLoop() async {
-        print("[Session] Starting audio receive loop")
+        print("[Session] Starting audio receive loop (buffer pooling enabled)")
+        
+        // Create audio-specific decryptor with audio buffer pool
+        let audioDecryptor = StreamingDecryptor(bufferPool: audioBufferPool)
+        audioDecryptor.setKey(sessionKey)
         
         while state == .streaming && !Task.isCancelled {
             if let audioConnection = audioConnection {
                 do {
                     let data = try await receiveUDP(from: audioConnection)
-                    if let decrypted = decrypt(data) {
+                    
+                    // Decrypt using pooled buffers
+                    if let decryptedBuffer = audioDecryptor.decrypt(data) {
+                        defer { decryptedBuffer.release() }
+                        
                         // Decode and play audio
-                        audioDecoder.decodeAndPlay(decrypted)
+                        audioDecoder.decodeAndPlay(decryptedBuffer.data)
                         
                         // Callback for additional processing
-                        onAudioFrame?(decrypted)
+                        onAudioFrame?(decryptedBuffer.data)
                     }
                 } catch {
                     if !Task.isCancelled {
@@ -607,6 +646,7 @@ class StreamingSession: ObservableObject {
         }
         
         print("[Session] Audio receive loop ended")
+        print("[Session] Final \(audioBufferPool.statistics)")
     }
     
     private func receiveUDP(from connection: NWConnection) async throws -> Data {
