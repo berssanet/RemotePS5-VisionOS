@@ -46,6 +46,18 @@ class GameControllerManager: ObservableObject {
     private var continuousRightPlayer: CHHapticAdvancedPatternPlayer?
     private var isHapticsSupported: Bool = false
     
+    // MARK: - v10.3 Continuous Haptics State
+    
+    /// Current rumble intensities (for smooth transitions)
+    private var currentLeftIntensity: Float = 0
+    private var currentRightIntensity: Float = 0
+    
+    /// Continuous haptic pattern player for persistent rumble
+    private var continuousPlayer: CHHapticAdvancedPatternPlayer?
+    
+    /// Last update time for haptic smoothing
+    private var lastHapticUpdateTime: CFTimeInterval = 0
+    
     // Button bit flags (matching PS controller layout)
     struct ButtonMask {
         static let cross: UInt32       = 1 << 0
@@ -247,6 +259,78 @@ class GameControllerManager: ObservableObject {
     func resetAdaptiveTriggers() {
         setAdaptiveTrigger(isLeft: true, mode: .off)
         setAdaptiveTrigger(isLeft: false, mode: .off)
+    }
+    
+    // MARK: - v10.3 PS5 Feedback Integration
+    
+    /// Apply parsed PS5 haptic feedback to the connected DualSense controller
+    /// This is the main integration point with PS5HapticFeedbackParser
+    func applyPS5Feedback(_ feedback: PS5HapticFeedback) {
+        // Apply rumble motors
+        triggerRumble(left: feedback.leftMotor, right: feedback.rightMotor)
+        
+        // Apply adaptive triggers
+        applyAdaptiveTriggerEffect(isLeft: true, effect: feedback.leftTrigger)
+        applyAdaptiveTriggerEffect(isLeft: false, effect: feedback.rightTrigger)
+        
+        // Log significant changes
+        #if DEBUG
+        if feedback.isActive {
+            print("[Haptics] 🎮 PS5 Feedback: L=\(feedback.leftMotor) R=\(feedback.rightMotor)")
+        }
+        #endif
+    }
+    
+    /// Apply an AdaptiveTriggerEffect to the specified trigger
+    private func applyAdaptiveTriggerEffect(isLeft: Bool, effect: AdaptiveTriggerEffect) {
+        guard let controller = connectedController,
+              let dualSense = controller.physicalInputProfile as? GCDualSenseGamepad else {
+            return
+        }
+        
+        let trigger = isLeft ? dualSense.leftTrigger : dualSense.rightTrigger
+        
+        switch effect {
+        case .off:
+            trigger.setModeOff()
+            
+        case .feedback(let startPosition, let strength):
+            trigger.setModeFeedbackWithStartPosition(startPosition, resistiveStrength: strength)
+            
+        case .weapon(let startPosition, let endPosition, let strength):
+            trigger.setModeWeaponWithStartPosition(startPosition, endPosition: endPosition, resistiveStrength: strength)
+            
+        case .vibration(let startPosition, let amplitude, let frequency):
+            trigger.setModeVibrationWithStartPosition(startPosition, amplitude: amplitude, frequency: frequency)
+            
+        case .continuous(let strength):
+            // Continuous resistance throughout travel
+            trigger.setModeFeedbackWithStartPosition(0.0, resistiveStrength: strength)
+        }
+    }
+    
+    /// Update continuous rumble with smooth transitions (for persistent effects)
+    func updateContinuousRumble(left: Float, right: Float) {
+        // Smooth transition to avoid sudden changes
+        let smoothFactor: Float = 0.3
+        currentLeftIntensity = currentLeftIntensity * (1 - smoothFactor) + left * smoothFactor
+        currentRightIntensity = currentRightIntensity * (1 - smoothFactor) + right * smoothFactor
+        
+        // Convert to 0-255 and apply
+        triggerRumble(
+            left: UInt8(min(255, currentLeftIntensity * 255)),
+            right: UInt8(min(255, currentRightIntensity * 255))
+        )
+    }
+    
+    /// Stop all haptic feedback
+    func stopAllHaptics() {
+        triggerRumble(left: 0, right: 0)
+        resetAdaptiveTriggers()
+        currentLeftIntensity = 0
+        currentRightIntensity = 0
+        try? continuousPlayer?.stop(atTime: CHHapticTimeImmediate)
+        print("[Haptics] All haptics stopped")
     }
     
     // MARK: - Private Methods

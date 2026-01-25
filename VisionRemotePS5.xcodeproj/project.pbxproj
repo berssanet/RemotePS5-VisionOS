@@ -32,6 +32,8 @@
 		EF3CB6992F26A797005E85E1 /* AESGCMDecryptor.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF3CB6972F26A797005E85E1 /* AESGCMDecryptor.swift */; };
 		EF3CB69A2F26A797005E85E1 /* StreamingBufferPool.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF3CB6982F26A797005E85E1 /* StreamingBufferPool.swift */; };
 		EF3CB69C2F26AB2C005E85E1 /* AudioVideoSyncController.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF3CB69B2F26AB2C005E85E1 /* AudioVideoSyncController.swift */; };
+		EF3CB69E2F26AD7E005E85E1 /* PS5HapticFeedbackParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF3CB69D2F26AD7E005E85E1 /* PS5HapticFeedbackParser.swift */; };
+		EF3CB6A02F26AD85005E85E1 /* HighFrequencyInputController.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF3CB69F2F26AD85005E85E1 /* HighFrequencyInputController.swift */; };
 		EF48D8DA2F0FD3F8009C702E /* ChiakiCore.c in Sources */ = {isa = PBXBuildFile; fileRef = EF48D8D92F0FD3F8009C702E /* ChiakiCore.c */; };
 		EF5C41952F0645B0007A7B67 /* PSNSessionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF5C41942F0645B0007A7B67 /* PSNSessionManager.swift */; };
 		EF5C41972F0645C3007A7B67 /* HolepunchService.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF5C41962F0645C3007A7B67 /* HolepunchService.swift */; };
@@ -80,6 +82,8 @@
 		EF3CB6972F26A797005E85E1 /* AESGCMDecryptor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AESGCMDecryptor.swift; sourceTree = "<group>"; };
 		EF3CB6982F26A797005E85E1 /* StreamingBufferPool.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamingBufferPool.swift; sourceTree = "<group>"; };
 		EF3CB69B2F26AB2C005E85E1 /* AudioVideoSyncController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioVideoSyncController.swift; sourceTree = "<group>"; };
+		EF3CB69D2F26AD7E005E85E1 /* PS5HapticFeedbackParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PS5HapticFeedbackParser.swift; sourceTree = "<group>"; };
+		EF3CB69F2F26AD85005E85E1 /* HighFrequencyInputController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HighFrequencyInputController.swift; sourceTree = "<group>"; };
 		EF48D8D92F0FD3F8009C702E /* ChiakiCore.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = ChiakiCore.c; sourceTree = "<group>"; };
 		EF5C41942F0645B0007A7B67 /* PSNSessionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PSNSessionManager.swift; sourceTree = "<group>"; };
 		EF5C41962F0645C3007A7B67 /* HolepunchService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HolepunchService.swift; sourceTree = "<group>"; };
@@ -269,6 +273,8 @@
 		GRP009 /* Controllers */ = {
 			isa = PBXGroup;
 			children = (
+				EF3CB69F2F26AD85005E85E1 /* HighFrequencyInputController.swift */,
+				EF3CB69D2F26AD7E005E85E1 /* PS5HapticFeedbackParser.swift */,
 				SRC014 /* GameControllerManager.swift */,
 			);
 			path = Controllers;
@@ -407,6 +413,7 @@
 				APP006 /* PairingView.swift in Sources */,
 				APP007 /* StreamingImmersiveView.swift in Sources */,
 				APP008 /* Console.swift in Sources */,
+				EF3CB69E2F26AD7E005E85E1 /* PS5HapticFeedbackParser.swift in Sources */,
 				EF5C41972F0645C3007A7B67 /* HolepunchService.swift in Sources */,
 				APP010 /* ConsoleDiscoveryService.swift in Sources */,
 				APP011 /* PSNAuthService.swift in Sources */,
@@ -422,6 +429,7 @@
 				SIMP001 /* SimpleTestView.swift in Sources */,
 				STRMSVC001 /* StreamingService.swift in Sources */,
 				SHADER001 /* YUVToRGB.metal in Sources */,
+				EF3CB6A02F26AD85005E85E1 /* HighFrequencyInputController.swift in Sources */,
 				STRMVIEW001 /* StreamingView.swift in Sources */,
 				EF3CB69C2F26AB2C005E85E1 /* AudioVideoSyncController.swift in Sources */,
 				CNSSTO001 /* ConsoleStorageService.swift in Sources */,

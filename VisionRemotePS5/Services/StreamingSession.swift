@@ -55,6 +55,24 @@ class StreamingSession: ObservableObject {
     /// A/V Sync controller for PTS-based drift correction
     private let avSyncController = AudioVideoSyncController(sampleRate: 48000)
     
+    // MARK: - High-Frequency Input System
+    
+    /// Dedicated high-frequency input controller (120Hz polling)
+    private lazy var inputController: HighFrequencyInputController = {
+        let controller = HighFrequencyInputController()
+        controller.pollingFrequencyHz = 120
+        controller.onInputPacket = { [weak self] packet in
+            self?.sendInputPacket(packet)
+        }
+        return controller
+    }()
+    
+    /// Parser for PS5 haptic feedback packets
+    private let hapticParser = PS5HapticFeedbackParser()
+    
+    /// Reference to GameControllerManager for haptic output
+    weak var gameControllerManager: GameControllerManager?
+    
     // Protocol constants
     private let controlPort: UInt16 = 9295
     private let videoPort: UInt16 = 9296
@@ -237,6 +255,40 @@ class StreamingSession: ObservableObject {
         
         let packet = createInputPacket(input)
         sendControlPacket(type: .input, payload: packet)
+    }
+    
+    // MARK: - v10.3 High-Frequency Input
+    
+    /// Send pre-serialized input packet (called from HighFrequencyInputController)
+    /// This is the fast path - no MainActor required
+    private func sendInputPacket(_ packet: InputPacket) {
+        guard state == .streaming else { return }
+        sendControlPacket(type: .input, payload: packet.serialize())
+    }
+    
+    /// Start the high-frequency input loop
+    func startInputController() {
+        inputController.start()
+        
+        // Configure haptic feedback callback
+        hapticParser.onFeedbackChanged = { [weak self] feedback in
+            Task { @MainActor in
+                self?.gameControllerManager?.applyPS5Feedback(feedback)
+            }
+        }
+        
+        print("[Session] ✅ Input controller started at \(inputController.pollingFrequencyHz)Hz")
+    }
+    
+    /// Stop the input controller
+    func stopInputController() {
+        inputController.stop()
+        print("[Session] Input controller stopped")
+    }
+    
+    /// Process incoming haptic feedback packet from PS5
+    func processHapticFeedback(_ data: Data) {
+        _ = hapticParser.parseChiakiPacket(data)
     }
     
     /// Wake the console from standby
