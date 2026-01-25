@@ -49,6 +49,15 @@ class VideoDecoder: ObservableObject {
     private var pps: Data?
     private var vps: Data? // For HEVC
     
+    // MARK: - Frame Dropping (Low-Latency Prioritization)
+    /// Maximum pending frames before dropping. Prioritizes latency over smoothness.
+    private let maxPendingFrames = 3
+    /// Thread-safe counter for frames currently in the decode pipeline
+    private var pendingFrameCount: Int32 = 0
+    private let pendingFrameLock = NSLock()
+    /// Statistics for frame dropping
+    @Published var droppedFrameCount: Int = 0
+    
     init() {}
     
     deinit {
@@ -483,6 +492,24 @@ class VideoDecoder: ObservableObject {
             throw VideoDecoderError.noSession
         }
         
+        // MARK: - Frame Dropping Logic
+        // Check if decode buffer is congested. Drop frames to prioritize latency.
+        pendingFrameLock.lock()
+        let currentPending = pendingFrameCount
+        if currentPending >= maxPendingFrames {
+            pendingFrameLock.unlock()
+            // Drop this frame to reduce latency
+            Task { @MainActor in
+                self.droppedFrameCount += 1
+            }
+            if frameCounter % 30 == 0 {
+                print("[VideoDecoder] ⚠️ Dropping frame (pending: \(currentPending)/\(maxPendingFrames)) - prioritizing latency")
+            }
+            return
+        }
+        pendingFrameCount += 1
+        pendingFrameLock.unlock()
+        
         // Create block buffer from data
         var blockBuffer: CMBlockBuffer?
         
@@ -502,6 +529,7 @@ class VideoDecoder: ObservableObject {
         )
         
         guard status == kCMBlockBufferNoErr, let buffer = blockBuffer else {
+            decrementPendingFrameCount()
             throw VideoDecoderError.blockBufferCreationFailed
         }
         
@@ -522,6 +550,7 @@ class VideoDecoder: ObservableObject {
         )
         
         guard status == noErr, let sample = sampleBuffer else {
+            decrementPendingFrameCount()
             throw VideoDecoderError.sampleBufferCreationFailed
         }
         
@@ -538,11 +567,22 @@ class VideoDecoder: ObservableObject {
         )
         
         if status != noErr {
+            decrementPendingFrameCount()
             throw VideoDecoderError.decodingFailed
         }
     }
     
+    /// Thread-safe decrement of pending frame counter
+    private func decrementPendingFrameCount() {
+        pendingFrameLock.lock()
+        pendingFrameCount = max(0, pendingFrameCount - 1)
+        pendingFrameLock.unlock()
+    }
+    
     private func handleDecodedFrame(_ pixelBuffer: CVPixelBuffer) {
+        // Decrement pending frame counter (frame completed decoding)
+        decrementPendingFrameCount()
+        
         lastFrame = pixelBuffer
         
         // Calculate frame rate

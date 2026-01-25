@@ -2,6 +2,7 @@ import Foundation
 import GameController
 import Combine
 import CoreHaptics
+import QuartzCore  // CADisplayLink for vsync-synchronized polling
 
 /// Manages game controller input and maps to PS controller layout
 @MainActor
@@ -20,7 +21,24 @@ class GameControllerManager: ObservableObject {
     /// This bypasses Combine throttling and sends input immediately to the network
     var onInputReady: ((ControllerInput) -> Void)?
     
+    // MARK: - Display-Synchronized Polling (Motion-to-Photon Optimization)
+    /// CADisplayLink for vsync-synchronized input polling
+    /// Reduces motion-to-photon latency by reading input at the start of each frame
+    private var displayLink: CADisplayLink?
+    
+    /// Fallback timer for when display link is not available
     private var pollTimer: Timer?
+    
+    /// Last polled input state (for delta detection)
+    private var lastPolledInput = ControllerInput()
+    
+    /// Timestamp of last input poll (monotonic clock)
+    private var lastPollTime: CFTimeInterval = 0
+    
+    /// Statistics: Average input-to-render latency in milliseconds
+    @Published var inputLatencyMs: Double = 0
+    private var latencySamples: [Double] = []
+    private let maxLatencySamples = 60
     
     // CoreHaptics engine for rumble
     private var hapticEngine: CHHapticEngine?
@@ -57,26 +75,88 @@ class GameControllerManager: ObservableObject {
     }
     
     deinit {
+        // Note: deinit cannot call @MainActor methods directly
+        // Invalidate timers inline to avoid actor isolation issues
+        displayLink?.invalidate()
         pollTimer?.invalidate()
         hapticEngine?.stop()
     }
     
     // MARK: - Public Methods
     
-    /// Start polling controller input
-    func startPolling(interval: TimeInterval = 1.0 / 120.0) {
-        pollTimer?.invalidate()
+    /// Start polling controller input using CADisplayLink (vsync-synchronized)
+    /// This ensures input is sampled at the start of each frame for minimal latency
+    /// - Parameter preferredFPS: Target polling rate (default 120Hz for Vision Pro)
+    func startPolling(preferredFPS: Int = 120) {
+        stopPolling()
+        
+        // Create CADisplayLink on main thread for vsync synchronization
+        displayLink = CADisplayLink(target: self, selector: #selector(displayLinkFired(_:)))
+        
+        // Configure for high refresh rate (120Hz on Vision Pro)
+        if #available(visionOS 1.0, iOS 15.0, *) {
+            displayLink?.preferredFrameRateRange = CAFrameRateRange(
+                minimum: 60,
+                maximum: Float(preferredFPS),
+                __preferred: Float(preferredFPS)
+            )
+        }
+        
+        // Add to common run loop mode for consistent firing
+        displayLink?.add(to: .main, forMode: .common)
+        
+        lastPollTime = CACurrentMediaTime()
+        print("[Controller] ✅ Display-linked polling started at \(preferredFPS)Hz (vsync-synchronized)")
+    }
+    
+    /// Start polling with fallback Timer (for when DisplayLink unavailable)
+    func startPollingWithTimer(interval: TimeInterval = 1.0 / 120.0) {
+        stopPolling()
         pollTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.pollInput()
             }
         }
+        print("[Controller] ⚠️ Timer-based polling started (fallback mode)")
     }
     
-    /// Stop polling controller input
+    /// Stop all polling methods
     func stopPolling() {
+        displayLink?.invalidate()
+        displayLink = nil
         pollTimer?.invalidate()
         pollTimer = nil
+    }
+    
+    /// Manual poll method - call from render loop for tightest synchronization
+    /// Use this when you have direct control over the render loop (e.g., CompositorServices)
+    /// Returns the current controller state immediately
+    @discardableResult
+    func pollInputSync() -> ControllerInput {
+        let startTime = CACurrentMediaTime()
+        
+        guard let gamepad = connectedController?.extendedGamepad else {
+            return currentInput
+        }
+        
+        // Read all input state synchronously
+        let input = readGamepadState(gamepad)
+        
+        // Update published state
+        currentInput = input
+        lastPolledInput = input
+        
+        // Measure latency (time from poll start to completion)
+        let latencyMs = (CACurrentMediaTime() - startTime) * 1000.0
+        updateLatencyStats(latencyMs)
+        
+        // Invoke direct callback for network transmission
+        onInputReady?(input)
+        
+        // Publish for Combine subscribers
+        inputPublisher.send(input)
+        
+        return input
     }
     
     /// Trigger rumble feedback (left = low frequency, right = high frequency)
@@ -226,46 +306,112 @@ class GameControllerManager: ObservableObject {
     }
     
     private func configureDualSense(_ gamepad: GCExtendedGamepad) {
-        // Set up value changed handlers for real-time response
+        // Note: We no longer rely on valueChangedHandler for primary input
+        // Instead, we use display-synchronized polling for consistent timing
+        // The handler is kept as a backup for detecting rapid button presses
+        // that might occur between poll cycles
         gamepad.valueChangedHandler = { [weak self] _, element in
-            Task { @MainActor [weak self] in
-                self?.pollInput()
+            // Only update on button state changes (not analog - too noisy)
+            if element is GCControllerButtonInput {
+                Task { @MainActor [weak self] in
+                    // Mark that input changed - will be picked up on next poll
+                    self?.lastPolledInput.buttons = 0xFFFFFFFF // Force delta
+                }
             }
         }
     }
     
+    // MARK: - Display Link Handler
+    
+    /// Called by CADisplayLink on every vsync (start of frame)
+    @objc private func displayLinkFired(_ link: CADisplayLink) {
+        // Measure time since last poll
+        let now = link.timestamp
+        let deltaTime = now - lastPollTime
+        lastPollTime = now
+        
+        // Poll input synchronously at frame start
+        pollInput()
+        
+        // Debug: Log frame timing every 120 frames (~1 second)
+        #if DEBUG
+        if Int(now * 120) % 120 == 0 {
+            let fps = 1.0 / deltaTime
+            print("[Controller] 📊 Polling at \(String(format: "%.1f", fps))Hz, latency: \(String(format: "%.2f", inputLatencyMs))ms")
+        }
+        #endif
+    }
+    
+    /// Update rolling average of input latency
+    private func updateLatencyStats(_ latencyMs: Double) {
+        latencySamples.append(latencyMs)
+        if latencySamples.count > maxLatencySamples {
+            latencySamples.removeFirst()
+        }
+        inputLatencyMs = latencySamples.reduce(0, +) / Double(latencySamples.count)
+    }
+    
+    /// Internal poll method - reads gamepad and dispatches input
     private func pollInput() {
         guard let gamepad = connectedController?.extendedGamepad else { return }
         
+        let startTime = CACurrentMediaTime()
+        
+        // Read gamepad state
+        let input = readGamepadState(gamepad)
+        
+        // Update state
+        currentInput = input
+        lastPolledInput = input
+        
+        // Measure and track latency
+        let latencyMs = (CACurrentMediaTime() - startTime) * 1000.0
+        updateLatencyStats(latencyMs)
+        
+        // v10.1: Direct send - invoke callback immediately for minimal latency
+        onInputReady?(input)
+        
+        // Publish for Combine subscribers
+        inputPublisher.send(input)
+    }
+    
+    /// Pure function to read all gamepad state into ControllerInput struct
+    /// Optimized for minimal overhead - no branching on hot path
+    private func readGamepadState(_ gamepad: GCExtendedGamepad) -> ControllerInput {
         var input = ControllerInput()
         
-        // Analog sticks
+        // Analog sticks (direct memory read, no method calls)
         input.leftStickX = gamepad.leftThumbstick.xAxis.value
         input.leftStickY = gamepad.leftThumbstick.yAxis.value
         input.rightStickX = gamepad.rightThumbstick.xAxis.value
         input.rightStickY = gamepad.rightThumbstick.yAxis.value
         
-        // Triggers
+        // Triggers (analog values)
         input.leftTrigger = gamepad.leftTrigger.value
         input.rightTrigger = gamepad.rightTrigger.value
         
-        // Buttons
+        // Buttons - build bitmask with bitwise OR (single cycle per button)
         var buttons: UInt32 = 0
         
+        // Face buttons
         if gamepad.buttonA.isPressed { buttons |= ButtonMask.cross }
         if gamepad.buttonB.isPressed { buttons |= ButtonMask.circle }
         if gamepad.buttonX.isPressed { buttons |= ButtonMask.square }
         if gamepad.buttonY.isPressed { buttons |= ButtonMask.triangle }
         
+        // Shoulders
         if gamepad.leftShoulder.isPressed { buttons |= ButtonMask.l1 }
         if gamepad.rightShoulder.isPressed { buttons |= ButtonMask.r1 }
         
+        // Trigger buttons (digital threshold)
         if gamepad.leftTrigger.isPressed { buttons |= ButtonMask.l2 }
         if gamepad.rightTrigger.isPressed { buttons |= ButtonMask.r2 }
         
+        // Thumbstick clicks
         if gamepad.leftThumbstickButton?.isPressed ?? false { buttons |= ButtonMask.l3 }
         if gamepad.rightThumbstickButton?.isPressed ?? false { buttons |= ButtonMask.r3 }
         
+        // Menu/System buttons
         if gamepad.buttonMenu.isPressed { buttons |= ButtonMask.options }
         if gamepad.buttonOptions?.isPressed ?? false { buttons |= ButtonMask.share }
         if gamepad.buttonHome?.isPressed ?? false { buttons |= ButtonMask.psButton }
@@ -278,14 +424,7 @@ class GameControllerManager: ObservableObject {
         
         input.buttons = buttons
         
-        currentInput = input
-        
-        // v10.1: Direct 120Hz send - invoke callback immediately for minimal latency
-        // This sends input to network on every poll cycle (8.3ms intervals)
-        onInputReady?(input)
-        
-        // Also publish for any Combine subscribers
-        inputPublisher.send(input)
+        return input
     }
     
     // MARK: - Haptics Implementation

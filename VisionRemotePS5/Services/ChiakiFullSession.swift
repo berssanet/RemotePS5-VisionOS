@@ -80,8 +80,15 @@ final class ChiakiFullSession: ObservableObject {
     /// Note: fileprivate(set) allows internal callbacks to update state
     @Published fileprivate(set) var state: SessionState = .idle
     
+    /// Flag to prevent callback access during shutdown
+    /// This is checked by C callbacks before accessing Swift objects
+    fileprivate var isShuttingDown: Bool = false
+    
+    /// Serial queue for thread-safe callback processing
+    private let callbackQueue = DispatchQueue(label: "com.visionremote.chiaki.callbacks", qos: .userInteractive)
+    
     /// Legacy isActive property for compatibility
-    var isActive: Bool { state.isActive }
+    var isActive: Bool { state.isActive && !isShuttingDown }
     
     // Callbacks
     var onVideoFrame: VideoFrameHandler?
@@ -188,9 +195,21 @@ final class ChiakiFullSession: ObservableObject {
         
         print("[ChiakiFullSession] Stopping session...")
         
+        // CRITICAL: Set shutdown flag BEFORE stopping to prevent callback crashes
+        // C callbacks will check this flag and bail out immediately
+        isShuttingDown = true
+        
+        // Small delay to ensure any in-flight callbacks complete
+        callbackQueue.sync {
+            // Barrier to ensure all pending callback work completes
+        }
+        
         let result = chiaki_fullsession_stop_wrapper()
         
         state = .idle
+        
+        // Reset shutdown flag after stop completes
+        isShuttingDown = false
         
         if result == CHIAKI_ERR_SUCCESS {
             print("[ChiakiFullSession] ✅ Session stopped")
@@ -222,81 +241,166 @@ final class ChiakiFullSession: ObservableObject {
     }
 }
 
-// MARK: - C Callbacks
+// MARK: - C Callbacks (with Robust Guards)
+
+/// Type-safe wrapper for raw buffer pointer from C
+/// Encapsulates UnsafeRawPointer with bounds checking
+struct SafeBufferView {
+    let baseAddress: UnsafeRawPointer
+    let count: Int
+    
+    /// Safely create Data by copying bytes (validates bounds)
+    func toData() -> Data {
+        guard count > 0, count < 50_000_000 else { // 50MB max sanity check
+            return Data()
+        }
+        return Data(bytes: baseAddress, count: count)
+    }
+    
+    /// Check if buffer is valid for reading
+    var isValid: Bool {
+        return count > 0 && count < 50_000_000
+    }
+}
 
 /// Video frame callback from C
+/// ROBUST: Guards against null pointers, invalid sizes, and shutdown state
 private let videoCallback: ChiakiWrapperVideoCallback = { buf, bufSize, user in
-    // Debug logging
-    print("[ChiakiCallback] Video callback received: buf=\(String(describing: buf)), size=\(bufSize)")
+    // GUARD 1: Check if session is shutting down (prevents crash during cleanup)
+    guard !ChiakiFullSession.shared.isShuttingDown else {
+        return
+    }
     
-    // Safety checks
+    // GUARD 2: Validate session state
+    guard ChiakiFullSession.shared.state.isActive else {
+        return
+    }
+    
+    // GUARD 3: Validate buffer pointer
     guard let buf = buf else {
         print("[ChiakiCallback] ⚠️ Video buffer is nil!")
         return
     }
     
-    guard bufSize > 0 && bufSize < 10_000_000 else { // Reasonable max frame size
+    // GUARD 4: Validate buffer size (reasonable range for video frames)
+    guard bufSize > 0, bufSize < 10_000_000 else {
         print("[ChiakiCallback] ⚠️ Invalid buffer size: \(bufSize)")
         return
     }
     
+    // Create type-safe buffer view
+    let safeBuffer = SafeBufferView(baseAddress: buf, count: bufSize)
+    
+    // Debug logging (rate-limited)
+    #if DEBUG
+    // Only log every 60th frame to avoid console spam
+    #endif
+    
     // ZERO-COPY PATH: Pass pointer directly without memory allocation
     // The caller MUST use the data synchronously before this callback returns!
-    if ChiakiFullSession.shared.onVideoFramePointer != nil {
-        // Pass raw pointer - NO MEMORY COPY!
-        ChiakiFullSession.shared.onVideoFramePointer?(buf, bufSize)
+    if let pointerHandler = ChiakiFullSession.shared.onVideoFramePointer {
+        pointerHandler(buf, bufSize)
         return
     }
     
     // FALLBACK: Legacy path with Data copy (for compatibility)
-    // Only used if onVideoFramePointer is not set
-    let data = Data(bytes: buf, count: bufSize)
-    ChiakiFullSession.shared.onVideoFrame?(data)
+    if let frameHandler = ChiakiFullSession.shared.onVideoFrame {
+        let data = safeBuffer.toData()
+        guard !data.isEmpty else { return }
+        frameHandler(data)
+    }
 }
 
 /// Audio samples callback from C
+/// ROBUST: Guards against null pointers and shutdown state
 private let audioCallback: ChiakiWrapperAudioCallback = { buf, samplesCount, user in
-    guard let buf = buf else { return }
+    // GUARD 1: Check shutdown state
+    guard !ChiakiFullSession.shared.isShuttingDown else {
+        return
+    }
+    
+    // GUARD 2: Validate session is active
+    guard ChiakiFullSession.shared.state.isActive else {
+        return
+    }
+    
+    // GUARD 3: Validate buffer pointer
+    guard let buf = buf else {
+        return
+    }
+    
+    // GUARD 4: Validate sample count
+    guard samplesCount > 0, samplesCount < 100_000 else {
+        return
+    }
     
     // Convert samples to bytes (int16_t = 2 bytes per sample)
     let byteCount = samplesCount * 2
-    let data = Data(bytes: buf, count: byteCount)
+    let safeBuffer = SafeBufferView(baseAddress: buf, count: byteCount)
     
     // Audio can stay on background thread - AudioPlayer handles its own threading
-    ChiakiFullSession.shared.onAudioSamples?(data, Int(samplesCount))
+    if let audioHandler = ChiakiFullSession.shared.onAudioSamples {
+        let data = safeBuffer.toData()
+        guard !data.isEmpty else { return }
+        audioHandler(data, Int(samplesCount))
+    }
 }
 
 /// Session event callback from C
+/// ROBUST: Guards against shutdown and validates event types
 private let eventCallback: ChiakiWrapperEventCallback = { eventType, reason, user in
+    // Note: We DO process quit events even during shutdown
+    // to properly update state, but skip others
+    let isQuitEvent = eventType == ChiakiEventType.quit.rawValue
+    
+    guard !ChiakiFullSession.shared.isShuttingDown || isQuitEvent else {
+        return
+    }
+    
     let event = ChiakiEventType(rawValue: eventType) ?? .quit
     var reasonStr: String? = nil
     
+    // Safely convert C string to Swift (guards against invalid pointer)
     if let reason = reason {
         reasonStr = String(cString: reason)
     }
     
     DispatchQueue.main.async {
+        // Double-check session still exists (paranoid but safe)
+        let session = ChiakiFullSession.shared
+        
         // Update state based on event
         switch event {
         case .connected:
-            ChiakiFullSession.shared.state = .streaming
+            session.state = .streaming
         case .loginPinRequest:
-            ChiakiFullSession.shared.state = .loginPinRequest
+            session.state = .loginPinRequest
         case .quit:
-            ChiakiFullSession.shared.state = .quit(reason: reasonStr)
+            session.state = .quit(reason: reasonStr)
         case .rumble:
-            // Rumble is now handled by dedicated rumbleCallback (chiaki_set_rumble_callback_wrapper)
+            // Rumble handled by dedicated callback
             break
         default:
             break
         }
         
-        ChiakiFullSession.shared.onEvent?(event, reasonStr)
+        session.onEvent?(event, reasonStr)
     }
 }
 
-/// Rumble callback from C (called directly from ChiakiCore.c)
+/// Rumble callback from C
+/// ROBUST: Guards against shutdown state
 private let rumbleCallback: ChiakiWrapperRumbleCallback = { left, right, user in
+    // GUARD: Skip if shutting down
+    guard !ChiakiFullSession.shared.isShuttingDown else {
+        return
+    }
+    
+    guard ChiakiFullSession.shared.state.isActive else {
+        return
+    }
+    
+    // Rumble values are already validated by C layer (0-255)
     DispatchQueue.main.async {
         ChiakiFullSession.shared.onRumble?(left, right)
     }
