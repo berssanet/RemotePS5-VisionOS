@@ -58,7 +58,9 @@ final class VideoDecoder {
     // MARK: - Configuration
     
     /// Output format preference for HDR support
-    var preferredFormat: VideoOutputFormat = .hdr10bit
+    /// v10.4 FIX: Use SDR BGRA for direct Metal texture compatibility
+    /// P010 (HDR) requires YUV→RGB color space conversion which is not yet integrated
+    var preferredFormat: VideoOutputFormat = .sdr8bit
     
     // MARK: - Private Properties
     

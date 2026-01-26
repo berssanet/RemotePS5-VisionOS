@@ -48,8 +48,11 @@ struct StreamingView: View {
                 .glassBackgroundEffect()
         }
         .task {
-            // Initialize upscaling pipeline lazily
+            // Initialize and enable upscaling pipeline
             upscalingPipeline.initialize()
+            if use4KUpscaling {
+                upscalingPipeline.enable()
+            }
             await viewModel.startStreaming(console: console)
         }
         .onDisappear {
@@ -483,9 +486,23 @@ class StreamingViewModel: ObservableObject, StreamingServiceDelegate {
     }
     
     nonisolated func streamingService(_ service: StreamingService, didReceiveVideoFrame frame: CVPixelBuffer, timestamp: UInt64) {
-        // v10.3: Frames now go directly to VideoTextureCoordinator via StreamingSession
-        // This eliminates MainActor dispatch overhead for 60fps video
-        // Only post notification for views that need to know about frame availability
+        // v10.4: Process through UpscalingPipeline for 4K output
+        // This feeds the upscaledTexture that StreamingView displays
+        // Note: Using Task to dispatch to MainActor as UpscalingPipeline is @MainActor
+        Task { @MainActor in
+            let upscalingPipeline = UpscalingPipeline.shared
+            if upscalingPipeline.isEnabled {
+                _ = upscalingPipeline.processFrame(frame)
+            }
+        }
+        
+        // v10.3 FIX: Send frame directly to VideoTextureCoordinator for RealityKit rendering
+        // This is the critical path: ChiakiFullSession → VideoDecoder → VideoTextureCoordinator → RealityKit
+        if #available(visionOS 2.0, *) {
+            VideoTextureCoordinator.shared.updateTexture(from: frame)
+        }
+        
+        // Post notification for any views that need to track frame availability
         NotificationCenter.default.post(name: .videoFrameReceived, object: nil)
     }
     

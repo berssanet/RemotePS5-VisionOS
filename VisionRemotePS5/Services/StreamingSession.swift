@@ -98,6 +98,18 @@ class StreamingSession: ObservableObject {
     var onVideoFrame: ((Data) -> Void)?
     var onAudioFrame: ((Data) -> Void)?
     
+    // MARK: - v10.3 Packet Loss Detection
+    
+    /// Packet loss detector for video stream
+    private let videoPacketLossDetector = PacketLossDetector(streamName: "Video")
+    
+    /// Packet loss detector for audio stream
+    private let audioPacketLossDetector = PacketLossDetector(streamName: "Audio")
+    
+    /// Minimum time between IDR requests (avoid flooding)
+    private var lastIDRRequestTime: UInt64 = 0
+    private let minIDRRequestIntervalNs: UInt64 = 100_000_000  // 100ms
+    
     // MARK: - Types
     
     enum SessionState: Equatable {
@@ -152,7 +164,7 @@ class StreamingSession: ObservableObject {
     }
     
     /// Configure VideoDecoder callback for direct texture update.
-    /// This is the HOT PATH: VideoToolbox → VideoTextureCoordinator (bypasses SwiftUI state)
+    /// This is the HOT PATH: VideoToolbox → UpscalingPipeline → VideoTextureCoordinator (bypasses SwiftUI state)
     private func setupVideoDecoderCallback() {
         videoDecoder.onFrameDecoded = { [weak self] pixelBuffer in
             // CRITICAL: Called on VideoToolbox thread - do NOT dispatch to MainActor
@@ -163,6 +175,27 @@ class StreamingSession: ObservableObject {
             let pts = self.extractVideoPTS(from: pixelBuffer)
             if pts > 0 {
                 self.avSyncController.onVideoFramePresented(pts: pts)
+            }
+            
+            // v10.4: Process through UpscalingPipeline for 4K output
+            // This feeds the upscaledTexture that StreamingView displays
+            let upscalingPipeline = UpscalingPipeline.shared
+            if upscalingPipeline.isEnabled {
+                // 4K path: Upscale and forward to UI
+                let result = upscalingPipeline.processFrame(pixelBuffer)
+                if result == nil {
+                    // Log first failure only
+                    if upscalingPipeline.textureFrameId == 0 {
+                        print("[StreamingSession] ⚠️ UpscalingPipeline.processFrame returned nil")
+                    }
+                }
+            } else {
+                // Log only once
+                struct Once { static var logged = false }
+                if !Once.logged {
+                    Once.logged = true
+                    print("[StreamingSession] ⚠️ UpscalingPipeline not enabled in callback")
+                }
             }
             
             // v10.3: Direct update to VideoTextureCoordinator (bypasses SwiftUI)
@@ -572,9 +605,19 @@ class StreamingSession: ObservableObject {
         
         let host = NWEndpoint.Host(console.ipAddress)
         
-        // Video connection (UDP 9296)
+        // v10.3: Video connection (UDP 9296) with interactiveVideo priority
         let videoParams = NWParameters.udp
         videoParams.allowLocalEndpointReuse = true
+        
+        // Configure for lowest latency gaming traffic
+        videoParams.serviceClass = .interactiveVideo  // Highest priority for real-time video
+        videoParams.multipathServiceType = .handover  // Better Wi-Fi/cellular handover
+        videoParams.allowFastOpen = true              // TCP Fast Open for quicker reconnects
+        
+        // Set IP DSCP for QoS (EF = Expedited Forwarding, highest priority)
+        if let ipOptions = videoParams.defaultProtocolStack.internetProtocol as? NWProtocolIP.Options {
+            ipOptions.disableFragmentation = false  // Allow large frames
+        }
         
         videoConnection = NWConnection(
             host: host,
@@ -582,15 +625,20 @@ class StreamingSession: ObservableObject {
             using: videoParams
         )
         
-        // Audio connection (UDP 9297)
+        // v10.3: Audio connection (UDP 9297) with interactiveVoice priority
         let audioParams = NWParameters.udp
         audioParams.allowLocalEndpointReuse = true
+        audioParams.serviceClass = .interactiveVoice  // High priority for real-time audio
+        audioParams.multipathServiceType = .handover
+        audioParams.allowFastOpen = true
         
         audioConnection = NWConnection(
             host: host,
             port: NWEndpoint.Port(rawValue: audioPort)!,
             using: audioParams
         )
+        
+        print("[Session] 🌐 Network config: Video=interactiveVideo, Audio=interactiveVoice")
         
         // Start both connections
         try await withThrowingTaskGroup(of: Void.self) { group in
@@ -673,11 +721,14 @@ class StreamingSession: ObservableObject {
     }
     
     private func videoReceiveLoop() async {
-        print("[Session] Starting video receive loop v10.3 (zero-copy decryption enabled)")
+        print("[Session] Starting video receive loop v10.3 (zero-copy + packet loss detection)")
         
         // Update both decryptors with session key
         streamingDecryptor.setKey(sessionKey)
         zeroCopyDecryptor.setKey(sessionKey)
+        
+        // Reset packet loss detector
+        videoPacketLossDetector.reset()
         
         var frameCounter: UInt64 = 0
         
@@ -686,6 +737,25 @@ class StreamingSession: ObservableObject {
                 do {
                     // Receive raw UDP data
                     let data = try await receiveUDP(from: videoConnection)
+                    
+                    // v10.3: Extract sequence number from packet header (first 4 bytes)
+                    // PS5 Remote Play packets typically have: [4 bytes seq][4 bytes pts][payload]
+                    var needsIDR = false
+                    if data.count >= 4 {
+                        let sequence = data.withUnsafeBytes { ptr -> UInt32 in
+                            ptr.load(as: UInt32.self)
+                        }
+                        
+                        // Check for packet loss
+                        if videoPacketLossDetector.processPacket(sequence: sequence) {
+                            needsIDR = true
+                        }
+                    }
+                    
+                    // Request IDR frame if loss detected (with rate limiting)
+                    if needsIDR {
+                        await requestIDRFrame()
+                    }
                     
                     // v10.3: Use zero-copy decryptor for best performance
                     if let decryptedBuffer = zeroCopyDecryptor.decrypt(data: data) {
@@ -704,6 +774,7 @@ class StreamingSession: ObservableObject {
                         if frameCounter % 1000 == 0 {
                             print("[Session] \(networkBufferPool.statistics)")
                             print("[Session] \(zeroCopyDecryptor.statistics)")
+                            print("[Session] \(videoPacketLossDetector.statistics)")
                         }
                     }
                 } catch {
@@ -719,6 +790,25 @@ class StreamingSession: ObservableObject {
         
         print("[Session] Video receive loop ended")
         print("[Session] Final \(zeroCopyDecryptor.statistics)")
+        print("[Session] Final \(videoPacketLossDetector.statistics)")
+    }
+    
+    /// Request an IDR frame (keyframe) from the console.
+    /// Called when packet loss is detected to quickly clear visual artifacts.
+    private func requestIDRFrame() async {
+        // Rate limit IDR requests to avoid flooding
+        let now = mach_absolute_time()
+        guard now - lastIDRRequestTime > minIDRRequestIntervalNs else {
+            return
+        }
+        lastIDRRequestTime = now
+        
+        print("[Session] 📺 Requesting IDR frame (packet loss recovery)")
+        
+        // Send IDR request packet to console
+        // Payload: [1 byte reason] where 0x01 = packet loss
+        let payload = Data([0x01])
+        sendControlPacket(type: .idrRequest, payload: payload)
     }
     
     private func audioReceiveLoop() async {
@@ -964,6 +1054,8 @@ enum PacketType: UInt8 {
     case input = 0x05
     case heartbeat = 0x06
     case disconnect = 0x07
+    case idrRequest = 0x08       // v10.3: Request IDR frame (keyframe) after packet loss
+    case qualityReport = 0x09    // v10.3: Report network quality metrics
     case videoData = 0x10
     case audioData = 0x11
 }
@@ -1094,3 +1186,159 @@ extension Data {
         return padded
     }
 }
+
+// MARK: - v10.3 Packet Loss Detector
+
+/// Detects packet loss by tracking sequence numbers.
+/// When gaps are detected, triggers callback for recovery (e.g., IDR request).
+final class PacketLossDetector: @unchecked Sendable {
+    
+    // MARK: - Configuration
+    
+    /// Name for logging
+    let streamName: String
+    
+    /// Maximum allowed sequence gap before triggering loss detection
+    /// Small gaps (1-2) might be reordering, larger gaps indicate loss
+    var maxAllowedGap: UInt32 = 3
+    
+    /// Threshold of consecutive losses before triggering recovery
+    var lossThresholdForRecovery: Int = 2
+    
+    // MARK: - State
+    
+    /// Last received sequence number
+    private var lastSequence: UInt32 = 0
+    
+    /// Whether we've received the first packet
+    private var initialized = false
+    
+    /// Lock for thread-safety
+    private let lock = NSLock()
+    
+    // MARK: - Statistics
+    
+    /// Total packets received
+    private var packetsReceived: UInt64 = 0
+    
+    /// Total packets lost (estimated)
+    private var packetsLost: UInt64 = 0
+    
+    /// Consecutive losses (resets on good packet)
+    private var consecutiveLosses: Int = 0
+    
+    /// Number of loss events triggered
+    private var lossEvents: Int = 0
+    
+    /// Last loss event time
+    private var lastLossTime: UInt64 = 0
+    
+    // MARK: - Initialization
+    
+    init(streamName: String) {
+        self.streamName = streamName
+    }
+    
+    // MARK: - Sequence Tracking
+    
+    /// Process an incoming packet and check for loss.
+    /// - Parameter sequence: The sequence number from the packet header
+    /// - Returns: True if packet loss was detected and recovery is needed
+    func processPacket(sequence: UInt32) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        
+        packetsReceived += 1
+        
+        // First packet - initialize
+        if !initialized {
+            lastSequence = sequence
+            initialized = true
+            return false
+        }
+        
+        // Calculate expected sequence (handles wrap-around at UInt32.max)
+        let expectedSequence = lastSequence &+ 1
+        
+        // Check for sequence gap
+        let gap: Int
+        if sequence >= expectedSequence {
+            gap = Int(sequence - expectedSequence)
+        } else if expectedSequence - sequence > UInt32.max / 2 {
+            // Sequence number wrapped around
+            gap = Int(UInt32.max - expectedSequence + sequence + 1)
+        } else {
+            // Out of order (old packet arrived late) - ignore
+            return false
+        }
+        
+        // Update last sequence
+        lastSequence = sequence
+        
+        // No gap - reset consecutive losses
+        if gap == 0 {
+            consecutiveLosses = 0
+            return false
+        }
+        
+        // Gap detected - potential packet loss
+        if gap <= Int(maxAllowedGap) {
+            // Small gap - might be reordering, track but don't trigger yet
+            packetsLost += UInt64(gap)
+            consecutiveLosses += gap
+            
+            if consecutiveLosses >= lossThresholdForRecovery {
+                return triggerLossEvent(gap: gap)
+            }
+            return false
+        }
+        
+        // Large gap - definite packet loss
+        packetsLost += UInt64(gap)
+        consecutiveLosses += gap
+        return triggerLossEvent(gap: gap)
+    }
+    
+    private func triggerLossEvent(gap: Int) -> Bool {
+        lossEvents += 1
+        lastLossTime = mach_absolute_time()
+        
+        let lossRate = packetsReceived > 0 ? Double(packetsLost) / Double(packetsReceived + packetsLost) * 100 : 0
+        print("[\(streamName)PacketLoss] ⚠️ Gap=\(gap), Total lost=\(packetsLost), Rate=\(String(format: "%.2f", lossRate))%")
+        
+        // Reset consecutive counter
+        consecutiveLosses = 0
+        
+        return true
+    }
+    
+    // MARK: - Utilities
+    
+    /// Get loss rate as percentage
+    var lossRate: Double {
+        lock.lock()
+        defer { lock.unlock() }
+        let total = packetsReceived + packetsLost
+        guard total > 0 else { return 0 }
+        return Double(packetsLost) / Double(total) * 100
+    }
+    
+    /// Get statistics string
+    var statistics: String {
+        lock.lock()
+        defer { lock.unlock() }
+        return "[\(streamName)] recv=\(packetsReceived) lost=\(packetsLost) events=\(lossEvents) rate=\(String(format: "%.2f", lossRate))%"
+    }
+    
+    /// Reset detector state
+    func reset() {
+        lock.lock()
+        initialized = false
+        lastSequence = 0
+        packetsReceived = 0
+        packetsLost = 0
+        consecutiveLosses = 0
+        lock.unlock()
+    }
+}
+

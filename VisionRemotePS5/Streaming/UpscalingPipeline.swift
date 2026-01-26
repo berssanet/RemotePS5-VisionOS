@@ -56,11 +56,11 @@ final class UpscalingPipeline: ObservableObject {
     /// - Warning: Called from Metal pipeline thread. Must be thread-safe.
     var onTextureReady: ((MTLTexture) -> Void)?
     
-    /// Last upscaled texture (non-published, for direct access)
-    private(set) var upscaledTexture: MTLTexture?
+    /// Last upscaled texture (Published for SwiftUI updates)
+    @Published private(set) var upscaledTexture: MTLTexture?
     
-    /// Frame counter (non-published)
-    private(set) var textureFrameId: UInt64 = 0
+    /// Frame counter (Published for SwiftUI updates)
+    @Published private(set) var textureFrameId: UInt64 = 0
     
     // MARK: - Private Properties
     

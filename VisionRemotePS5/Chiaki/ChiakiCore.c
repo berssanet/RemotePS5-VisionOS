@@ -291,6 +291,7 @@ CHIAKI_EXPORT void chiaki_session_crypto_reset_wrapper(void) {
 typedef struct visionos_chiaki_session_t {
   ChiakiSession *session; // Pointer to avoid ABI mismatch
   ChiakiLog log;
+  ChiakiAudioSink audio_sink; // MUST be persistent - not local variable!
   // Swift callbacks stored in the wrapper
   ChiakiWrapperVideoCallback video_callback;
   ChiakiWrapperAudioCallback audio_callback;
@@ -614,12 +615,35 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_fullsession_start_wrapper(
           "[ChiakiCore] DEBUG ABI: offsetof(ChiakiSession, audio_sink)=%zu\n",
           offsetof(ChiakiSession, audio_sink));
 
-  // Set audio sink with wrapper as user
-  ChiakiAudioSink audio_sink = {0};
-  audio_sink.user = g_active_session;
-  audio_sink.header_cb = session_audio_header_cb;
-  audio_sink.frame_cb = session_audio_frame_cb;
-  chiaki_session_set_audio_sink(g_active_session->session, &audio_sink);
+  // CRITICAL FIX: Use PERSISTENT audio_sink from wrapper struct (not local
+  // variable!) The local variable would go out of scope and corrupt memory.
+  // Also apply ABI fix similar to video callback - the library uses different
+  // offsets.
+  memset(&g_active_session->audio_sink, 0, sizeof(ChiakiAudioSink));
+  g_active_session->audio_sink.user = g_active_session;
+  g_active_session->audio_sink.header_cb = session_audio_header_cb;
+  g_active_session->audio_sink.frame_cb = session_audio_frame_cb;
+
+  // CRITICAL ABI FIX: Similar to video callback, we need to write to the
+  // LIBRARY's expected offset for audio_sink, which may differ from our header
+  // definitions. Library offset for audio_sink is 1568 (0x620) based on pattern
+  // analysis.
+#define LIBRARY_AUDIO_SINK_OFFSET 1568
+  uint8_t *session_audio_bytes = (uint8_t *)g_active_session->session;
+  memcpy(session_audio_bytes + LIBRARY_AUDIO_SINK_OFFSET,
+         &g_active_session->audio_sink, sizeof(ChiakiAudioSink));
+
+  // Also set via standard API as fallback
+  chiaki_session_set_audio_sink(g_active_session->session,
+                                &g_active_session->audio_sink);
+
+  fprintf(
+      stderr,
+      "[ChiakiCore] ✅ Audio sink configured (persistent struct + ABI fix)\n");
+  fprintf(stderr, "[ChiakiCore]   header_cb=%p, frame_cb=%p, user=%p\n",
+          (void *)g_active_session->audio_sink.header_cb,
+          (void *)g_active_session->audio_sink.frame_cb,
+          (void *)g_active_session->audio_sink.user);
 
   // Start session (spawns thread)
   fprintf(stderr,

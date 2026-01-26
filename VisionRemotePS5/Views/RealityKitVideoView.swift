@@ -38,6 +38,9 @@ final class VideoTextureCoordinator: @unchecked Sendable {
     private var commandQueue: MTLCommandQueue?
     private var textureSize: (Int, Int) = (0, 0)
     
+    /// Fallback texture for manual copy when CVMetalTexture fails
+    private var fallbackTexture: MTLTexture?
+    
     // MARK: - MTLEvent Synchronization
     
     /// Shared event for GPU-GPU synchronization with upstream pipeline
@@ -142,42 +145,126 @@ final class VideoTextureCoordinator: @unchecked Sendable {
         return entity
     }
     
-    // MARK: - High-Performance Frame Update (Thread-Safe)
-    
     /// Update texture directly from CVPixelBuffer.
     /// **Thread-Safe**: Can be called from any thread (decoder callback).
     /// This is the HOT PATH for the video pipeline.
     func updateTexture(from pixelBuffer: CVPixelBuffer) {
-        guard let textureCache = textureCache else { return }
+        guard let textureCache = textureCache,
+              let device = device else {
+            print("[VideoTextureCoordinator] ❌ No texture cache or device")
+            return
+        }
         
         let width = CVPixelBufferGetWidth(pixelBuffer)
         let height = CVPixelBufferGetHeight(pixelBuffer)
+        let pixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer)
         
-        // Create MTLTexture from CVPixelBuffer (zero-copy via IOSurface)
-        // Use bgra10_xr for HDR Extended Range support
-        let pixelFormat: MTLPixelFormat = hdrEnabled ? Self.hdrPixelFormat : .bgra8Unorm
+        // Log first frame for debugging
+        lock.lock()
+        let shouldLog = !isInitialized
+        lock.unlock()
         
+        if shouldLog {
+            let formatStr: String
+            switch pixelFormat {
+            case kCVPixelFormatType_32BGRA: formatStr = "BGRA"
+            case kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange: formatStr = "YUV420 (Video)"
+            case kCVPixelFormatType_420YpCbCr8BiPlanarFullRange: formatStr = "YUV420 (Full)"
+            case kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange: formatStr = "P010 (HDR)"
+            default: formatStr = String(format: "0x%X", pixelFormat)
+            }
+            
+            // Check IOSurface backing - CRITICAL for Metal compatibility
+            let ioSurface = CVPixelBufferGetIOSurface(pixelBuffer)
+            let hasIOSurface = ioSurface != nil
+            print("[VideoTextureCoordinator] 📥 First frame: \(width)x\(height) format=\(formatStr) IOSurface=\(hasIOSurface ? "YES" : "NO")")
+        }
+        
+        // CRITICAL: CVMetalTextureCacheCreateTextureFromImage ONLY supports bgra8Unorm for BGRA buffers!
+        let metalFormat: MTLPixelFormat
+        switch pixelFormat {
+        case kCVPixelFormatType_32BGRA:
+            metalFormat = .bgra8Unorm
+        default:
+            print("[VideoTextureCoordinator] ⚠️ Unsupported format, expected BGRA")
+            return
+        }
+        
+        // Try CVMetalTexture path first
         var cvTexture: CVMetalTexture?
         let status = CVMetalTextureCacheCreateTextureFromImage(
             kCFAllocatorDefault,
             textureCache,
             pixelBuffer,
             nil,
-            pixelFormat,
+            metalFormat,
             width,
             height,
             0,
             &cvTexture
         )
         
-        guard status == kCVReturnSuccess,
-              let cvTexture = cvTexture,
-              let metalTexture = CVMetalTextureGetTexture(cvTexture) else {
+        if status == kCVReturnSuccess,
+           let cvTexture = cvTexture,
+           let metalTexture = CVMetalTextureGetTexture(cvTexture) {
+            // Fast path: Zero-copy Metal texture
+            if shouldLog {
+                print("[VideoTextureCoordinator] ✅ Zero-copy CVMetalTexture created")
+            }
+            updateTexture(from: metalTexture)
             return
         }
         
-        // Forward to existing MTLTexture-based pipeline
-        updateTexture(from: metalTexture)
+        // Fallback: Manual copy to Metal texture (slower but always works)
+        if shouldLog {
+            print("[VideoTextureCoordinator] ⚠️ CVMetalTexture failed (\(status)), using manual copy fallback")
+        }
+        
+        // Lock pixel buffer for CPU access
+        CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+        
+        guard let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else {
+            if shouldLog {
+                print("[VideoTextureCoordinator] ❌ Failed to get pixel buffer base address")
+            }
+            return
+        }
+        
+        let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+        
+        // Create Metal texture if needed
+        lock.lock()
+        if fallbackTexture == nil || fallbackTexture!.width != width || fallbackTexture!.height != height {
+            let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: .bgra8Unorm,
+                width: width,
+                height: height,
+                mipmapped: false
+            )
+            descriptor.usage = [.shaderRead, .shaderWrite]
+            descriptor.storageMode = .shared
+            fallbackTexture = device.makeTexture(descriptor: descriptor)
+            if shouldLog {
+                print("[VideoTextureCoordinator] 📦 Created fallback texture: \(width)x\(height)")
+            }
+        }
+        lock.unlock()
+        
+        guard let texture = fallbackTexture else {
+            return
+        }
+        
+        // Copy pixel data to Metal texture
+        texture.replace(
+            region: MTLRegionMake2D(0, 0, width, height),
+            mipmapLevel: 0,
+            withBytes: baseAddress,
+            bytesPerRow: bytesPerRow
+        )
+        
+        // Forward to texture update pipeline
+        updateTexture(from: texture)
     }
     
     /// Update texture with MTLEvent synchronization (waits for upstream GPU work)
@@ -221,17 +308,27 @@ final class VideoTextureCoordinator: @unchecked Sendable {
     }
     
     /// Update texture from MTLTexture source
+    /// Counter for debug logging
+    private static var updateCounter: Int = 0
+    
     func updateTexture(from sourceTexture: MTLTexture) {
         let newSize = (sourceTexture.width, sourceTexture.height)
+        Self.updateCounter += 1
         
         // Thread-safe check for initialization state
         lock.lock()
         let needsInit = !isInitialized || textureSize != newSize
         let alreadyInitializing = isInitializing
+        let currentlyInitialized = isInitialized
         if needsInit && !alreadyInitializing {
             isInitializing = true
         }
         lock.unlock()
+        
+        // Debug log every 60 frames
+        if Self.updateCounter % 60 == 0 {
+            print("[VideoTextureCoordinator] 📊 Frame \(Self.updateCounter): needsInit=\(needsInit), initialized=\(currentlyInitialized), initializing=\(alreadyInitializing)")
+        }
         
         if !needsInit {
             // Fast path: already initialized with same size
@@ -241,9 +338,13 @@ final class VideoTextureCoordinator: @unchecked Sendable {
         
         if alreadyInitializing {
             // Already initializing, skip this frame
+            if Self.updateCounter <= 10 {
+                print("[VideoTextureCoordinator] ⏳ Frame \(Self.updateCounter): Skipping (already initializing)")
+            }
             return
         }
         
+        print("[VideoTextureCoordinator] 🔧 Frame \(Self.updateCounter): Starting initialization")
         // Need initialization - dispatch to MainActor
         Task { @MainActor in
             await initializeTexture(from: sourceTexture)
@@ -269,8 +370,10 @@ final class VideoTextureCoordinator: @unchecked Sendable {
     @MainActor
     private func initializeTexture(from sourceTexture: MTLTexture) async {
         do {
-            // Use bgra10_xr for HDR Extended Range (supports EDR values > 1.0)
-            let pixelFormat: MTLPixelFormat = hdrEnabled ? Self.hdrPixelFormat : .bgra8Unorm
+            // CRITICAL: Use the SAME pixel format as the source texture!
+            // The source comes from CVMetalTexture which is always bgra8Unorm
+            // Using a different format (like bgra10_xr) would cause blit copy failures
+            let pixelFormat: MTLPixelFormat = sourceTexture.pixelFormat
             
             let descriptor = LowLevelTexture.Descriptor(
                 pixelFormat: pixelFormat,
@@ -368,23 +471,43 @@ final class VideoTextureCoordinator: @unchecked Sendable {
         }
     }
     
+    private static var copyCounter: Int = 0
+    
     @MainActor
     private func performTextureCopy(from sourceTexture: MTLTexture, using existingBuffer: MTLCommandBuffer?) {
         guard let llTexture = lowLevelTexture,
-              let queue = commandQueue else { return }
+              let queue = commandQueue else {
+            print("[VideoTextureCoordinator] ❌ performTextureCopy: Missing llTexture or queue")
+            return
+        }
+        
+        Self.copyCounter += 1
         
         // Use existing buffer or create new one
         let commandBuffer: MTLCommandBuffer
         if let existing = existingBuffer {
             commandBuffer = existing
         } else {
-            guard let newBuffer = queue.makeCommandBuffer() else { return }
+            guard let newBuffer = queue.makeCommandBuffer() else {
+                print("[VideoTextureCoordinator] ❌ performTextureCopy: Failed to create command buffer")
+                return
+            }
             commandBuffer = newBuffer
         }
         
         let destTexture = llTexture.replace(using: commandBuffer)
         
-        guard let blitEncoder = commandBuffer.makeBlitCommandEncoder() else { return }
+        // CRITICAL: Check format compatibility before blit
+        if sourceTexture.pixelFormat != destTexture.pixelFormat {
+            if Self.copyCounter <= 5 || Self.copyCounter % 60 == 0 {
+                print("[VideoTextureCoordinator] ⚠️ Format mismatch: source=\(sourceTexture.pixelFormat.rawValue), dest=\(destTexture.pixelFormat.rawValue)")
+            }
+        }
+        
+        guard let blitEncoder = commandBuffer.makeBlitCommandEncoder() else {
+            print("[VideoTextureCoordinator] ❌ performTextureCopy: Failed to create blit encoder")
+            return
+        }
         
         let copyWidth = min(sourceTexture.width, destTexture.width)
         let copyHeight = min(sourceTexture.height, destTexture.height)
@@ -406,6 +529,13 @@ final class VideoTextureCoordinator: @unchecked Sendable {
         // Only commit if we created the buffer
         if existingBuffer == nil {
             commandBuffer.commit()
+        }
+        
+        // Log first few copies
+        if Self.copyCounter <= 5 {
+            print("[VideoTextureCoordinator] 📦 Copy #\(Self.copyCounter): \(copyWidth)x\(copyHeight)")
+        } else if Self.copyCounter % 60 == 0 {
+            print("[VideoTextureCoordinator] 📦 Copy #\(Self.copyCounter): \(copyWidth)x\(copyHeight) (periodic)")
         }
     }
     
