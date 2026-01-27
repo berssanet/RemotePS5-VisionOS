@@ -186,6 +186,31 @@ struct StreamingView: View {
                     )
                 }
             
+        } else if !use4KUpscaling, viewModel.isConnected {
+            // v10.4: 1080p NATIVE PATH - Render directly without upscaling
+            // Uses RealityKitVideoView which displays texture from VideoTextureCoordinator
+            if #available(visionOS 2.0, *) {
+                RealityKitVideoView(texture: nil, frameId: upscalingPipeline.textureFrameId)
+                    .aspectRatio(16/9, contentMode: .fit)
+                    .cornerRadius(12)
+                    .overlay(alignment: .topLeading) {
+                        resolutionBadge(text: "1080p Native", color: .green)
+                    }
+            } else {
+                // Fallback for visionOS < 2.0
+                VStack(spacing: 10) {
+                    Image(systemName: "play.rectangle")
+                        .font(.largeTitle)
+                    Text("1080p Streaming")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .aspectRatio(16/9, contentMode: .fit)
+                .cornerRadius(12)
+                .background(Color.black.opacity(0.3))
+            }
+            
         } else if viewModel.isConnected {
             // v10.3: Connected but texture not ready yet
             // Video frames are now processed directly via VideoTextureCoordinator

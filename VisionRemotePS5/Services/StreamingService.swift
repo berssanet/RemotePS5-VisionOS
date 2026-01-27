@@ -315,6 +315,8 @@ final class StreamingService: ObservableObject {
             Task { @MainActor in
                 self.isStreaming = true
                 self.state = .streaming
+                // v10.4 FIX: Notify delegate so UI updates from "Negotiating..." to video display
+                self.delegate?.streamingService(self, didChangeState: .streaming)
                 print("[StreamingService] 🎮 Controller input now enabled")
             }
         } else {
