@@ -283,6 +283,7 @@ CHIAKI_EXPORT void chiaki_session_crypto_reset_wrapper(void) {
 // ===========================================
 
 #include <chiaki/log.h>
+#include <chiaki/opusdecoder.h> // OPUS -> PCM decoder
 #include <chiaki/session.h>
 
 // VisionOS Session Wrapper (using pointer to avoid ABI issues)
@@ -291,7 +292,8 @@ CHIAKI_EXPORT void chiaki_session_crypto_reset_wrapper(void) {
 typedef struct visionos_chiaki_session_t {
   ChiakiSession *session; // Pointer to avoid ABI mismatch
   ChiakiLog log;
-  ChiakiAudioSink audio_sink; // MUST be persistent - not local variable!
+  ChiakiOpusDecoder opus_decoder; // OPUS -> PCM decoder
+  ChiakiAudioSink audio_sink;     // MUST be persistent - not local variable!
   // Swift callbacks stored in the wrapper
   ChiakiWrapperVideoCallback video_callback;
   ChiakiWrapperAudioCallback audio_callback;
@@ -349,43 +351,51 @@ static bool session_video_sample_cb(uint8_t *buf, size_t buf_size,
   }
 }
 
-// Audio frame callback for ChiakiSession (matches ChiakiAudioSinkFrame
-// signature)
-// Following Android pattern: receives wrapper struct as user parameter
+// ===========================================
+//  OPUS DECODER CALLBACKS (receives DECODED PCM data)
+// ===========================================
+// With libopus linked, ChiakiOpusDecoder decodes OPUS -> PCM automatically
+// NOTE: opus_decode returns FRAMES PER CHANNEL (480), not total samples!
+// For stereo: buffer contains 480 * 2 = 960 int16_t samples
+
 static int g_audio_frame_count = 0;
-static void session_audio_frame_cb(uint8_t *buf, size_t buf_size, void *user) {
+static uint32_t g_audio_channels = 2; // Updated by settings callback
+
+// Called when audio settings change (ChiakiOpusDecoderSettingsCallback)
+static void opus_decoder_settings_cb(uint32_t channels, uint32_t rate,
+                                     void *user) {
+  g_audio_channels = channels;
+  fprintf(stderr, "[ChiakiOpus] 🎵 Audio settings: channels=%u, rate=%u Hz\n",
+          channels, rate);
+}
+
+// Called when OpusDecoder has decoded OPUS to PCM
+// CRITICAL: samples_count from opus_decode = FRAMES PER CHANNEL (480)
+// Buffer contains samples_count * channels int16_t samples (960 for stereo)
+static void opus_decoder_frame_cb(int16_t *buf, size_t samples_count,
+                                  void *user) {
   VisionOSChiakiSession *wrapper = (VisionOSChiakiSession *)user;
 
-  // Safety checks to prevent crash
-  if (!buf || buf_size == 0) {
-    fprintf(stderr,
-            "[ChiakiSession] ⚠️ Audio callback with invalid buffer: buf=%p, "
-            "size=%zu\n",
-            (void *)buf, buf_size);
+  if (!wrapper || !buf || samples_count == 0) {
     return;
   }
 
-  if (!wrapper) {
-    fprintf(stderr, "[ChiakiSession] ⚠️ Audio callback with NULL wrapper\n");
-    return;
-  }
+  // CRITICAL FIX: opus_decode returns frames-per-channel, not total samples!
+  // For stereo: samples_count=480 frames, buffer has 480*2=960 int16_t samples
+  size_t total_samples = samples_count * g_audio_channels;
 
   g_audio_frame_count++;
   if (g_audio_frame_count <= 3 || g_audio_frame_count % 100 == 0) {
-    fprintf(stderr, "[ChiakiSession] 🔊 Audio frame #%d: buf=%p, size=%zu\n",
-            g_audio_frame_count, (void *)buf, buf_size);
+    fprintf(
+        stderr,
+        "[ChiakiOpus] 🔊 PCM frame #%d: %zu frames -> %zu samples (stereo)\n",
+        g_audio_frame_count, samples_count, total_samples);
   }
 
   if (wrapper->audio_callback) {
-    wrapper->audio_callback((int16_t *)buf, buf_size / sizeof(int16_t),
-                            wrapper->callback_user);
+    // Pass TOTAL SAMPLES (frames * channels) to Swift
+    wrapper->audio_callback(buf, total_samples, wrapper->callback_user);
   }
-}
-
-// Audio header callback
-static void session_audio_header_cb(ChiakiAudioHeader *header, void *user) {
-  fprintf(stderr, "[ChiakiSession] Audio header: channels=%u, rate=%u\n",
-          header->channels, header->rate);
 }
 
 // Event callback for ChiakiSession
@@ -615,19 +625,27 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_fullsession_start_wrapper(
           "[ChiakiCore] DEBUG ABI: offsetof(ChiakiSession, audio_sink)=%zu\n",
           offsetof(ChiakiSession, audio_sink));
 
-  // CRITICAL FIX: Use PERSISTENT audio_sink from wrapper struct (not local
-  // variable!) The local variable would go out of scope and corrupt memory.
-  // Also apply ABI fix similar to video callback - the library uses different
-  // offsets.
-  memset(&g_active_session->audio_sink, 0, sizeof(ChiakiAudioSink));
-  g_active_session->audio_sink.user = g_active_session;
-  g_active_session->audio_sink.header_cb = session_audio_header_cb;
-  g_active_session->audio_sink.frame_cb = session_audio_frame_cb;
+  // ===========================================
+  //  OPUS DECODER SETUP (decodes OPUS -> PCM automatically)
+  // ===========================================
+  // With libopus linked, ChiakiOpusDecoder handles:
+  // - Receiving OPUS compressed data (~80 bytes per frame)
+  // - Decoding to PCM (960 samples = 1920 bytes per frame)
+  // - Calling our opus_decoder_frame_cb with decoded PCM
 
-  // CRITICAL ABI FIX: Similar to video callback, we need to write to the
-  // LIBRARY's expected offset for audio_sink, which may differ from our header
-  // definitions. Library offset for audio_sink is 1568 (0x620) based on pattern
-  // analysis.
+  chiaki_opus_decoder_init(&g_active_session->opus_decoder,
+                           &g_active_session->log);
+
+  // Set callbacks to receive DECODED PCM frames
+  chiaki_opus_decoder_set_cb(&g_active_session->opus_decoder,
+                             opus_decoder_settings_cb, opus_decoder_frame_cb,
+                             g_active_session);
+
+  // Get the audio_sink from OpusDecoder (it wraps and decodes automatically)
+  chiaki_opus_decoder_get_sink(&g_active_session->opus_decoder,
+                               &g_active_session->audio_sink);
+
+  // CRITICAL ABI FIX: Write to library's expected offset for audio_sink
 #define LIBRARY_AUDIO_SINK_OFFSET 1568
   uint8_t *session_audio_bytes = (uint8_t *)g_active_session->session;
   memcpy(session_audio_bytes + LIBRARY_AUDIO_SINK_OFFSET,
@@ -637,13 +655,10 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_fullsession_start_wrapper(
   chiaki_session_set_audio_sink(g_active_session->session,
                                 &g_active_session->audio_sink);
 
-  fprintf(
-      stderr,
-      "[ChiakiCore] ✅ Audio sink configured (persistent struct + ABI fix)\n");
-  fprintf(stderr, "[ChiakiCore]   header_cb=%p, frame_cb=%p, user=%p\n",
+  fprintf(stderr, "[ChiakiCore] ✅ OpusDecoder initialized (OPUS -> PCM)\n");
+  fprintf(stderr, "[ChiakiCore]   audio_sink.header_cb=%p, frame_cb=%p\n",
           (void *)g_active_session->audio_sink.header_cb,
-          (void *)g_active_session->audio_sink.frame_cb,
-          (void *)g_active_session->audio_sink.user);
+          (void *)g_active_session->audio_sink.frame_cb);
 
   // Start session (spawns thread)
   fprintf(stderr,
@@ -688,7 +703,9 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_fullsession_stop_wrapper(void) {
   }
 
   chiaki_session_fini(g_active_session->session);
-  free(g_active_session->session); // Free the session first
+  chiaki_opus_decoder_fini(
+      &g_active_session->opus_decoder); // Cleanup OPUS decoder
+  free(g_active_session->session);      // Free the session first
   free(g_active_session);
   g_active_session = NULL;
 

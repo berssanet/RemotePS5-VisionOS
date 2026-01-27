@@ -34,6 +34,7 @@ chiaki_verbose_log.txt
 # ===== Third-party source dependencies (should be submodules or fetched) =====
 chiaki-ng/
 mbedtls-src/
+opus-build/
 
 # ===== IDE & Editor =====
 .idea/
