@@ -35,6 +35,10 @@
 		EF3CB69E2F26AD7E005E85E1 /* PS5HapticFeedbackParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF3CB69D2F26AD7E005E85E1 /* PS5HapticFeedbackParser.swift */; };
 		EF3CB6A02F26AD85005E85E1 /* HighFrequencyInputController.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF3CB69F2F26AD85005E85E1 /* HighFrequencyInputController.swift */; };
 		EF3CB6A22F26B44E005E85E1 /* NetworkBufferPool.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF3CB6A12F26B44E005E85E1 /* NetworkBufferPool.swift */; };
+		EF3CB6A72F29066A005E85E1 /* MenuBarWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF3CB6A52F29066A005E85E1 /* MenuBarWindow.swift */; };
+		EF3CB6A82F29066A005E85E1 /* ControllerOverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF3CB6A32F29066A005E85E1 /* ControllerOverlayView.swift */; };
+		EF3CB6A92F29066A005E85E1 /* StreamingVideoWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF3CB6A62F29066A005E85E1 /* StreamingVideoWindow.swift */; };
+		EF3CB6AA2F29066A005E85E1 /* ControllerWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF3CB6A42F29066A005E85E1 /* ControllerWindow.swift */; };
 		EF48D8DA2F0FD3F8009C702E /* ChiakiCore.c in Sources */ = {isa = PBXBuildFile; fileRef = EF48D8D92F0FD3F8009C702E /* ChiakiCore.c */; };
 		EF5C41952F0645B0007A7B67 /* PSNSessionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF5C41942F0645B0007A7B67 /* PSNSessionManager.swift */; };
 		EF5C41972F0645C3007A7B67 /* HolepunchService.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF5C41962F0645C3007A7B67 /* HolepunchService.swift */; };
@@ -86,6 +90,10 @@
 		EF3CB69D2F26AD7E005E85E1 /* PS5HapticFeedbackParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PS5HapticFeedbackParser.swift; sourceTree = "<group>"; };
 		EF3CB69F2F26AD85005E85E1 /* HighFrequencyInputController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HighFrequencyInputController.swift; sourceTree = "<group>"; };
 		EF3CB6A12F26B44E005E85E1 /* NetworkBufferPool.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkBufferPool.swift; sourceTree = "<group>"; };
+		EF3CB6A32F29066A005E85E1 /* ControllerOverlayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ControllerOverlayView.swift; sourceTree = "<group>"; };
+		EF3CB6A42F29066A005E85E1 /* ControllerWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ControllerWindow.swift; sourceTree = "<group>"; };
+		EF3CB6A52F29066A005E85E1 /* MenuBarWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarWindow.swift; sourceTree = "<group>"; };
+		EF3CB6A62F29066A005E85E1 /* StreamingVideoWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamingVideoWindow.swift; sourceTree = "<group>"; };
 		EF48D8D92F0FD3F8009C702E /* ChiakiCore.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = ChiakiCore.c; sourceTree = "<group>"; };
 		EF5C41942F0645B0007A7B67 /* PSNSessionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PSNSessionManager.swift; sourceTree = "<group>"; };
 		EF5C41962F0645C3007A7B67 /* HolepunchService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HolepunchService.swift; sourceTree = "<group>"; };
@@ -191,6 +199,10 @@
 		GRP003 /* Views */ = {
 			isa = PBXGroup;
 			children = (
+				EF3CB6A32F29066A005E85E1 /* ControllerOverlayView.swift */,
+				EF3CB6A42F29066A005E85E1 /* ControllerWindow.swift */,
+				EF3CB6A52F29066A005E85E1 /* MenuBarWindow.swift */,
+				EF3CB6A62F29066A005E85E1 /* StreamingVideoWindow.swift */,
 				EF5C41982F0645D2007A7B67 /* PSNConnectionView.swift */,
 				SRC002 /* ContentView.swift */,
 				SRC003 /* HomeView.swift */,
@@ -442,6 +454,10 @@
 				MFXUPSRC001 /* MetalFXUpscaler.swift in Sources */,
 				UPSPIPESRC001 /* UpscalingPipeline.swift in Sources */,
 				MTLTEXVIEWSRC001 /* MetalTextureView.swift in Sources */,
+				EF3CB6A72F29066A005E85E1 /* MenuBarWindow.swift in Sources */,
+				EF3CB6A82F29066A005E85E1 /* ControllerOverlayView.swift in Sources */,
+				EF3CB6A92F29066A005E85E1 /* StreamingVideoWindow.swift in Sources */,
+				EF3CB6AA2F29066A005E85E1 /* ControllerWindow.swift in Sources */,
 				RKVIDEOVIEWSRC001 /* RealityKitVideoView.swift in Sources */,
 				TRIPLEBUFSRC001 /* TripleBufferPool.swift in Sources */,
 				FRMPCRSRC001 /* FramePacer.swift in Sources */,
