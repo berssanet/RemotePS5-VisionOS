@@ -55,12 +55,20 @@ struct StreamingVideoWindow: View {
             upscalingPipeline.initialize()
             upscalingPipeline.enable()
             
-            // Start streaming
-            await appState.streamingViewModel.startStreaming(console: console)
+            // v10.5.1: Only start streaming if not already connected
+            // (e.g., when returning from VR mode, streaming is already active)
+            if !appState.streamingViewModel.isConnected {
+                await appState.streamingViewModel.startStreaming(console: console)
+            }
         }
         .onDisappear {
-            appState.streamingViewModel.stopStreaming()
-            upscalingPipeline.disable()
+            // v10.5.1: Don't stop streaming or disable pipeline when entering VR mode
+            // Only stop when actually closing the window (not VR transition)
+            if !appState.isImmersiveActive {
+                appState.streamingViewModel.stopStreaming()
+                upscalingPipeline.disable()
+            }
+            // Note: Pipeline stays enabled for VR mode to continue processing frames
         }
     }
 }

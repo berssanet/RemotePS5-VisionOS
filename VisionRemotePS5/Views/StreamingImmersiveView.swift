@@ -240,6 +240,14 @@ struct StreamingImmersiveView: View {
                 if result == nil && upscalingPipeline.textureFrameId < 5 {
                     print("[StreamingImmersiveView] ⚠️ processFrame returned nil")
                 }
+                
+                // v10.5.1: Direct update to ImmersiveTextureCoordinator
+                // RealityView.update doesn't trigger reliably, so we update directly
+                if #available(visionOS 2.0, *) {
+                    if let upscaledTexture = upscalingPipeline.upscaledTexture {
+                        ImmersiveTextureCoordinator.shared.updateTexture(from: upscaledTexture)
+                    }
+                }
             }
         }
         .onAppear {
