@@ -3,6 +3,9 @@ import SwiftUI
 /// Simplified test view for direct PS5 connection testing
 /// Bypasses PSN login for easier debugging
 struct SimpleTestView: View {
+    @EnvironmentObject var appState: AppState
+    @Environment(\.openWindow) private var openWindow
+    
     @State private var host: String = "192.168.100.33"
     @State private var accountId: String = "ttvb8y/FxGE="
     @State private var pin: String = ""
@@ -10,7 +13,6 @@ struct SimpleTestView: View {
     @State private var statusMessage: String = ""
     @State private var showError: Bool = false
     @State private var registeredConsole: Console?
-    @State private var showStreaming: Bool = false
     @State private var savedConsoles: [Console] = []
     
     private let registrationService = RegistrationService()
@@ -95,7 +97,7 @@ struct SimpleTestView: View {
                 
                 // Start Streaming button (only shown after registration)
                 if let console = registeredConsole, console.rpKey != nil {
-                    Button(action: { showStreaming = true }) {
+                    Button(action: { startStreamingSession(console: console) }) {
                         HStack {
                             Image(systemName: "play.fill")
                             Text("Start Streaming")
@@ -216,16 +218,27 @@ struct SimpleTestView: View {
             Spacer()
         }
         .padding(40)
-        .fullScreenCover(isPresented: $showStreaming) {
-            if let console = registeredConsole {
-                StreamingView(console: console)
-            }
-        }
         .onAppear {
             Task {
                 await loadSavedConsoles()
             }
         }
+    }
+    
+    /// v10.5.2: Start streaming session and switch to streaming windows
+    private func startStreamingSession(console: Console) {
+        // Save selected console to app state
+        appState.selectedConsole = console
+        
+        // Hide the console selection UI
+        appState.isInStreamingSession = true
+        
+        // Open all streaming windows
+        openWindow(id: "StreamingWindow", value: console)
+        openWindow(id: "MenuBarWindow")
+        openWindow(id: "ControllerWindow")
+        
+        print("[SimpleTestView] Started streaming session for: \(console.nickname ?? console.name)")
     }
     
     private func loadSavedConsoles() async {

@@ -18,17 +18,9 @@ struct MenuBarWindow: View {
     
     var body: some View {
         HStack(spacing: 16) {
-            // Close/Exit button
+            // Close/Exit button - End session and return to console selection
             Button(action: {
-                if appState.isImmersiveActive {
-                    exitVRMode()
-                } else {
-                    // Stop streaming and close all windows
-                    appState.streamingViewModel.stopStreaming()
-                    dismissWindow(id: "StreamingWindow")
-                    dismissWindow(id: "ControllerWindow")
-                    dismissWindow(id: "MenuBarWindow")
-                }
+                endSession()
             }) {
                 Image(systemName: "xmark.circle.fill")
                     .font(.title2)
@@ -110,6 +102,38 @@ struct MenuBarWindow: View {
             if let console = appState.selectedConsole {
                 openWindow(id: "StreamingWindow", value: console)
             }
+        }
+    }
+    
+    /// v10.5.2: End streaming session and return to console selection
+    private func endSession() {
+        Task {
+            // 1. Exit VR mode if active
+            if appState.isImmersiveActive {
+                await dismissImmersiveSpace()
+                appState.isImmersiveActive = false
+            }
+            
+            // 2. Stop streaming
+            appState.streamingViewModel.stopStreaming()
+            
+            // 3. Disable upscaling pipeline
+            upscalingPipeline.disable()
+            
+            // 4. Clear selected console and reset state
+            appState.selectedConsole = nil
+            appState.isConnected = false
+            appState.connectionStatus = .disconnected
+            
+            // 5. Show console selection UI again
+            appState.isInStreamingSession = false
+            
+            // 6. Close streaming-related windows
+            dismissWindow(id: "StreamingWindow")
+            dismissWindow(id: "ControllerWindow")
+            dismissWindow(id: "MenuBarWindow")
+            
+            print("[MenuBarWindow] Session ended, returned to console selection")
         }
     }
 }

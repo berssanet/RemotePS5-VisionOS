@@ -4,13 +4,27 @@ struct ContentView: View {
     @EnvironmentObject var appState: AppState
     
     var body: some View {
-        NavigationStack {
-            // Use SimpleTestView for direct PS5 connection testing
-            SimpleTestView()
+        Group {
+            if appState.isInStreamingSession {
+                // v10.5.2: Minimize window to smallest possible size during streaming
+                // Using Color.clear with fixedSize to force minimum dimensions
+                Color.clear
+                    .frame(minWidth: 1, maxWidth: 1, minHeight: 1, maxHeight: 1)
+                    .fixedSize()
+                    .opacity(0)
+                    .allowsHitTesting(false)
+            } else {
+                NavigationStack {
+                    // Use SimpleTestView for direct PS5 connection testing
+                    SimpleTestView()
+                }
+                .ornament(attachmentAnchor: .scene(.bottom)) {
+                    ConnectionStatusBar()
+                }
+            }
         }
-        .ornament(attachmentAnchor: .scene(.bottom)) {
-            ConnectionStatusBar()
-        }
+        // v10.5.2: Also hide system overlays during streaming
+        .persistentSystemOverlays(appState.isInStreamingSession ? .hidden : .automatic)
     }
 }
 
