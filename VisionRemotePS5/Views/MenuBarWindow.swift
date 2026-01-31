@@ -29,6 +29,28 @@ struct MenuBarWindow: View {
             
             Spacer()
             
+            // v10.6: Controller mode selector
+            Menu {
+                ForEach(AppState.ControllerMode.allCases, id: \.self) { mode in
+                    Button(action: {
+                        appState.controllerMode = mode
+                    }) {
+                        Label(mode.rawValue, systemImage: mode.icon)
+                    }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: appState.controllerMode.icon)
+                    Text(appState.controllerMode == .f1Cockpit ? "F1" : "Pad")
+                        .font(.caption)
+                }
+                .foregroundColor(appState.controllerMode == .f1Cockpit ? .orange : .white)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(.ultraThinMaterial)
+            .cornerRadius(20)
+            
             // VR mode toggle
             Button(action: {
                 if appState.isImmersiveActive {

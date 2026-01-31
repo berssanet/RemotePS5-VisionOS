@@ -171,6 +171,9 @@ struct StreamingImmersiveView: View {
     @State private var controlHideTimer: Timer?
     @State private var currentFrame: CVPixelBuffer?
     
+    // v10.6: Virtual steering wheel hand tracking
+    @StateObject private var steeringService = VirtualSteeringWheelService()
+    
     var body: some View {
         ZStack {
             // Main streaming surface
@@ -221,6 +224,14 @@ struct StreamingImmersiveView: View {
                 }
                 .transition(.opacity)
             }
+            
+            // v10.6: Virtual steering wheel overlay (when in virtualWheel mode)
+            if appState.controllerMode == .virtualWheel {
+                VirtualSteeringWheelView(
+                    steeringService: steeringService,
+                    viewModel: appState.streamingViewModel
+                )
+            }
         }
         .onTapGesture {
             toggleControls()
@@ -252,6 +263,13 @@ struct StreamingImmersiveView: View {
         }
         .onAppear {
             upscalingPipeline.initialize()
+            
+            // v10.6: Start hand tracking if virtual wheel mode
+            if appState.controllerMode == .virtualWheel {
+                Task {
+                    try? await steeringService.startTracking()
+                }
+            }
         }
         .onDisappear {
             controlHideTimer?.invalidate()
@@ -260,6 +278,8 @@ struct StreamingImmersiveView: View {
             if #available(visionOS 2.0, *) {
                 ImmersiveTextureCoordinator.shared.reset()
             }
+            // v10.6: Stop hand tracking
+            steeringService.stopTracking()
         }
     }
     

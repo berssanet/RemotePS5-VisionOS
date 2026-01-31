@@ -24,6 +24,8 @@
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Required for voice chat during Remote Play sessions</string>
+	<key>NSHandsTrackingUsageDescription</key>
+	<string>Required for virtual steering wheel control in racing games</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationPreferredDefaultSceneSessionRole</key>

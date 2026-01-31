@@ -33,12 +33,13 @@ struct VisionRemotePS5App: App {
         .defaultSize(width: 500, height: 60)
         
         // v10.5: Controller window - movable independently
+        // v10.6: Larger size to accommodate F1 cockpit wheel
         WindowGroup(id: "ControllerWindow") {
             ControllerWindow()
                 .environmentObject(appState)
         }
         .windowStyle(.plain)
-        .defaultSize(width: 400, height: 180)
+        .defaultSize(width: 550, height: 280)
         
         // Full Immersive Space using RealityKit
         // Uses StreamingImmersiveView for curved screen 3D experience
@@ -58,6 +59,7 @@ class AppState: ObservableObject {
     @Published var isAuthenticated: Bool = false
     @Published var isImmersiveActive: Bool = false  // v10.5: Track VR mode globally
     @Published var isInStreamingSession: Bool = false  // v10.5.2: Hide console selection when streaming
+    @Published var controllerMode: ControllerMode = .standard  // v10.6: F1 cockpit support
     @Published var selectedConsole: Console?
     @Published var discoveredConsoles: [Console] = []
     @Published var streamQuality: StreamQuality = .hd720
@@ -82,5 +84,28 @@ class AppState: ObservableObject {
         case hd720 = "720p"
         case hd1080 = "1080p"
         case uhd4k = "4K"
+    }
+    
+    /// v10.6: Controller display mode
+    enum ControllerMode: String, CaseIterable {
+        case standard = "Standard"
+        case f1Cockpit = "F1 Cockpit"
+        case virtualWheel = "Virtual Wheel"
+        
+        var icon: String {
+            switch self {
+            case .standard: return "gamecontroller"
+            case .f1Cockpit: return "steeringwheel"
+            case .virtualWheel: return "hand.raised.fingers.spread"
+            }
+        }
+        
+        var description: String {
+            switch self {
+            case .standard: return "Touch controls"
+            case .f1Cockpit: return "Touch steering wheel"
+            case .virtualWheel: return "Hand tracking wheel (VR only)"
+            }
+        }
     }
 }
