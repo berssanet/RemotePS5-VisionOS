@@ -63,12 +63,14 @@ final class VirtualSteeringWheelService: ObservableObject {
         
         do {
             try await session.run([provider])
-            print("[VirtualSteering] Hand tracking started")
+            print("[VirtualSteering] ✅ Hand tracking started successfully!")
             
             // Start processing updates
             startProcessingUpdates()
+            print("[VirtualSteering] Update processing task started")
         } catch {
-            print("[VirtualSteering] Failed to start: \(error)")
+            print("[VirtualSteering] ❌ Failed to start: \(error)")
+            print("[VirtualSteering] Error details: \(error.localizedDescription)")
             throw error
         }
     }
@@ -97,11 +99,23 @@ final class VirtualSteeringWheelService: ObservableObject {
         guard let provider = handTrackingProvider else { return }
         
         trackingTask = Task { [weak self] in
+            print("[VirtualSteering] 🔄 Starting anchor updates loop...")
+            var updateCount = 0
+            
             for await update in provider.anchorUpdates {
-                guard let self = self else { break }
+                guard let self = self else { 
+                    print("[VirtualSteering] Self is nil, breaking")
+                    break 
+                }
+                
+                updateCount += 1
+                if updateCount % 60 == 1 {  // Log every ~1 second at 60Hz
+                    print("[VirtualSteering] Received \(updateCount) updates")
+                }
                 
                 await self.processHandUpdate(update)
             }
+            print("[VirtualSteering] ⚠️ Anchor updates loop ended")
         }
     }
     
@@ -128,11 +142,23 @@ final class VirtualSteeringWheelService: ObservableObject {
         }
         
         // Update tracking state
+        let wasTracking = isTracking
         isTracking = leftHandPosition != nil && rightHandPosition != nil
+        
+        // Log state changes
+        if isTracking != wasTracking {
+            print("[VirtualSteering] 🖐️ Tracking state: \(isTracking ? "BOTH HANDS" : "INCOMPLETE")")
+        }
         
         // Calculate steering if both hands tracked
         if let leftPos = leftHandPosition, let rightPos = rightHandPosition {
             steeringValue = calculateSteering(leftHand: leftPos, rightHand: rightPos)
+            
+            // Log values periodically
+            if abs(steeringValue) > 0.1 || leftTrigger > 0.1 || rightTrigger > 0.1 {
+                // Only log when there's significant input
+                print("[VirtualSteering] 🎮 Steer: \(String(format: "%+.2f", steeringValue)) L2: \(String(format: "%.2f", leftTrigger)) R2: \(String(format: "%.2f", rightTrigger))")
+            }
         } else {
             steeringValue = 0
         }
@@ -233,7 +259,8 @@ final class VirtualSteeringWheelService: ObservableObject {
             return 0
         }
         
-        return normalizedSteering
+        // INVERT: negate to fix left/right direction
+        return -normalizedSteering
     }
 }
 

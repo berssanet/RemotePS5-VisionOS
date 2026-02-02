@@ -173,6 +173,11 @@ struct StreamingImmersiveView: View {
     
     // v10.6: Virtual steering wheel hand tracking
     @StateObject private var steeringService = VirtualSteeringWheelService()
+    @State private var steeringInputTimer: Timer?
+    
+    // v10.7: User-adjustable wheel position
+    @State private var wheelPosition: SIMD3<Float> = [0, 0.6, -0.7]  // 70cm in front, 60cm height
+    @State private var wheelDragOffset: SIMD3<Float> = .zero
     
     var body: some View {
         ZStack {
@@ -225,12 +230,99 @@ struct StreamingImmersiveView: View {
                 .transition(.opacity)
             }
             
-            // v10.6: Virtual steering wheel overlay (when in virtualWheel mode)
-            if appState.controllerMode == .virtualWheel {
-                VirtualSteeringWheelView(
-                    steeringService: steeringService,
-                    viewModel: appState.streamingViewModel
+            // v10.6: 3D F1 Steering Wheel (when in F1 cockpit or virtualWheel mode)
+            if appState.controllerMode == .f1Cockpit || appState.controllerMode == .virtualWheel {
+                // 3D wheel entity in RealityKit - user can drag to reposition
+                RealityView { content in
+                    print("[StreamingImmersive] 🎡 Creating F1 Steering Wheel 3D model...")
+                    let wheelModel = F1SteeringWheel3DModel()
+                    let wheelEntity = wheelModel.createWheelEntity()
+                    
+                    // Initial position - farther from user for comfort
+                    wheelEntity.position = wheelPosition
+                    wheelEntity.scale = [1.5, 1.5, 1.5]    // 1.5x scale for better visibility
+                    wheelEntity.name = "F1WheelRoot"
+                    
+                    // Enable input for dragging
+                    wheelEntity.components.set(InputTargetComponent())
+                    wheelEntity.generateCollisionShapes(recursive: true)
+                    
+                    print("[StreamingImmersive] ✅ Wheel entity created - drag to reposition")
+                    content.add(wheelEntity)
+                } update: { content in
+                    // Update wheel rotation and position
+                    if let wheelEntity = content.entities.first(where: { $0.name == "F1WheelRoot" }) {
+                        // Apply user-adjusted position + any active drag offset
+                        wheelEntity.position = wheelPosition + wheelDragOffset
+                        
+                        // Rotate wheel around Z axis based on steering (INVERTED for visual)
+                        let steeringAngle = Float(-steeringService.steeringValue) * (.pi / 2)  // ±90°
+                        wheelEntity.orientation = simd_quatf(angle: steeringAngle, axis: [0, 0, 1])
+                    }
+                }
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .targetedToAnyEntity()
+                        .onChanged { value in
+                            // Convert 2D drag to 3D offset
+                            // NOTE: Y axis is INVERTED in visionOS drag gestures
+                            let translation = value.translation3D
+                            wheelDragOffset = SIMD3<Float>(
+                                Float(translation.x) * 0.001,
+                                Float(-translation.y) * 0.001,  // INVERTED: negative Y to fix up/down
+                                Float(translation.z) * 0.001
+                            )
+                        }
+                        .onEnded { value in
+                            // Commit the position change
+                            wheelPosition += wheelDragOffset
+                            wheelDragOffset = .zero
+                            print("[StreamingImmersive] 🎡 Wheel repositioned to \(wheelPosition)")
+                        }
                 )
+                
+                // HUD overlay with trigger values
+                VStack {
+                    Spacer()
+                    
+                    // Minimal HUD at bottom
+                    HStack(spacing: 40) {
+                        // Left trigger (brake)
+                        VStack(spacing: 4) {
+                            Text("L2 BRAKE")
+                                .font(.caption2)
+                                .foregroundColor(.red)
+                            ProgressView(value: Double(steeringService.leftTrigger))
+                                .tint(.red)
+                                .frame(width: 80)
+                        }
+                        
+                        // Steering indicator
+                        VStack(spacing: 4) {
+                            Text("STEERING")
+                                .font(.caption2)
+                                .foregroundColor(.white)
+                            Text(String(format: "%+.0f%%", steeringService.steeringValue * 100))
+                                .font(.headline)
+                                .monospacedDigit()
+                                .foregroundColor(steeringService.isTracking ? .green : .gray)
+                        }
+                        
+                        // Right trigger (accelerator)
+                        VStack(spacing: 4) {
+                            Text("R2 ACCEL")
+                                .font(.caption2)
+                                .foregroundColor(.green)
+                            ProgressView(value: Double(steeringService.rightTrigger))
+                                .tint(.green)
+                                .frame(width: 80)
+                        }
+                    }
+                    .padding()
+                    .background(.ultraThinMaterial)
+                    .cornerRadius(12)
+                    .padding(.bottom, 40)
+                }
             }
         }
         .onTapGesture {
@@ -264,11 +356,44 @@ struct StreamingImmersiveView: View {
         .onAppear {
             upscalingPipeline.initialize()
             
-            // v10.6: Start hand tracking if virtual wheel mode
-            if appState.controllerMode == .virtualWheel {
+            // v10.6: Start hand tracking if F1 cockpit or virtual wheel mode
+            print("[StreamingImmersive] 🎮 Controller mode: \(appState.controllerMode)")
+            let isSteeringMode = appState.controllerMode == .f1Cockpit || appState.controllerMode == .virtualWheel
+            if isSteeringMode {
+                print("[StreamingImmersive] 🎯 F1/Virtual Wheel mode ACTIVE - starting hand tracking...")
                 Task {
-                    try? await steeringService.startTracking()
+                    do {
+                        try await steeringService.startTracking()
+                        print("[StreamingImmersive] ✅ Hand tracking started successfully")
+                    } catch {
+                        print("[StreamingImmersive] ❌ Hand tracking failed: \(error)")
+                    }
                 }
+                // Start input loop at 120Hz for lower latency
+                steeringInputTimer = Timer.scheduledTimer(withTimeInterval: 1.0/120.0, repeats: true) { _ in
+                    Task { @MainActor in
+                        guard steeringService.isTracking else { return }
+                        
+                        // Get steering and trigger values
+                        let steering = steeringService.steeringValue
+                        let leftTrig = steeringService.leftTrigger   // L2 = brake
+                        let rightTrig = steeringService.rightTrigger // R2 = accelerator
+                        
+                        // Send directly to ChiakiFullSession with L2/R2 triggers!
+                        ChiakiFullSession.shared.setControllerState(
+                            buttons: 0,  // No buttons pressed
+                            leftX: Int16(steering * 32767),  // Steering on left stick X
+                            leftY: 0,
+                            rightX: 0,
+                            rightY: 0,
+                            l2: UInt8(leftTrig * 255),   // L2 trigger = brake
+                            r2: UInt8(rightTrig * 255)   // R2 trigger = accelerator
+                        )
+                    }
+                }
+                print("[StreamingImmersive] ⏱️ Input timer started at 120Hz (~8ms latency)")
+            } else {
+                print("[StreamingImmersive] ℹ️ Not in steering wheel mode, skipping hand tracking")
             }
         }
         .onDisappear {
@@ -278,7 +403,9 @@ struct StreamingImmersiveView: View {
             if #available(visionOS 2.0, *) {
                 ImmersiveTextureCoordinator.shared.reset()
             }
-            // v10.6: Stop hand tracking
+            // v10.6: Stop hand tracking and input timer
+            steeringInputTimer?.invalidate()
+            steeringInputTimer = nil
             steeringService.stopTracking()
         }
     }
@@ -300,6 +427,22 @@ struct StreamingImmersiveView: View {
     
     private func exitImmersive() async {
         await dismissImmersiveSpace()
+    }
+    
+    // v10.6: Send steering wheel input to PS5
+    private func sendSteeringInput() {
+        guard steeringService.isTracking else { return }
+        
+        // Steering goes to left stick X
+        let steering = CGFloat(steeringService.steeringValue)
+        
+        // Triggers: R2 (throttle) - L2 (brake) = right stick Y
+        let throttleBrake = CGFloat(steeringService.rightTrigger - steeringService.leftTrigger)
+        
+        appState.streamingViewModel.sendJoystickInput(
+            left: CGPoint(x: steering, y: 0),
+            right: CGPoint(x: 0, y: throttleBrake)
+        )
     }
 }
 

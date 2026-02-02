@@ -39,15 +39,14 @@
 		EF3CB6A82F29066A005E85E1 /* ControllerOverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF3CB6A32F29066A005E85E1 /* ControllerOverlayView.swift */; };
 		EF3CB6A92F29066A005E85E1 /* StreamingVideoWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF3CB6A62F29066A005E85E1 /* StreamingVideoWindow.swift */; };
 		EF3CB6AA2F29066A005E85E1 /* ControllerWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF3CB6A42F29066A005E85E1 /* ControllerWindow.swift */; };
-		F1COCK001 /* F1CockpitControllerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1COCKREF001 /* F1CockpitControllerView.swift */; };
-		VSTEER001 /* VirtualSteeringWheelService.swift in Sources */ = {isa = PBXBuildFile; fileRef = VSTEERREF001 /* VirtualSteeringWheelService.swift */; };
-		VSTEERVW001 /* VirtualSteeringWheelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = VSTEERVWREF001 /* VirtualSteeringWheelView.swift */; };
 		EF48D8DA2F0FD3F8009C702E /* ChiakiCore.c in Sources */ = {isa = PBXBuildFile; fileRef = EF48D8D92F0FD3F8009C702E /* ChiakiCore.c */; };
 		EF5C41952F0645B0007A7B67 /* PSNSessionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF5C41942F0645B0007A7B67 /* PSNSessionManager.swift */; };
 		EF5C41972F0645C3007A7B67 /* HolepunchService.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF5C41962F0645C3007A7B67 /* HolepunchService.swift */; };
 		EF5C41992F0645D2007A7B67 /* PSNConnectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF5C41982F0645D2007A7B67 /* PSNConnectionView.swift */; };
 		EF5C419B2F0645E0007A7B67 /* PSNWebSocketService.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF5C419A2F0645E0007A7B67 /* PSNWebSocketService.swift */; };
 		ENHUPSRC001 /* EnhancedUpscaler.swift in Sources */ = {isa = PBXBuildFile; fileRef = ENHUPREF001 /* EnhancedUpscaler.swift */; };
+		F1COCK001 /* F1CockpitControllerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1COCKREF001 /* F1CockpitControllerView.swift */; };
+		F1WHEEL3D001 /* F1SteeringWheel3DModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1WHEEL3DREF001 /* F1SteeringWheel3DModel.swift */; };
 		FRMPCRSRC001 /* FramePacer.swift in Sources */ = {isa = PBXBuildFile; fileRef = FRMPCRREF001 /* FramePacer.swift */; };
 		LOWLATAUDSRC001 /* LowLatencyAudioPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = LOWLATAUDREF001 /* LowLatencyAudioPlayer.swift */; };
 		MFXUPSRC001 /* MetalFXUpscaler.swift in Sources */ = {isa = PBXBuildFile; fileRef = MFXUPREF001 /* MetalFXUpscaler.swift */; };
@@ -67,6 +66,8 @@
 		TST005 /* PSNAuthServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TSTSRC005 /* PSNAuthServiceTests.swift */; };
 		TST006 /* ConsoleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TSTSRC006 /* ConsoleTests.swift */; };
 		UPSPIPESRC001 /* UpscalingPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = UPSPIPEREF001 /* UpscalingPipeline.swift */; };
+		VSTEER001 /* VirtualSteeringWheelService.swift in Sources */ = {isa = PBXBuildFile; fileRef = VSTEERREF001 /* VirtualSteeringWheelService.swift */; };
+		VSTEERVW001 /* VirtualSteeringWheelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = VSTEERVWREF001 /* VirtualSteeringWheelView.swift */; };
 		WOLSVC001 /* WakeOnLanService.swift in Sources */ = {isa = PBXBuildFile; fileRef = WOLSRCSVC001 /* WakeOnLanService.swift */; };
 /* End PBXBuildFile section */
 
@@ -97,15 +98,14 @@
 		EF3CB6A42F29066A005E85E1 /* ControllerWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ControllerWindow.swift; sourceTree = "<group>"; };
 		EF3CB6A52F29066A005E85E1 /* MenuBarWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarWindow.swift; sourceTree = "<group>"; };
 		EF3CB6A62F29066A005E85E1 /* StreamingVideoWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamingVideoWindow.swift; sourceTree = "<group>"; };
-		F1COCKREF001 /* F1CockpitControllerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = F1CockpitControllerView.swift; sourceTree = "<group>"; };
-		VSTEERREF001 /* VirtualSteeringWheelService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VirtualSteeringWheelService.swift; sourceTree = "<group>"; };
-		VSTEERVWREF001 /* VirtualSteeringWheelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VirtualSteeringWheelView.swift; sourceTree = "<group>"; };
 		EF48D8D92F0FD3F8009C702E /* ChiakiCore.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = ChiakiCore.c; sourceTree = "<group>"; };
 		EF5C41942F0645B0007A7B67 /* PSNSessionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PSNSessionManager.swift; sourceTree = "<group>"; };
 		EF5C41962F0645C3007A7B67 /* HolepunchService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HolepunchService.swift; sourceTree = "<group>"; };
 		EF5C41982F0645D2007A7B67 /* PSNConnectionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PSNConnectionView.swift; sourceTree = "<group>"; };
 		EF5C419A2F0645E0007A7B67 /* PSNWebSocketService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PSNWebSocketService.swift; sourceTree = "<group>"; };
 		ENHUPREF001 /* EnhancedUpscaler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnhancedUpscaler.swift; sourceTree = "<group>"; };
+		F1COCKREF001 /* F1CockpitControllerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = F1CockpitControllerView.swift; sourceTree = "<group>"; };
+		F1WHEEL3DREF001 /* F1SteeringWheel3DModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = F1SteeringWheel3DModel.swift; sourceTree = "<group>"; };
 		FRMPCRREF001 /* FramePacer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FramePacer.swift; sourceTree = "<group>"; };
 		LOWLATAUDREF001 /* LowLatencyAudioPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LowLatencyAudioPlayer.swift; sourceTree = "<group>"; };
 		MFXUPREF001 /* MetalFXUpscaler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetalFXUpscaler.swift; sourceTree = "<group>"; };
@@ -145,6 +145,8 @@
 		TSTSRC005 /* PSNAuthServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PSNAuthServiceTests.swift; sourceTree = "<group>"; };
 		TSTSRC006 /* ConsoleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConsoleTests.swift; sourceTree = "<group>"; };
 		UPSPIPEREF001 /* UpscalingPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpscalingPipeline.swift; sourceTree = "<group>"; };
+		VSTEERREF001 /* VirtualSteeringWheelService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VirtualSteeringWheelService.swift; sourceTree = "<group>"; };
+		VSTEERVWREF001 /* VirtualSteeringWheelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VirtualSteeringWheelView.swift; sourceTree = "<group>"; };
 		WOLSRCSVC001 /* WakeOnLanService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WakeOnLanService.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -208,6 +210,7 @@
 				EF3CB6A32F29066A005E85E1 /* ControllerOverlayView.swift */,
 				F1COCKREF001 /* F1CockpitControllerView.swift */,
 				VSTEERVWREF001 /* VirtualSteeringWheelView.swift */,
+				F1WHEEL3DREF001 /* F1SteeringWheel3DModel.swift */,
 				EF3CB6A42F29066A005E85E1 /* ControllerWindow.swift */,
 				EF3CB6A52F29066A005E85E1 /* MenuBarWindow.swift */,
 				EF3CB6A62F29066A005E85E1 /* StreamingVideoWindow.swift */,
@@ -470,6 +473,7 @@
 				F1COCK001 /* F1CockpitControllerView.swift in Sources */,
 				VSTEER001 /* VirtualSteeringWheelService.swift in Sources */,
 				VSTEERVW001 /* VirtualSteeringWheelView.swift in Sources */,
+				F1WHEEL3D001 /* F1SteeringWheel3DModel.swift in Sources */,
 				RKVIDEOVIEWSRC001 /* RealityKitVideoView.swift in Sources */,
 				TRIPLEBUFSRC001 /* TripleBufferPool.swift in Sources */,
 				FRMPCRSRC001 /* FramePacer.swift in Sources */,
