@@ -41,10 +41,10 @@ struct MenuBarWindow: View {
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: appState.controllerMode.icon)
-                    Text(appState.controllerMode == .f1Cockpit ? "F1" : "Pad")
+                    Text("Pad")
                         .font(.caption)
                 }
-                .foregroundColor(appState.controllerMode == .f1Cockpit ? .orange : .white)
+                .foregroundColor(.white)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 6)

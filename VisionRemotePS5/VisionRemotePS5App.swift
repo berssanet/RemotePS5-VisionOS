@@ -89,13 +89,11 @@ class AppState: ObservableObject {
     /// v10.6: Controller display mode
     enum ControllerMode: String, CaseIterable {
         case standard = "Standard"
-        case f1Cockpit = "F1 Cockpit"
         case virtualWheel = "Virtual Wheel"
         
         var icon: String {
             switch self {
             case .standard: return "gamecontroller"
-            case .f1Cockpit: return "steeringwheel"
             case .virtualWheel: return "hand.raised.fingers.spread"
             }
         }
@@ -103,7 +101,6 @@ class AppState: ObservableObject {
         var description: String {
             switch self {
             case .standard: return "Touch controls"
-            case .f1Cockpit: return "Touch steering wheel"
             case .virtualWheel: return "Hand tracking wheel (VR only)"
             }
         }

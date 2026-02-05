@@ -3,7 +3,7 @@
 //  VisionRemotePS5
 //
 //  v10.5: Floating controller window - movable independently
-//  v10.6: Supports Standard, F1 Cockpit, and Virtual Wheel modes
+//  v10.6: Supports Standard and Virtual Wheel modes
 //
 
 import SwiftUI
@@ -16,8 +16,6 @@ struct ControllerWindow: View {
             switch appState.controllerMode {
             case .standard:
                 ControllerOverlayView(viewModel: appState.streamingViewModel)
-            case .f1Cockpit:
-                F1CockpitControllerView(viewModel: appState.streamingViewModel)
             case .virtualWheel:
                 // Virtual wheel requires VR mode for hand tracking
                 VirtualWheelPlaceholderView()
