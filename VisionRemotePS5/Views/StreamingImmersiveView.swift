@@ -14,6 +14,7 @@ import Metal
 // MARK: - Immersive Texture Coordinator
 
 /// Separate coordinator for immersive mode (doesn't conflict with windowed mode)
+/// v11.2: Fixed white flashes and VR re-entry issues with synchronous GPU operations
 @available(visionOS 2.0, *)
 @MainActor
 final class ImmersiveTextureCoordinator {
@@ -26,28 +27,40 @@ final class ImmersiveTextureCoordinator {
     private var isInitialized = false
     private var isInitializing = false
     
+    // v11.2: Atomic update tracking to prevent white flashes
+    private var updateInProgress = false
+    private var lastUpdateTime: CFAbsoluteTime = 0
+    private var frameCounter: UInt64 = 0
+    private var sessionId: UInt64 = 0  // Track VR sessions to detect re-entry
+    
     private(set) var videoEntity: ModelEntity?
     private(set) var hasValidTexture = false
     
     private init() {}
     
     func getOrCreateEntity(width: Float, height: Float, distance: Float, elevation: Float) -> ModelEntity {
+        // v11.2: Check if entity exists but belongs to old session
         if let existing = videoEntity {
+            // Reuse existing entity
             return existing
         }
+        
+        // Create new entity
+        sessionId += 1
         
         let mesh = MeshResource.generatePlane(width: width, height: height)
         let entity = ModelEntity(mesh: mesh)
         
+        // v11.2: Start with solid BLACK to prevent any flash
         var material = UnlitMaterial()
-        material.color = .init(tint: .clear)
+        material.color = .init(tint: .black)
         entity.model?.materials = [material]
         entity.position = [0, elevation, -distance]
         entity.name = "ImmersiveVideoPlane"
         
         videoEntity = entity
         
-        print("[ImmersiveCoordinator] ✅ Entity created: \(width)x\(height)")
+        DebugLog.info("ImmersiveCoordinator", "✅ Entity created (session \(sessionId)): \(width)x\(height)")
         
         return entity
     }
@@ -55,8 +68,18 @@ final class ImmersiveTextureCoordinator {
     func updateTexture(from sourceTexture: MTLTexture) {
         let newSize = (sourceTexture.width, sourceTexture.height)
         
+        // v11.2: Timeout protection - if update stuck for >100ms, force reset
+        let now = CFAbsoluteTimeGetCurrent()
+        if updateInProgress && (now - lastUpdateTime) > 0.1 {
+            DebugLog.warning("ImmersiveCoordinator", "Update timeout, forcing reset")
+            updateInProgress = false
+        }
+        
+        // Skip if already updating
+        guard !updateInProgress else { return }
+        
         if isInitialized && textureSize == newSize {
-            copyTextureContent(from: sourceTexture)
+            copyTextureContentSync(from: sourceTexture)
             return
         }
         
@@ -92,15 +115,16 @@ final class ImmersiveTextureCoordinator {
             isInitialized = true
             isInitializing = false
             hasValidTexture = true
+            frameCounter = 0
             
-            print("[ImmersiveCoordinator] ✅ Texture: \(sourceTexture.width)x\(sourceTexture.height)")
+            DebugLog.info("ImmersiveCoordinator", "✅ Texture: \(sourceTexture.width)x\(sourceTexture.height)")
             
             applyToEntity()
-            copyTextureContent(from: sourceTexture)
+            copyTextureContentSync(from: sourceTexture)
             
         } catch {
             isInitializing = false
-            print("[ImmersiveCoordinator] ❌ Failed: \(error)")
+            DebugLog.error("ImmersiveCoordinator", "Failed: \(error)")
         }
     }
     
@@ -110,18 +134,33 @@ final class ImmersiveTextureCoordinator {
         var material = UnlitMaterial()
         material.color = .init(texture: .init(resource))
         entity.model?.materials = [material]
+        
+        DebugLog.info("ImmersiveCoordinator", "🎨 Material applied with texture")
     }
     
-    private func copyTextureContent(from sourceTexture: MTLTexture) {
+    /// v11.2: Synchronous texture copy - waits for GPU to complete before returning
+    /// This prevents the white flash caused by displaying partially copied textures
+    private func copyTextureContentSync(from sourceTexture: MTLTexture) {
         guard let llTexture = lowLevelTexture,
               let queue = commandQueue,
-              isInitialized else { return }
+              isInitialized,
+              !updateInProgress else { return }
         
-        guard let commandBuffer = queue.makeCommandBuffer() else { return }
+        updateInProgress = true
+        lastUpdateTime = CFAbsoluteTimeGetCurrent()
+        frameCounter += 1
+        
+        guard let commandBuffer = queue.makeCommandBuffer() else {
+            updateInProgress = false
+            return
+        }
         
         let destTexture = llTexture.replace(using: commandBuffer)
         
-        guard let blitEncoder = commandBuffer.makeBlitCommandEncoder() else { return }
+        guard let blitEncoder = commandBuffer.makeBlitCommandEncoder() else {
+            updateInProgress = false
+            return
+        }
         
         let copyWidth = min(sourceTexture.width, destTexture.width)
         let copyHeight = min(sourceTexture.height, destTexture.height)
@@ -139,19 +178,40 @@ final class ImmersiveTextureCoordinator {
         )
         
         blitEncoder.endEncoding()
+        
+        // v12.0: Async commit with completion handler — avoids blocking ~1ms/frame.
+        // The updateInProgress flag gates new copies, preserving ordering without CPU stall.
+        commandBuffer.addCompletedHandler { [weak self] _ in
+            DispatchQueue.main.async {
+                self?.updateInProgress = false
+            }
+        }
         commandBuffer.commit()
     }
     
+    /// v11.2: Full reset - clears everything including entity for clean VR re-entry
     func reset() {
+        // Wait for any pending update
+        if updateInProgress {
+            updateInProgress = false
+        }
+        
         lowLevelTexture = nil
         textureResource = nil
         commandQueue = nil
         textureSize = (0, 0)
         isInitialized = false
         isInitializing = false
-        videoEntity = nil
         hasValidTexture = false
-        print("[ImmersiveCoordinator] 🔄 Reset")
+        frameCounter = 0
+        
+        // v11.2: Also clear entity to force recreation on next VR entry
+        if let entity = videoEntity {
+            entity.removeFromParent()
+        }
+        videoEntity = nil
+        
+        DebugLog.info("ImmersiveCoordinator", "🔄 Full reset (session \(sessionId) ended)")
     }
 }
 
@@ -175,15 +235,12 @@ struct StreamingImmersiveView: View {
     @StateObject private var steeringService = VirtualSteeringWheelService()
     @State private var steeringInputTimer: Timer?
     
-    // v10.7: User-adjustable wheel position
-    @State private var wheelPosition: SIMD3<Float> = [0, 0.6, -0.7]  // 70cm in front, 60cm height
-    @State private var wheelDragOffset: SIMD3<Float> = .zero
+    // v11.x: Wheel position in immersive space (relative to screen at [0, 1.8, -4.0])
+    @State private var wheelPosition: SIMD3<Float> = [0, 0.9, -1.2]  // Below screen center, ~1.2m away
     
-    // v11.0: GPU Optimizations
-    @StateObject private var gpuProcessor = GPUProcessor()
-    @StateObject private var thermalMonitor = ThermalStateMonitor()
-    @State private var showPerformanceHUD = false
-    @State private var selectedGPUPreset: GPUPreset = .auto
+    // v11.x: Button bitmask for wheel panel buttons (wired into 120Hz input loop)
+    @State private var pressedButtons: UInt32 = 0
+    
     
     var body: some View {
         ZStack {
@@ -191,10 +248,11 @@ struct StreamingImmersiveView: View {
             if upscalingPipeline.isEnabled,
                let texture4K = upscalingPipeline.upscaledTexture {
                 if #available(visionOS 2.0, *) {
-                    EnhancedImmersive4KSurface(
+                    Immersive4KSurface(
                         texture: texture4K,
                         frameId: upscalingPipeline.textureFrameId,
-                        gpuProcessor: gpuProcessor
+                        showWheel: appState.controllerMode == .virtualWheel,
+                        steeringValue: steeringService.steeringValue
                     )
                 } else if let frame = currentFrame {
                     StreamingSurface(pixelBuffer: frame)
@@ -209,19 +267,6 @@ struct StreamingImmersiveView: View {
                     let entity = ModelEntity(mesh: mesh, materials: [material])
                     entity.position = [0, 1.8, -4.0]
                     content.add(entity)
-                }
-            }
-            
-            // v11.0: Performance HUD (toggle with double-tap)
-            if showPerformanceHUD {
-                VStack {
-                    Spacer()
-                    PerformanceHUD(
-                        fps: gpuProcessor.currentFPS,
-                        thermalState: thermalMonitor.thermalState,
-                        gpuUsage: gpuProcessor.gpuUsage
-                    )
-                    .padding()
                 }
             }
             
@@ -250,119 +295,80 @@ struct StreamingImmersiveView: View {
                 .transition(.opacity)
             }
             
-            // v10.6: 3D Virtual Steering Wheel (when in virtualWheel mode)
+            // v11.x: Wheel button panel + HUD (rendered as RealityView attachment)
             if appState.controllerMode == .virtualWheel {
-                // 3D wheel entity in RealityKit - user can drag to reposition
-                RealityView { content in
-                    print("[StreamingImmersive] 🎡 Creating F1 Steering Wheel 3D model...")
-                    let wheelModel = F1SteeringWheel3DModel()
-                    let wheelEntity = wheelModel.createWheelEntity()
-                    
-                    // Initial position - farther from user for comfort
-                    wheelEntity.position = wheelPosition
-                    wheelEntity.scale = [1.5, 1.5, 1.5]    // 1.5x scale for better visibility
-                    wheelEntity.name = "F1WheelRoot"
-                    
-                    // Enable input for dragging
-                    wheelEntity.components.set(InputTargetComponent())
-                    wheelEntity.generateCollisionShapes(recursive: true)
-                    
-                    print("[StreamingImmersive] ✅ Wheel entity created - drag to reposition")
-                    content.add(wheelEntity)
-                } update: { content in
-                    // Update wheel rotation and position
-                    if let wheelEntity = content.entities.first(where: { $0.name == "F1WheelRoot" }) {
-                        // Apply user-adjusted position + any active drag offset
-                        wheelEntity.position = wheelPosition + wheelDragOffset
-                        
-                        // Rotate wheel around Z axis based on steering (INVERTED for visual)
-                        let steeringAngle = Float(-steeringService.steeringValue) * (.pi / 2)  // ±90°
-                        wheelEntity.orientation = simd_quatf(angle: steeringAngle, axis: [0, 0, 1])
+                RealityView { content, attachments in
+                    let anchor = AnchorEntity(world: [0, 0.45, -1.2])  // Below the wheel
+                    if let panel = attachments.entity(for: "wheelButtons") {
+                        panel.position = [0, 0, 0]
+                        anchor.addChild(panel)
                     }
-                }
-                .gesture(
-                    DragGesture(minimumDistance: 0)
-                        .targetedToAnyEntity()
-                        .onChanged { value in
-                            // Convert 2D drag to 3D offset
-                            // NOTE: Y axis is INVERTED in visionOS drag gestures
-                            let translation = value.translation3D
-                            wheelDragOffset = SIMD3<Float>(
-                                Float(translation.x) * 0.001,
-                                Float(-translation.y) * 0.001,  // INVERTED: negative Y to fix up/down
-                                Float(translation.z) * 0.001
-                            )
-                        }
-                        .onEnded { value in
-                            // Commit the position change
-                            wheelPosition += wheelDragOffset
-                            wheelDragOffset = .zero
-                            print("[StreamingImmersive] 🎡 Wheel repositioned to \(wheelPosition)")
-                        }
-                )
-                
-                // HUD overlay with trigger values
-                VStack {
-                    Spacer()
-                    
-                    // Minimal HUD at bottom
-                    HStack(spacing: 40) {
-                        // Left trigger (brake)
-                        VStack(spacing: 4) {
-                            Text("L2 BRAKE")
-                                .font(.caption2)
-                                .foregroundColor(.red)
-                            ProgressView(value: Double(steeringService.leftTrigger))
-                                .tint(.red)
-                                .frame(width: 80)
-                        }
-                        
-                        // Steering indicator
-                        VStack(spacing: 4) {
-                            Text("STEERING")
-                                .font(.caption2)
-                                .foregroundColor(.white)
-                            Text(String(format: "%+.0f%%", steeringService.steeringValue * 100))
-                                .font(.headline)
-                                .monospacedDigit()
-                                .foregroundColor(steeringService.isTracking ? .green : .gray)
-                        }
-                        
-                        // Right trigger (accelerator)
-                        VStack(spacing: 4) {
-                            Text("R2 ACCEL")
-                                .font(.caption2)
-                                .foregroundColor(.green)
-                            ProgressView(value: Double(steeringService.rightTrigger))
-                                .tint(.green)
-                                .frame(width: 80)
+                    content.add(anchor)
+                } attachments: {
+                    Attachment(id: "wheelButtons") {
+                        VStack(spacing: 12) {
+                            // Racing button panel
+                            HStack(spacing: 16) {
+                                // Face buttons
+                                HStack(spacing: 8) {
+                                    WheelButton(label: "✕", color: .blue, mask: 0x0001, pressedButtons: $pressedButtons)
+                                    WheelButton(label: "○", color: .red, mask: 0x0002, pressedButtons: $pressedButtons)
+                                    WheelButton(label: "□", color: .pink, mask: 0x0004, pressedButtons: $pressedButtons)
+                                    WheelButton(label: "△", color: .green, mask: 0x0008, pressedButtons: $pressedButtons)
+                                }
+                                
+                                Divider().frame(height: 30)
+                                
+                                // D-Pad
+                                HStack(spacing: 8) {
+                                    WheelButton(label: "◀", color: .white, mask: 0x0010, pressedButtons: $pressedButtons)
+                                    VStack(spacing: 4) {
+                                        WheelButton(label: "▲", color: .white, mask: 0x0040, pressedButtons: $pressedButtons)
+                                        WheelButton(label: "▼", color: .white, mask: 0x0080, pressedButtons: $pressedButtons)
+                                    }
+                                    WheelButton(label: "▶", color: .white, mask: 0x0020, pressedButtons: $pressedButtons)
+                                }
+                                
+                                Divider().frame(height: 30)
+                                
+                                // System buttons
+                                HStack(spacing: 8) {
+                                    WheelButton(label: "OPT", color: .gray, mask: 0x1000, pressedButtons: $pressedButtons, fontSize: 10)
+                                    WheelButton(label: "PS", color: .cyan, mask: 0x8000, pressedButtons: $pressedButtons, fontSize: 11)
+                                }
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 10)
+                            .background(.ultraThinMaterial)
+                            .cornerRadius(16)
+                            
+                            // HUD
+                            HStack(spacing: 40) {
+                                VStack(spacing: 4) {
+                                    Text("L2 BRAKE").font(.caption2).foregroundColor(.red)
+                                    ProgressView(value: Double(steeringService.leftTrigger)).tint(.red).frame(width: 80)
+                                }
+                                VStack(spacing: 4) {
+                                    Text("STEERING").font(.caption2).foregroundColor(.white)
+                                    Text(String(format: "%+.0f%%", steeringService.steeringValue * 100))
+                                        .font(.headline).monospacedDigit()
+                                        .foregroundColor(steeringService.isTracking ? .green : .gray)
+                                }
+                                VStack(spacing: 4) {
+                                    Text("R2 ACCEL").font(.caption2).foregroundColor(.green)
+                                    ProgressView(value: Double(steeringService.rightTrigger)).tint(.green).frame(width: 80)
+                                }
+                            }
+                            .padding()
+                            .background(.ultraThinMaterial)
+                            .cornerRadius(12)
                         }
                     }
-                    .padding()
-                    .background(.ultraThinMaterial)
-                    .cornerRadius(12)
-                    .padding(.bottom, 40)
                 }
             }
         }
-        .gesture(
-            // Double-tap to toggle performance HUD
-            TapGesture(count: 2).onEnded {
-                withAnimation {
-                    showPerformanceHUD.toggle()
-                }
-            }
-        )
         .onTapGesture {
             toggleControls()
-        }
-        .onChange(of: selectedGPUPreset) { _, newPreset in
-            applyGPUPreset(newPreset)
-        }
-        .onChange(of: thermalMonitor.recommendedQuality) { _, quality in
-            if selectedGPUPreset == .auto {
-                adjustForThermalState(quality)
-            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .videoFrameReceived)) { notification in
             guard let object = notification.object else { return }
@@ -417,7 +423,7 @@ struct StreamingImmersiveView: View {
                         
                         // Send directly to ChiakiFullSession with L2/R2 triggers!
                         ChiakiFullSession.shared.setControllerState(
-                            buttons: 0,  // No buttons pressed
+                            buttons: pressedButtons,  // Wheel panel buttons
                             leftX: Int16(steering * 32767),  // Steering on left stick X
                             leftY: 0,
                             rightX: 0,
@@ -481,104 +487,6 @@ struct StreamingImmersiveView: View {
         )
     }
     
-    // v11.0: Apply GPU preset
-    private func applyGPUPreset(_ preset: GPUPreset) {
-        switch preset {
-        case .auto:
-            // Let thermal monitor decide
-            break
-        case .racing:
-            gpuProcessor.settings = .racingPreset
-            print("[GPU] 🏎️ Preset Racing aplicado")
-        case .fps:
-            gpuProcessor.settings = .fpsPreset
-            print("[GPU] 🔫 Preset FPS aplicado")
-        case .rpg:
-            gpuProcessor.settings = .rpgPreset
-            print("[GPU] 🛡️ Preset RPG aplicado")
-        case .cinematic:
-            gpuProcessor.settings = .cinematicPreset
-            print("[GPU] 🎬 Preset Cinematográfico aplicado")
-        }
-    }
-    
-    // v11.0: Adjust quality based on thermal state
-    private func adjustForThermalState(_ quality: ThermalStateMonitor.Quality) {
-        switch quality {
-        case .ultra:
-            gpuProcessor.settings.sharpeningIntensity = 0.3
-            gpuProcessor.settings.enableColorGrading = true
-            gpuProcessor.settings.reduceMotionBlur = true
-            print("[GPU] 🌡️ Thermal: Ultra - todos os efeitos ON")
-        case .high:
-            gpuProcessor.settings.sharpeningIntensity = 0.2
-            gpuProcessor.settings.enableColorGrading = true
-            gpuProcessor.settings.reduceMotionBlur = false
-            print("[GPU] 🌡️ Thermal: High - motion blur OFF")
-        case .medium:
-            gpuProcessor.settings.sharpeningIntensity = 0.1
-            gpuProcessor.settings.enableColorGrading = false
-            gpuProcessor.settings.reduceMotionBlur = false
-            print("[GPU] 🌡️ Thermal: Medium - color grading OFF")
-        case .low:
-            gpuProcessor.settings.sharpeningIntensity = 0.0
-            gpuProcessor.settings.enableColorGrading = false
-            gpuProcessor.settings.reduceMotionBlur = false
-            print("[GPU] 🌡️ Thermal: Low - apenas upscaling")
-        }
-    }
-}
-
-// MARK: - Enhanced Immersive 4K Surface (with GPU processing)
-
-@available(visionOS 2.0, *)
-struct EnhancedImmersive4KSurface: View {
-    let texture: MTLTexture
-    let frameId: UInt64
-    let gpuProcessor: GPUProcessor
-    
-    // Cinema-like screen: 6m wide at 4m distance (~85° FOV)
-    // 16:9 aspect ratio: 6.0 x 3.375 meters
-    private let screenWidth: Float = 6.0
-    private let screenHeight: Float = 3.375
-    private let screenDistance: Float = 4.0
-    private let screenElevation: Float = 1.8
-    
-    var body: some View {
-        RealityView { content in
-            let coordinator = ImmersiveTextureCoordinator.shared
-            let entity = coordinator.getOrCreateEntity(
-                width: screenWidth,
-                height: screenHeight,
-                distance: screenDistance,
-                elevation: screenElevation
-            )
-            
-            if entity.parent == nil {
-                content.add(entity)
-                print("[EnhancedImmersive4K] ✅ Entity added to scene")
-            }
-            
-            // Process with GPU and update
-            Task {
-                if let processedTexture = await gpuProcessor.processFrame(texture) {
-                    coordinator.updateTexture(from: processedTexture)
-                } else {
-                    // Fallback to original if processing fails
-                    coordinator.updateTexture(from: texture)
-                }
-            }
-        } update: { content in
-            // Update texture on frame changes
-            Task {
-                if let processedTexture = await gpuProcessor.processFrame(texture) {
-                    ImmersiveTextureCoordinator.shared.updateTexture(from: processedTexture)
-                } else {
-                    ImmersiveTextureCoordinator.shared.updateTexture(from: texture)
-                }
-            }
-        }
-    }
 }
 
 // MARK: - Immersive 4K Surface (using coordinator - original without GPU)
@@ -588,12 +496,20 @@ struct Immersive4KSurface: View {
     let texture: MTLTexture
     let frameId: UInt64
     
+    // v11.x: Wheel in same RealityView as video surface
+    var showWheel: Bool = false
+    var steeringValue: Float = 0
+    
     // Cinema-like screen: 6m wide at 4m distance (~85° FOV)
     // 16:9 aspect ratio: 6.0 x 3.375 meters
     private let screenWidth: Float = 6.0
     private let screenHeight: Float = 3.375
     private let screenDistance: Float = 4.0
     private let screenElevation: Float = 1.8
+    
+    // Wheel placement: below screen, closer to user
+    private let wheelPos: SIMD3<Float> = [0, 0.9, -1.2]
+    private let wheelScale: Float = 0.35  // Realistic hand-held wheel size at ~1.2m
     
     var body: some View {
         RealityView { content in
@@ -613,13 +529,52 @@ struct Immersive4KSurface: View {
             // Initial texture update
             coordinator.updateTexture(from: texture)
             
+            // v11.x: Load 3D wheel into SAME scene as video surface
+            if showWheel {
+                do {
+                    print("[Immersive4KSurface] 🎡 Loading MercedesF1Wheel...")
+                    let wheelEntity = try await Entity(named: "MercedesF1Wheel")
+                    
+                    wheelEntity.position = wheelPos
+                    wheelEntity.scale = SIMD3<Float>(repeating: wheelScale)
+                    wheelEntity.name = "F1WheelRoot"
+                    
+                    // USDZ model: face/buttons point toward -Y in model space.
+                    // RealityKit world: user looks down -Z, +Y is up.
+                    // Step 1: Rotate +90° around X to bring -Y face toward +Z (user).
+                    //   RX(+90°): -Y → +Z (face toward user) ✓
+                    // Step 2: Tilt top of wheel toward user by +20° (cockpit angle).
+                    let faceToUser = simd_quatf(angle: .pi / 2, axis: [1, 0, 0])
+                    let cockpitTilt = simd_quatf(angle: .pi * 0.11, axis: [1, 0, 0])  // +20°
+                    wheelEntity.orientation = cockpitTilt * faceToUser
+                    
+                    content.add(wheelEntity)
+                    print("[Immersive4KSurface] ✅ Wheel added — pos:\(wheelPos) scale:\(wheelScale)")
+                } catch {
+                    print("[Immersive4KSurface] ❌ Failed to load wheel: \(error)")
+                }
+            }
+            
         } update: { content in
             let coordinator = ImmersiveTextureCoordinator.shared
             coordinator.updateTexture(from: texture)
             
-            // Log periodically
             if frameId == 1 || frameId % 120 == 0 {
                 print("[Immersive4KSurface] 📊 Frame \(frameId), texture: \(texture.width)x\(texture.height)")
+            }
+            
+            // v11.x: Update wheel steering rotation
+            if showWheel, let wheelEntity = content.entities.first(where: { $0.name == "F1WheelRoot" }) {
+                // Base orientation: face toward user + cockpit tilt
+                let faceToUser = simd_quatf(angle: .pi / 2, axis: [1, 0, 0])
+                let cockpitTilt = simd_quatf(angle: .pi * 0.11, axis: [1, 0, 0])
+                let baseOrientation = cockpitTilt * faceToUser
+                
+                // Steering: rotate around model's LOCAL -Y axis (the face normal)
+                // Applied first (right side of multiply), then base orientation transforms to world
+                let steeringAngle = Float(-steeringValue) * (.pi / 2)  // ±90°
+                let steeringRot = simd_quatf(angle: steeringAngle, axis: [0, -1, 0])
+                wheelEntity.orientation = baseOrientation * steeringRot
             }
         }
     }
@@ -741,6 +696,46 @@ struct FloatingControlPanel: View {
         .background(.regularMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 20))
         .shadow(color: .black.opacity(0.3), radius: 20, x: 0, y: 10)
+    }
+}
+
+// MARK: - Wheel Button Component
+
+/// Reusable button for the racing wheel panel — toggles bits in the shared pressedButtons bitmask
+struct WheelButton: View {
+    let label: String
+    let color: Color
+    let mask: UInt32
+    @Binding var pressedButtons: UInt32
+    var fontSize: CGFloat = 16
+    
+    @State private var isPressed = false
+    
+    var body: some View {
+        Text(label)
+            .font(.system(size: fontSize, weight: .bold))
+            .foregroundColor(isPressed ? .black : color)
+            .frame(width: 36, height: 36)
+            .background(
+                Circle()
+                    .fill(isPressed ? color : color.opacity(0.15))
+            )
+            .overlay(Circle().stroke(color.opacity(0.6), lineWidth: 1.5))
+            .scaleEffect(isPressed ? 0.88 : 1.0)
+            .animation(.easeInOut(duration: 0.08), value: isPressed)
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in
+                        if !isPressed {
+                            isPressed = true
+                            pressedButtons |= mask
+                        }
+                    }
+                    .onEnded { _ in
+                        isPressed = false
+                        pressedButtons &= ~mask
+                    }
+            )
     }
 }
 

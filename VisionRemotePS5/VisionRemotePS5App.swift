@@ -30,7 +30,7 @@ struct VisionRemotePS5App: App {
                 .environmentObject(appState)
         }
         .windowStyle(.plain)
-        .defaultSize(width: 500, height: 60)
+        .defaultSize(width: 320, height: 60)
         
         // v10.5: Controller window - movable independently
         // v10.6: Larger size to accommodate F1 cockpit wheel
@@ -39,7 +39,7 @@ struct VisionRemotePS5App: App {
                 .environmentObject(appState)
         }
         .windowStyle(.plain)
-        .defaultSize(width: 550, height: 280)
+        .defaultSize(width: 620, height: 280)
         
         // Full Immersive Space using RealityKit
         // Uses StreamingImmersiveView for curved screen 3D experience

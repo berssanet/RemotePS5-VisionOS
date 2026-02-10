@@ -3,6 +3,7 @@ import VideoToolbox
 import CoreMedia
 import Combine
 import QuartzCore  // v10.1: For CACurrentMediaTime monotonic clock
+import os  // os_unfair_lock
 
 /// Hardware-accelerated video decoder using VideoToolbox
 /// HDR output format configuration
@@ -45,7 +46,7 @@ final class VideoDecoder {
     /// Last error encountered
     private(set) var lastError: Error?
     
-    /// Statistics for frame dropping
+    /// Statistics for frame dropping — updated atomically, no MainActor dispatch needed
     private(set) var droppedFrameCount: Int = 0
     
     // MARK: - High-Performance Frame Callback
@@ -75,11 +76,13 @@ final class VideoDecoder {
     private var pps: Data?
     private var vps: Data?
     
-    // MARK: - Frame Dropping
+    // MARK: - Frame Dropping (os_unfair_lock for minimal overhead)
     
     private let maxPendingFrames = 3
     private var pendingFrameCount: Int32 = 0
-    private let pendingFrameLock = NSLock()
+    private var pendingFrameLock = os_unfair_lock()
+    
+    private var frameCounter: Int = 0
     
     // MARK: - Lifecycle
     
@@ -107,63 +110,69 @@ final class VideoDecoder {
         // Split data into individual NAL units using start code detection
         let nalUnits = splitNALUnits(data)
         
-        // Debug logging every 60 frames
         frameCounter += 1
+        
+        #if DEBUG
+        // Debug logging every 60 frames
         if frameCounter % 60 == 1 || frameCounter <= 5 {
             let hexDump = data.prefix(32).map { String(format: "%02x", $0) }.joined(separator: " ")
             print("[VideoDecoder] 🔍 Frame #\(frameCounter) (\(data.count) bytes, \(nalUnits.count) NALs): \(hexDump)...")
         }
+        #endif
         
         for nalData in nalUnits {
             let nalTypeValue = getNALTypeValue(nalData)
             let strippedNal = stripStartCode(nalData)
             
+            #if DEBUG
             // Log parameter sets and key frames
             if nalTypeValue >= 32 && nalTypeValue <= 34 || frameCounter <= 5 {
-                print("[VideoDecoder] � NAL type \(nalTypeValue), size: \(nalData.count)")
+                print("[VideoDecoder] 📦 NAL type \(nalTypeValue), size: \(nalData.count)")
             }
+            #endif
             
             switch nalTypeValue {
             case 32: // VPS
                 vps = strippedNal
-                print("[VideoDecoder] ✅ Stored VPS (\(vps?.count ?? 0) bytes)")
+                DebugLog.info("VideoDecoder", "✅ Stored VPS (\(strippedNal.count) bytes)")
                 try createSessionIfReady()
                 
             case 33: // SPS
                 sps = strippedNal
-                print("[VideoDecoder] ✅ Stored SPS (\(sps?.count ?? 0) bytes)")
+                DebugLog.info("VideoDecoder", "✅ Stored SPS (\(strippedNal.count) bytes)")
                 try createSessionIfReady()
                 
             case 34: // PPS
                 pps = strippedNal
-                print("[VideoDecoder] ✅ Stored PPS (\(pps?.count ?? 0) bytes)")
+                DebugLog.info("VideoDecoder", "✅ Stored PPS (\(strippedNal.count) bytes)")
                 try createSessionIfReady()
                 
             case 19, 20: // IDR frames (CRA, IDR_W_RADL, IDR_N_LP)
                 if decompressionSession != nil {
-                    let avccData = convertToAVCC(nalData)
+                    let avccData = convertToAVCC(strippedNal)
                     try decodeFrame(avccData)
                 } else {
-                    print("[VideoDecoder] ⚠️ IDR but no session (VPS:\(vps != nil), SPS:\(sps != nil), PPS:\(pps != nil))")
+                    DebugLog.warning("VideoDecoder", "IDR but no session (VPS:\(vps != nil), SPS:\(sps != nil), PPS:\(pps != nil))")
                 }
                 
             case 0, 1: // Non-IDR slice (TRAIL_N, TRAIL_R)
                 if decompressionSession != nil {
-                    let avccData = convertToAVCC(nalData)
+                    let avccData = convertToAVCC(strippedNal)
                     try decodeFrame(avccData)
-                } else if frameCounter % 60 == 0 {
-                    print("[VideoDecoder] ⚠️ No session yet (VPS:\(vps != nil), SPS:\(sps != nil), PPS:\(pps != nil))")
+                } else {
+                    DebugLog.every(UInt64(frameCounter), interval: 60, "VideoDecoder", "No session yet (VPS:\(vps != nil), SPS:\(sps != nil), PPS:\(pps != nil))")
                 }
                 
             default:
+                #if DEBUG
                 if frameCounter <= 10 {
                     print("[VideoDecoder] ❓ Unhandled NAL type \(nalTypeValue), size: \(nalData.count)")
                 }
+                #endif
+                break
             }
         }
     }
-    
-    private var frameCounter: Int = 0
     
     /// Parse VPS+SPS+PPS from a parameter set packet
     /// PS5 sends these concatenated - we need to scan for NAL type boundaries
@@ -171,13 +180,10 @@ final class VideoDecoder {
         let stripped = stripStartCode(data)
         guard stripped.count > 4 else { return }
         
-        print("[VideoDecoder] 🔧 Parsing parameter sets from \(stripped.count) bytes")
+        DebugLog.info("VideoDecoder", "🔧 Parsing parameter sets from \(stripped.count) bytes")
         
         // Scan through the data looking for HEVC NAL unit headers
-        // HEVC NAL header: 2 bytes - (NAL_type << 1) in first byte's bits [6:1]
-        var currentPos = 0
         var lastNalStart = 0
-        var lastNalType: UInt8 = getHEVCNALType(stripped)
         
         var foundVPS: Data?
         var foundSPS: Data?
@@ -196,7 +202,7 @@ final class VideoDecoder {
                 if i > lastNalStart {
                     let nalData = stripped.subdata(in: lastNalStart..<i)
                     let nalType = getHEVCNALType(nalData)
-                    print("[VideoDecoder] 🔧 Found NAL type \(nalType) with \(nalData.count) bytes at offset \(lastNalStart)")
+                    DebugLog.info("VideoDecoder", "🔧 Found NAL type \(nalType) with \(nalData.count) bytes at offset \(lastNalStart)")
                     
                     switch nalType {
                     case 32: foundVPS = nalData
@@ -217,7 +223,7 @@ final class VideoDecoder {
         if lastNalStart < stripped.count {
             let nalData = stripped.subdata(in: lastNalStart..<stripped.count)
             let nalType = getHEVCNALType(nalData)
-            print("[VideoDecoder] 🔧 Found final NAL type \(nalType) with \(nalData.count) bytes")
+            DebugLog.info("VideoDecoder", "🔧 Found final NAL type \(nalType) with \(nalData.count) bytes")
             
             switch nalType {
             case 32: foundVPS = nalData
@@ -228,16 +234,13 @@ final class VideoDecoder {
         }
         
         // If we only found one NAL (no internal start codes), the whole thing is the VPS
-        // This is the common case - PS5 sends VPS+SPS+PPS without internal start codes
         if foundVPS == nil && foundSPS == nil && foundPPS == nil {
             let nalType = getHEVCNALType(stripped)
-            print("[VideoDecoder] 🔧 No internal start codes found. Entire packet is NAL type \(nalType)")
+            DebugLog.info("VideoDecoder", "🔧 No internal start codes found. Entire packet is NAL type \(nalType)")
             
             if nalType == 32 {
-                // This is a VPS-only packet. We need to handle this case.
-                // The PS5 might be sending VPS, SPS, PPS as separate packets.
                 vps = stripped
-                print("[VideoDecoder] ✅ Stored VPS (\(stripped.count) bytes)")
+                DebugLog.info("VideoDecoder", "✅ Stored VPS (\(stripped.count) bytes)")
             }
             return
         }
@@ -245,21 +248,21 @@ final class VideoDecoder {
         // Store the found parameter sets
         if let v = foundVPS {
             vps = v
-            print("[VideoDecoder] ✅ Extracted VPS (\(v.count) bytes)")
+            DebugLog.info("VideoDecoder", "✅ Extracted VPS (\(v.count) bytes)")
         }
         if let s = foundSPS {
             sps = s
-            print("[VideoDecoder] ✅ Extracted SPS (\(s.count) bytes)")
+            DebugLog.info("VideoDecoder", "✅ Extracted SPS (\(s.count) bytes)")
         }
         if let p = foundPPS {
             pps = p
-            print("[VideoDecoder] ✅ Extracted PPS (\(p.count) bytes)")
+            DebugLog.info("VideoDecoder", "✅ Extracted PPS (\(p.count) bytes)")
         }
         
         do {
             try createSessionIfReady()
         } catch {
-            print("[VideoDecoder] ❌ Failed to create session: \(error)")
+            DebugLog.error("VideoDecoder", "Failed to create session: \(error)")
         }
     }
     
@@ -270,33 +273,43 @@ final class VideoDecoder {
         return (data[0] >> 1) & 0x3F
     }
     
-    /// Split data into individual NAL units by scanning for start codes
+    /// Split data into individual NAL units by scanning for start codes.
+    /// Uses withUnsafeBytes for zero-copy byte scanning.
     private func splitNALUnits(_ data: Data) -> [Data] {
-        var nalUnits: [Data] = []
         var startIndices: [Int] = []
         
-        // Find all start code positions
-        var i = 0
-        while i < data.count - 3 {
-            // Check for 4-byte start code: 0x00 0x00 0x00 0x01
-            if data[i] == 0x00 && data[i+1] == 0x00 && data[i+2] == 0x00 && data[i+3] == 0x01 {
-                startIndices.append(i)
-                i += 4
-            }
-            // Check for 3-byte start code: 0x00 0x00 0x01
-            else if data[i] == 0x00 && data[i+1] == 0x00 && data[i+2] == 0x01 {
-                startIndices.append(i)
-                i += 3
-            } else {
-                i += 1
+        data.withUnsafeBytes { (rawBuffer: UnsafeRawBufferPointer) in
+            guard let basePtr = rawBuffer.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
+            let count = rawBuffer.count
+            guard count > 3 else { return }
+            
+            var i = 0
+            while i < count - 3 {
+                if basePtr[i] == 0x00 && basePtr[i+1] == 0x00 {
+                    if basePtr[i+2] == 0x00 && basePtr[i+3] == 0x01 {
+                        // 4-byte start code
+                        startIndices.append(i)
+                        i += 4
+                    } else if basePtr[i+2] == 0x01 {
+                        // 3-byte start code
+                        startIndices.append(i)
+                        i += 3
+                    } else {
+                        i += 1
+                    }
+                } else {
+                    i += 1
+                }
             }
         }
         
         // Extract NAL units
+        var nalUnits: [Data] = []
+        nalUnits.reserveCapacity(startIndices.count)
+        
         for (index, startPos) in startIndices.enumerated() {
             let endPos = (index + 1 < startIndices.count) ? startIndices[index + 1] : data.count
-            let nalData = data.subdata(in: startPos..<endPos)
-            nalUnits.append(nalData)
+            nalUnits.append(data[startPos..<endPos])
         }
         
         // If no start codes found, treat entire data as single NAL unit
@@ -321,9 +334,8 @@ final class VideoDecoder {
         return data
     }
     
-    /// Convert Annex-B NAL to AVCC format (length-prefixed)
-    private func convertToAVCC(_ data: Data) -> Data {
-        let strippedData = stripStartCode(data)
+    /// Convert stripped NAL (no start code) to AVCC format (length-prefixed)
+    private func convertToAVCC(_ strippedData: Data) -> Data {
         var length = UInt32(strippedData.count).bigEndian
         var result = Data(bytes: &length, count: 4)
         result.append(strippedData)
@@ -458,10 +470,8 @@ final class VideoDecoder {
         }
         
         // Destination pixel buffer attributes - optimized for zero-copy GPU access
-        // HDR: Use P010 (10-bit YUV 4:2:0) for maximum color fidelity on Vision Pro Micro-OLED
-        // SDR: Use BGRA 8-bit for legacy compatibility
         let pixelFormat = preferredFormat.pixelFormat
-        print("[VideoDecoder] 🎨 Creating session with format: \(preferredFormat.description)")
+        DebugLog.info("VideoDecoder", "🎨 Creating session with format: \(preferredFormat.description)")
         
         let destinationAttributes: [String: Any] = [
             kCVPixelBufferPixelFormatTypeKey as String: pixelFormat,
@@ -504,10 +514,8 @@ final class VideoDecoder {
         decompressionSession = validSession
         isDecoding = true
         
-        // Configure for low-latency real-time decoding (Doc Chapter 2.2)
-        // kVTDecompressionPropertyKey_RealTime: Instructs decoder to prioritize fast delivery
+        // Configure for low-latency real-time decoding
         VTSessionSetProperty(validSession, key: kVTDecompressionPropertyKey_RealTime, value: kCFBooleanTrue)
-        // kVTDecompressionPropertyKey_MaximizePowerEfficiency: Disable power saving for maximum performance
         VTSessionSetProperty(validSession, key: kVTDecompressionPropertyKey_MaximizePowerEfficiency, value: kCFBooleanFalse)
     }
     
@@ -517,23 +525,18 @@ final class VideoDecoder {
             throw VideoDecoderError.noSession
         }
         
-        // MARK: - Frame Dropping Logic
-        // Check if decode buffer is congested. Drop frames to prioritize latency.
-        pendingFrameLock.lock()
+        // MARK: - Frame Dropping Logic (os_unfair_lock for minimal overhead)
+        os_unfair_lock_lock(&pendingFrameLock)
         let currentPending = pendingFrameCount
         if currentPending >= maxPendingFrames {
-            pendingFrameLock.unlock()
-            // Drop this frame to reduce latency
-            Task { @MainActor in
-                self.droppedFrameCount += 1
-            }
-            if frameCounter % 30 == 0 {
-                print("[VideoDecoder] ⚠️ Dropping frame (pending: \(currentPending)/\(maxPendingFrames)) - prioritizing latency")
-            }
+            os_unfair_lock_unlock(&pendingFrameLock)
+            // Atomic increment — no MainActor dispatch needed
+            droppedFrameCount += 1
+            DebugLog.every(UInt64(frameCounter), interval: 30, "VideoDecoder", "⚠️ Dropping frame (pending: \(currentPending)/\(maxPendingFrames)) - prioritizing latency")
             return
         }
         pendingFrameCount += 1
-        pendingFrameLock.unlock()
+        os_unfair_lock_unlock(&pendingFrameLock)
         
         // Create block buffer from data
         var blockBuffer: CMBlockBuffer?
@@ -599,9 +602,9 @@ final class VideoDecoder {
     
     /// Thread-safe decrement of pending frame counter
     private func decrementPendingFrameCount() {
-        pendingFrameLock.lock()
+        os_unfair_lock_lock(&pendingFrameLock)
         pendingFrameCount = max(0, pendingFrameCount - 1)
-        pendingFrameLock.unlock()
+        os_unfair_lock_unlock(&pendingFrameLock)
     }
     
     /// Handle decoded frame - called on VideoToolbox thread
@@ -622,46 +625,6 @@ final class VideoDecoder {
             frameRate = Double(frameCount) / elapsed
             frameCount = 0
             lastFrameTime = now
-        }
-    }
-    
-    private func parseNALType(_ data: Data) -> NALUnitType {
-        guard data.count > 4 else { return .unknown }
-        
-        // Skip start code (0x00 0x00 0x00 0x01 or 0x00 0x00 0x01)
-        var offset = 0
-        if data[0] == 0x00 && data[1] == 0x00 {
-            if data[2] == 0x01 {
-                offset = 3
-            } else if data[2] == 0x00 && data[3] == 0x01 {
-                offset = 4
-            }
-        }
-        
-        guard offset < data.count else { return .unknown }
-        
-        let nalHeader = data[offset]
-        
-        if codecType == kCMVideoCodecType_H264 {
-            let nalType = nalHeader & 0x1F
-            switch nalType {
-            case 7: return .sps
-            case 8: return .pps
-            case 5: return .idr
-            case 1: return .nonIdr
-            default: return .unknown
-            }
-        } else {
-            // HEVC NAL unit type
-            let nalType = (nalHeader >> 1) & 0x3F
-            switch nalType {
-            case 32: return .vps
-            case 33: return .sps
-            case 34: return .pps
-            case 19, 20: return .idr
-            case 1: return .nonIdr
-            default: return .unknown
-            }
         }
     }
 }

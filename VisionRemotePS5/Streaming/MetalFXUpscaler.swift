@@ -230,16 +230,16 @@ final class MetalFXUpscaler {
     init?(hdrEnabled: Bool = false) {
         self.hdrConfig = MetalFXHDRConfig(hdrEnabled: hdrEnabled)
         
-        print("[MetalFXUpscaler] 🚀 Starting initialization (HDR: \(hdrEnabled ? "enabled" : "disabled"))...")
+        DebugLog.info("MetalFXUpscaler", "🚀 Starting initialization (HDR: \(hdrEnabled ? "enabled" : "disabled"))...")
         
         guard let device = MTLCreateSystemDefaultDevice() else {
-            print("[MetalFXUpscaler] ❌ No Metal device available")
+            DebugLog.error("MetalFXUpscaler", "No Metal device available")
             return nil
         }
-        print("[MetalFXUpscaler] ✅ Metal device: \(device.name)")
+        DebugLog.info("MetalFXUpscaler", "✅ Metal device: \(device.name)")
         
         guard let commandQueue = device.makeCommandQueue() else {
-            print("[MetalFXUpscaler] ❌ Failed to create command queue")
+            DebugLog.error("MetalFXUpscaler", "Failed to create command queue")
             return nil
         }
         
@@ -250,11 +250,11 @@ final class MetalFXUpscaler {
         var cache: CVMetalTextureCache?
         let status = CVMetalTextureCacheCreate(nil, nil, device, nil, &cache)
         guard status == kCVReturnSuccess, let textureCache = cache else {
-            print("[MetalFXUpscaler] ❌ Failed to create texture cache: \(status)")
+            DebugLog.error("MetalFXUpscaler", "Failed to create texture cache: \(status)")
             return nil
         }
         self.textureCache = textureCache
-        print("[MetalFXUpscaler] ✅ Texture cache created")
+        DebugLog.info("MetalFXUpscaler", "✅ Texture cache created")
         
         // Create output texture - private storage for MetalFX (required)
         // Use HDR format (.bgra10_xr) if HDR enabled, otherwise SDR (.bgra8Unorm)
@@ -270,12 +270,12 @@ final class MetalFXUpscaler {
         descriptor.storageMode = .private
         
         guard let output = device.makeTexture(descriptor: descriptor) else {
-            print("[MetalFXUpscaler] ❌ Failed to create output texture")
+            DebugLog.error("MetalFXUpscaler", "Failed to create output texture")
             return nil
         }
         self.outputTexture = output
         let formatName = hdrEnabled ? "bgra10_xr (HDR)" : "bgra8Unorm (SDR)"
-        print("[MetalFXUpscaler] ✅ Output texture created: \(Self.outputWidth)x\(Self.outputHeight) [\(formatName)]")
+        DebugLog.info("MetalFXUpscaler", "✅ Output texture: \(Self.outputWidth)x\(Self.outputHeight) [\(formatName)]")
         
         // Initialize Spatial Scaler (only option on visionOS)
         // NOTE: MTLFXTemporalScaler is NOT available on visionOS
@@ -294,26 +294,18 @@ final class MetalFXUpscaler {
         
         // Create MTLSharedEvent for GPU-GPU synchronization
         self.syncEvent = device.makeSharedEvent()
-        if syncEvent != nil {
-            print("[MetalFXUpscaler] ✅ MTLSharedEvent created for GPU sync")
-        }
-        
         let hdrStatus = hdrEnabled ? "HDR (bgra10_xr)" : "SDR (bgra8Unorm)"
-        print("[MetalFXUpscaler] ✅ Initialized (SPATIAL mode - visionOS)")
-        print("[MetalFXUpscaler]   Input: \(Self.inputWidth)x\(Self.inputHeight)")
-        print("[MetalFXUpscaler]   Output: \(Self.outputWidth)x\(Self.outputHeight)")
-        print("[MetalFXUpscaler]   Format: \(hdrStatus)")
-        print("[MetalFXUpscaler]   ⚠️ Temporal Scaler not available on visionOS")
+        DebugLog.info("MetalFXUpscaler", "✅ Initialized (SPATIAL mode, \(Self.inputWidth)x\(Self.inputHeight) → \(Self.outputWidth)x\(Self.outputHeight), \(hdrStatus))")
     }
     
     // MARK: - Scaler Initialization
     
     private func initializeSpatialScaler() -> Bool {
         guard MTLFXSpatialScalerDescriptor.supportsDevice(device) else {
-            print("[MetalFXUpscaler] ❌ MetalFX Spatial Scaler not supported")
+            DebugLog.error("MetalFXUpscaler", "MetalFX Spatial Scaler not supported")
             return false
         }
-        print("[MetalFXUpscaler] ✅ MetalFX Spatial Scaler supported")
+        DebugLog.info("MetalFXUpscaler", "✅ MetalFX Spatial Scaler supported")
         
         let descriptor = MTLFXSpatialScalerDescriptor()
         descriptor.inputWidth = Self.inputWidth
@@ -328,11 +320,11 @@ final class MetalFXUpscaler {
         descriptor.colorProcessingMode = .perceptual
         
         guard let scaler = descriptor.makeSpatialScaler(device: device) else {
-            print("[MetalFXUpscaler] ❌ Failed to create Spatial Scaler")
+            DebugLog.error("MetalFXUpscaler", "Failed to create Spatial Scaler")
             return false
         }
         self.spatialScaler = scaler
-        print("[MetalFXUpscaler] ✅ Spatial Scaler created")
+        DebugLog.info("MetalFXUpscaler", "✅ Spatial Scaler created")
         return true
     }
     
@@ -342,7 +334,7 @@ final class MetalFXUpscaler {
     /// NOTE: On visionOS, only .spatial is supported
     func setMode(_ newMode: UpscalingMode) {
         if newMode == .temporal {
-            print("[MetalFXUpscaler] ⚠️ Temporal mode not available on visionOS, using Spatial")
+            DebugLog.warning("MetalFXUpscaler", "Temporal mode not available on visionOS, using Spatial")
         }
         // Always use spatial on visionOS
         mode = .spatial
@@ -381,7 +373,7 @@ final class MetalFXUpscaler {
         
         // Log first detection of HDR content
         if metadata.isHDR && !lastColorMetadata.isHDR {
-            print("[MetalFXUpscaler] 🎨 HDR content detected: \(metadata.description)")
+            DebugLog.info("MetalFXUpscaler", "🎨 HDR content detected: \(metadata.description)")
         }
         
         lastColorMetadata = metadata
@@ -393,7 +385,7 @@ final class MetalFXUpscaler {
         guard let spatialScaler = spatialScaler,
               let textureCache = textureCache,
               let outputTexture = self.outputTexture else {
-            print("[MetalFXUpscaler] ⚠️ upscale: missing resources")
+            DebugLog.warning("MetalFXUpscaler", "upscale: missing resources")
             return nil
         }
         
@@ -411,8 +403,8 @@ final class MetalFXUpscaler {
         if frameCount == 1 {
             let ioSurface = CVPixelBufferGetIOSurface(pixelBuffer)
             let zeroCopyStatus = ioSurface != nil ? "✅ Zero-copy" : "⚠️ No IOSurface"
-            print("[MetalFXUpscaler] 📹 First frame: \(width)x\(height), format=\(formatName(format)), \(zeroCopyStatus)")
-            print("[MetalFXUpscaler] 🎨 Color: \(lastColorMetadata.description)")
+            DebugLog.info("MetalFXUpscaler", "📹 First frame: \(width)x\(height), format=\(formatName(format)), \(zeroCopyStatus)")
+            DebugLog.info("MetalFXUpscaler", "🎨 Color: \(lastColorMetadata.description)")
         }
         
         // Create Metal texture from CVPixelBuffer
@@ -426,7 +418,7 @@ final class MetalFXUpscaler {
         guard status == kCVReturnSuccess, let cvTexture = cvTexture,
               let inputTexture = CVMetalTextureGetTexture(cvTexture) else {
             if frameCount <= 5 {
-                print("[MetalFXUpscaler] ❌ Failed to create texture from CVPixelBuffer: \(status)")
+                DebugLog.error("MetalFXUpscaler", "Failed to create texture from CVPixelBuffer: \(status)")
             }
             return nil
         }
@@ -445,9 +437,7 @@ final class MetalFXUpscaler {
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
         
-        if frameNum % 60 == 0 {
-            print("[MetalFXUpscaler] 📊 Frame \(frameNum) processed (SPATIAL)")
-        }
+        DebugLog.every(frameNum, interval: 60, "MetalFXUpscaler", "📊 Frame \(frameNum) processed (SPATIAL)")
         
         return outputTexture
     }
@@ -525,7 +515,7 @@ final class MetalFXUpscaler {
         
         // Reinitialize scaler with new format
         if !initializeSpatialScaler() {
-            print("[MetalFXUpscaler] ❌ Failed to reinitialize scaler for HDR change")
+            DebugLog.error("MetalFXUpscaler", "Failed to reinitialize scaler for HDR change")
         }
         
         // Recreate output texture with new format
@@ -541,7 +531,7 @@ final class MetalFXUpscaler {
         if let newOutput = device.makeTexture(descriptor: descriptor) {
             outputTexture = newOutput
             let formatName = enabled ? "bgra10_xr (HDR)" : "bgra8Unorm (SDR)"
-            print("[MetalFXUpscaler] ✅ HDR mode changed, new format: \(formatName)")
+            DebugLog.info("MetalFXUpscaler", "✅ HDR mode changed, format: \(formatName)")
         }
     }
     

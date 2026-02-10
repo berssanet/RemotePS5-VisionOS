@@ -15,8 +15,7 @@ struct ContentView: View {
                     .allowsHitTesting(false)
             } else {
                 NavigationStack {
-                    // Use SimpleTestView for direct PS5 connection testing
-                    SimpleTestView()
+                    HomeView()
                 }
                 .ornament(attachmentAnchor: .scene(.bottom)) {
                     ConnectionStatusBar()

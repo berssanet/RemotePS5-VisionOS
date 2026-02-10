@@ -68,7 +68,7 @@ final class FramePacer: NSObject {
     
     override init() {
         super.init()
-        print("[FramePacer] 🎯 Initialized for \(sourceFrameRate)fps source")
+        DebugLog.info("FramePacer", "🎯 Initialized for \(sourceFrameRate)fps source")
     }
     
     deinit {
@@ -98,9 +98,7 @@ final class FramePacer: NSObject {
         // when timestamps are valid. Use default 90Hz for now.
         displayRefreshRate = 90.0
         
-        print("[FramePacer] ✅ Started with CADisplayLink (target: \(displayRefreshRate)Hz)")
-        print("[FramePacer] 📊 Source: \(sourceFrameRate)fps, Display: \(displayRefreshRate)Hz")
-        print("[FramePacer] ⚠️ Ratio: \(displayRefreshRate / sourceFrameRate):1 (judder mitigation active)")
+        DebugLog.info("FramePacer", "✅ Started (\(sourceFrameRate)fps → \(displayRefreshRate)Hz, ratio \(displayRefreshRate / sourceFrameRate):1)")
     }
     
     /// Stop the frame pacer
@@ -114,8 +112,10 @@ final class FramePacer: NSObject {
         nextFrame = nil
         lock.unlock()
         
+        #if DEBUG
         print("[FramePacer] ⏹️ Stopped")
         printStats()
+        #endif
     }
     
     /// Submit a new frame for presentation
@@ -218,6 +218,7 @@ final class FramePacer: NSObject {
         }
     }
     
+    #if DEBUG
     private func printStats() {
         guard stats.totalFrames > 0 else { return }
         
@@ -227,6 +228,7 @@ final class FramePacer: NSObject {
         print("[FramePacer]   Avg frame time: \(String(format: "%.2f", stats.averageFrameTime))ms")
         print("[FramePacer]   Variance: \(String(format: "%.2f", stats.variance))ms")
     }
+    #endif
 }
 
 // MARK: - Frame Interpolation Support (visionOS 26+ / Metal 4)
@@ -247,11 +249,11 @@ extension FramePacer {
     /// This would generate intermediate frames for 60fps → 90fps
     func enableFrameInterpolation() {
         guard isFrameInterpolationAvailable else {
-            print("[FramePacer] ⚠️ Frame interpolation not available (requires visionOS 26+)")
+            DebugLog.warning("FramePacer", "Frame interpolation not available (requires visionOS 26+)")
             return
         }
         
         // TODO: Implement MTLFXFrameInterpolation when visionOS 26 is available
-        print("[FramePacer] 🔮 Frame interpolation would be enabled here (future implementation)")
+        DebugLog.info("FramePacer", "🔮 Frame interpolation would be enabled here (future implementation)")
     }
 }

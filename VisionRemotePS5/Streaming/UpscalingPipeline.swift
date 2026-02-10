@@ -76,7 +76,7 @@ final class UpscalingPipeline: ObservableObject {
     // MARK: - Initialization
     
     private init() {
-        print("[UpscalingPipeline] Initializing...")
+        DebugLog.info("UpscalingPipeline", "Initializing...")
     }
     
     /// Initialize the upscaling pipeline
@@ -86,7 +86,7 @@ final class UpscalingPipeline: ObservableObject {
         // Initialize color space converter (for P010/HDR input)
         colorSpaceConverter = ColorSpaceConverter()
         if colorSpaceConverter != nil {
-            print("[UpscalingPipeline] ✅ ColorSpaceConverter ready (HDR support)")
+            DebugLog.info("UpscalingPipeline", "✅ ColorSpaceConverter ready (HDR support)")
         }
         
         // Initialize both upscalers
@@ -101,13 +101,13 @@ final class UpscalingPipeline: ObservableObject {
             if metalFXUpscaler != nil {
                 upscalerType = .metalFX
                 currentMode = metalFXUpscaler?.mode ?? .spatial
-                print("[UpscalingPipeline] ✅ MetalFX upscaler ready (SPATIAL)")
+                DebugLog.info("UpscalingPipeline", "✅ MetalFX upscaler ready (SPATIAL)")
             } else if enhancedUpscaler != nil {
                 upscalerType = .enhanced
-                print("[UpscalingPipeline] ✅ Enhanced upscaler ready (Lanczos+CAS)")
+                DebugLog.info("UpscalingPipeline", "✅ Enhanced upscaler ready (Lanczos+CAS)")
             }
         } else {
-            print("[UpscalingPipeline] ⚠️ No upscaler available, using native resolution")
+            DebugLog.warning("UpscalingPipeline", "No upscaler available, using native resolution")
         }
     }
     
@@ -117,7 +117,7 @@ final class UpscalingPipeline: ObservableObject {
     func processFrame(_ frame: CVPixelBuffer) -> MTLTexture? {
         guard isEnabled else {
             if frameCount == 0 {
-                print("[UpscalingPipeline] ⚠️ Not enabled")
+                DebugLog.warning("UpscalingPipeline", "Not enabled")
             }
             return nil
         }
@@ -156,7 +156,7 @@ final class UpscalingPipeline: ObservableObject {
             // HDR path: P010 YUV → Linear RGB (RGBA16Float)
             if let convertedTexture = converter.convert(frame) {
                 if frameCount == 0 {
-                    print("[UpscalingPipeline] 🎨 HDR path: P010→RGBA16Float→Upscale")
+                    DebugLog.info("UpscalingPipeline", "🎨 HDR path: P010→RGBA16Float→Upscale")
                 }
                 // Note: Currently upscalers expect CVPixelBuffer input
                 // TODO: Update upscalers to accept MTLTexture input for HDR
@@ -178,10 +178,10 @@ final class UpscalingPipeline: ObservableObject {
             
             if frameCount == 1 {
                 let hdrStatus = isP010 ? "HDR" : "SDR"
-                print("[UpscalingPipeline] ✅ First 4K frame generated! (\(upscalerType.rawValue), \(hdrStatus))")
+                DebugLog.info("UpscalingPipeline", "✅ First 4K frame generated! (\(upscalerType.rawValue), \(hdrStatus))")
             }
         } else if frameCount == 0 {
-            print("[UpscalingPipeline] ❌ Failed to upscale frame")
+            DebugLog.error("UpscalingPipeline", "Failed to upscale frame")
         }
         
         // Track processing time
@@ -189,11 +189,12 @@ final class UpscalingPipeline: ObservableObject {
         let elapsed = (CACurrentMediaTime() - startTime) * 1000
         processingTimeMs = elapsed
         
-        // Log periodic stats
+        #if DEBUG
         if frameCount > 0 && frameCount % 60 == 0 {
             let hdrStatus = hdrMode == .forceHDR || (hdrMode == .auto && isP010) ? "HDR" : "SDR"
             print("[UpscalingPipeline] 📊 \(frameCount) frames, \(String(format: "%.1f", elapsed))ms/frame (\(upscalerType.rawValue), \(hdrStatus))")
         }
+        #endif
         
         return result
     }
@@ -219,12 +220,12 @@ final class UpscalingPipeline: ObservableObject {
             initialize()
         }
         isEnabled = true
-        print("[UpscalingPipeline] ✅ Enabled")
+        DebugLog.info("UpscalingPipeline", "✅ Enabled")
     }
     
     func disable() {
         isEnabled = false
-        print("[UpscalingPipeline] ⏸️ Disabled")
+        DebugLog.info("UpscalingPipeline", "⏸️ Disabled")
     }
     
     func flush() {
@@ -238,7 +239,7 @@ final class UpscalingPipeline: ObservableObject {
     /// Set HDR processing mode
     func setHDRMode(_ mode: HDRMode) {
         hdrMode = mode
-        print("[UpscalingPipeline] 🎨 HDR mode: \(mode.rawValue)")
+        DebugLog.info("UpscalingPipeline", "🎨 HDR mode: \(mode.rawValue)")
     }
     
     /// Configure color primaries manually
@@ -270,7 +271,7 @@ final class UpscalingPipeline: ObservableObject {
             lastEDRHeadroom = currentHeadroom
             colorSpaceConverter?.edrHeadroom = currentHeadroom
             
-            print("[UpscalingPipeline] 🌟 v10.0 EDR Headroom (live): \(String(format: "%.2f", currentHeadroom))x")
+            DebugLog.info("UpscalingPipeline", "🌟 EDR Headroom (live): \(String(format: "%.2f", currentHeadroom))x")
         }
     }
     
@@ -290,13 +291,13 @@ final class UpscalingPipeline: ObservableObject {
             // Reduce EDR significantly and log warning
             thermalMultiplier = 0.7
             if frameCount % 120 == 0 {
-                print("[UpscalingPipeline] ⚠️ Thermal state SERIOUS - reducing EDR to 70%")
+                DebugLog.warning("UpscalingPipeline", "Thermal state SERIOUS - reducing EDR to 70%")
             }
         case .critical:
             // Disable upscaling to reduce GPU load
             thermalMultiplier = 0.5
             if isEnabled && upscalerType == .metalFX {
-                print("[UpscalingPipeline] 🔥 Thermal CRITICAL - disabling MetalFX upscaling")
+                DebugLog.warning("UpscalingPipeline", "🔥 Thermal CRITICAL - disabling MetalFX upscaling")
                 upscalerType = .enhanced  // Less GPU-intensive
             }
         @unknown default:
@@ -319,7 +320,7 @@ final class UpscalingPipeline: ObservableObject {
             colorSpaceConverter?.edrHeadroom = currentHeadroom
             
             if thermalMultiplier < 1.0 {
-                print("[UpscalingPipeline] 🌡️ Thermal-adjusted EDR: \(String(format: "%.2f", currentHeadroom))x")
+                DebugLog.info("UpscalingPipeline", "🌡️ Thermal-adjusted EDR: \(String(format: "%.2f", currentHeadroom))x")
             }
         }
     }
@@ -335,7 +336,7 @@ final class UpscalingPipeline: ObservableObject {
     /// Switch upscaler type
     func setUpscalerType(_ type: UpscalerType) {
         upscalerType = type
-        print("[UpscalingPipeline] ⚙️ Switched to \(type.rawValue) upscaler")
+        DebugLog.info("UpscalingPipeline", "⚙️ Switched to \(type.rawValue) upscaler")
     }
     
     /// Switch upscaling mode (for MetalFX)

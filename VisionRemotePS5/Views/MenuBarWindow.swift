@@ -17,19 +17,18 @@ struct MenuBarWindow: View {
     @Environment(\.openWindow) private var openWindow
     
     var body: some View {
-        HStack(spacing: 16) {
-            // Close/Exit button - End session and return to console selection
-            Button(action: {
-                endSession()
-            }) {
+        HStack(spacing: 12) {
+            // Close/Exit button
+            Button(action: { endSession() }) {
                 Image(systemName: "xmark.circle.fill")
-                    .font(.title2)
+                    .font(.title3)
                     .foregroundColor(.white)
             }
+            .help("End Session")
             
             Spacer()
             
-            // v10.6: Controller mode selector
+            // v10.6: Controller mode selector (icon-only)
             Menu {
                 ForEach(AppState.ControllerMode.allCases, id: \.self) { mode in
                     Button(action: {
@@ -39,50 +38,34 @@ struct MenuBarWindow: View {
                     }
                 }
             } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: appState.controllerMode.icon)
-                    Text("Pad")
-                        .font(.caption)
-                }
-                .foregroundColor(.white)
+                Image(systemName: appState.controllerMode.icon)
+                    .font(.title3)
+                    .foregroundColor(.white)
+                    .frame(width: 36, height: 36)
+                    .background(.ultraThinMaterial)
+                    .clipShape(Circle())
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(.ultraThinMaterial)
-            .cornerRadius(20)
+            .help("Controller: \(appState.controllerMode.rawValue)")
             
-            // v11.0: GPU Quality Menu
+            // v11.0: GPU Quality Menu (icon-only)
             Menu {
-                Button("🏎️ Racing") {
-                    appState.gpuPreset = .racing
-                }
-                Button("🔫 FPS") {
-                    appState.gpuPreset = .fps
-                }
-                Button("🛡️ RPG") {
-                    appState.gpuPreset = .rpg
-                }
-                Button("🎬 Cinematic") {
-                    appState.gpuPreset = .cinematic
-                }
+                Button("🏎️ Racing") { appState.gpuPreset = .racing }
+                Button("🔫 FPS") { appState.gpuPreset = .fps }
+                Button("🛡️ RPG") { appState.gpuPreset = .rpg }
+                Button("🎬 Cinematic") { appState.gpuPreset = .cinematic }
                 Divider()
-                Button("✨ Auto") {
-                    appState.gpuPreset = .auto
-                }
+                Button("✨ Auto") { appState.gpuPreset = .auto }
             } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "cpu.fill")
-                    Text(gpuPresetLabel)
-                        .font(.caption)
-                }
-                .foregroundColor(.cyan)
+                Image(systemName: appState.gpuPreset.icon)
+                    .font(.title3)
+                    .foregroundColor(.cyan)
+                    .frame(width: 36, height: 36)
+                    .background(.ultraThinMaterial)
+                    .clipShape(Circle())
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(.ultraThinMaterial)
-            .cornerRadius(20)
+            .help("GPU: \(gpuPresetLabel)")
             
-            // VR mode toggle
+            // VR mode toggle (icon-only)
             Button(action: {
                 if appState.isImmersiveActive {
                     exitVRMode()
@@ -90,46 +73,25 @@ struct MenuBarWindow: View {
                     enterVRMode()
                 }
             }) {
-                HStack(spacing: 6) {
-                    Image(systemName: appState.isImmersiveActive ? "visionpro.fill" : "visionpro")
-                    Text(appState.isImmersiveActive ? "Exit VR" : "VR")
-                        .font(.caption)
-                }
-                .foregroundColor(appState.isImmersiveActive ? .blue : .white)
+                Image(systemName: appState.isImmersiveActive ? "visionpro.fill" : "visionpro")
+                    .font(.title3)
+                    .foregroundColor(appState.isImmersiveActive ? .blue : .white)
+                    .frame(width: 36, height: 36)
+                    .background(.ultraThinMaterial)
+                    .clipShape(Circle())
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(.ultraThinMaterial)
-            .cornerRadius(20)
+            .help(appState.isImmersiveActive ? "Exit VR" : "Enter VR")
             
-            // Resolution badge
+            // Resolution badge (icon-only, compact)
             if let texture = upscalingPipeline.upscaledTexture {
-                HStack(spacing: 6) {
-                    Image(systemName: "sparkles.tv")
-                    Text("\(texture.width)x\(texture.height)")
-                        .font(.caption)
-                }
-                .foregroundColor(.cyan)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(.ultraThinMaterial)
-                .cornerRadius(20)
+                Image(systemName: "sparkles.tv")
+                    .font(.title3)
+                    .foregroundColor(.cyan)
+                    .frame(width: 36, height: 36)
+                    .background(.ultraThinMaterial)
+                    .clipShape(Circle())
+                    .help("\(texture.width)×\(texture.height)")
             }
-            
-            // Connection status
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(appState.isConnected ? Color.green : Color.red)
-                    .frame(width: 10, height: 10)
-                
-                Text(appState.isConnected ? "Connected" : "Disconnected")
-                    .font(.caption)
-                    .foregroundColor(.white)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(.ultraThinMaterial)
-            .cornerRadius(20)
         }
         .padding(.horizontal, 16)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -147,6 +109,12 @@ struct MenuBarWindow: View {
     }
     
     private func enterVRMode() {
+        // Prevent opening another immersive space if one is already active
+        guard !appState.isImmersiveActive else {
+            print("[MenuBar] ⚠️ ImmersiveSpace already active, skipping")
+            return
+        }
+        
         Task {
             let result = await openImmersiveSpace(id: "StreamingSpace")
             if case .opened = result {

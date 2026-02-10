@@ -115,7 +115,7 @@ struct ControllerOverlayView: View {
                 }
             }
         }
-        .padding(.horizontal, 20)
+        .padding(.horizontal, 30)
     }
 }
 
@@ -145,13 +145,18 @@ struct ControllerButtonView: View {
             )
             .scaleEffect(isPressed ? 0.9 : 1.0)
             .animation(.easeInOut(duration: 0.1), value: isPressed)
-            .onLongPressGesture(minimumDuration: .infinity, pressing: { pressing in
-                isPressed = pressing
-                if pressing {
-                    onPress()
-                } else {
-                    onRelease()
-                }
-            }, perform: {})
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in
+                        if !isPressed {
+                            isPressed = true
+                            onPress()
+                        }
+                    }
+                    .onEnded { _ in
+                        isPressed = false
+                        onRelease()
+                    }
+            )
     }
 }

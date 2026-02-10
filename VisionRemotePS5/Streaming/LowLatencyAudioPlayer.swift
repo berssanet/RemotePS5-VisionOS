@@ -146,7 +146,7 @@ final class LowLatencyAudioPlayer {
     func setSyncController(_ controller: AudioVideoSyncController) {
         self.syncController = controller
         self.ptsSyncEnabled = true
-        print("[LowLatencyAudio] 🔗 A/V Sync Controller connected (threshold: \(driftThresholdMs)ms)")
+        DebugLog.info("LowLatencyAudio", "🔗 A/V Sync Controller connected (threshold: \(driftThresholdMs)ms)")
     }
     
     /// Update audio PTS when receiving packet (call from enqueue)
@@ -163,11 +163,9 @@ final class LowLatencyAudioPlayer {
             try audioEngine?.start()
             isRunning = true
             let latencyMs = Double(targetSamples) / Double(sampleRate) * 1000
-            print("[LowLatencyAudio] ✅ Started v10.0 Stereo Emitter Array")
-            print("[LowLatencyAudio]   A/V Sync target: \(String(format: "%.0f", latencyMs))ms")
-            print("[LowLatencyAudio]   Screen: \(virtualScreenWidth)m wide @ \(virtualScreenDistance)m distance")
+            DebugLog.info("LowLatencyAudio", "✅ Started Stereo Emitter (target: \(String(format: "%.0f", latencyMs))ms, screen: \(virtualScreenWidth)m @ \(virtualScreenDistance)m)")
         } catch {
-            print("[LowLatencyAudio] ❌ Failed to start: \(error)")
+            DebugLog.error("LowLatencyAudio", "Failed to start: \(error)")
         }
     }
     
@@ -190,7 +188,7 @@ final class LowLatencyAudioPlayer {
         // Log significant changes
         if abs(measuredLatencyMs - Double(lastLoggedTarget)) > 10 {
             lastLoggedTarget = Int(adjustedMs)
-            print("[LowLatencyAudio] 🎯 Closed-loop sync: video=\(String(format: "%.0f", measuredLatencyMs))ms → audio target=\(String(format: "%.0f", adjustedMs))ms")
+            DebugLog.info("LowLatencyAudio", "🎯 Closed-loop sync: video=\(String(format: "%.0f", measuredLatencyMs))ms → audio target=\(String(format: "%.0f", adjustedMs))ms")
         }
     }
     
@@ -200,7 +198,7 @@ final class LowLatencyAudioPlayer {
         // v10.1: Only enforce minimum, no upper cap
         let adjustedMs = max(20, milliseconds)
         targetSamples = Int(adjustedMs / 1000.0 * Double(sampleRate))
-        print("[LowLatencyAudio] 🎯 Initial A/V Sync target: \(String(format: "%.0f", adjustedMs))ms (\(targetSamples) samples)")
+        DebugLog.info("LowLatencyAudio", "🎯 Initial A/V Sync target: \(String(format: "%.0f", adjustedMs))ms (\(targetSamples) samples)")
     }
     
     /// Get current target latency in milliseconds
@@ -222,10 +220,12 @@ final class LowLatencyAudioPlayer {
         pendingSkipSamples = 0
         
         let stats = syncController?.driftCorrector.stats
+        #if DEBUG
         print("[LowLatencyAudio] Stopped (underruns: \(underrunCount), drift adjustments: \(driftAdjustments))")
         if let stats = stats {
             print("[LowLatencyAudio]   Sync stats: corrections=\(stats.correctionCount), skipped=\(stats.samplesSkipped), dup=\(stats.samplesDuplicated), drops=\(stats.emergencyDrops)")
         }
+        #endif
     }
     
     /// Enqueue PCM samples from chiaki callback (producer side)
@@ -254,11 +254,13 @@ final class LowLatencyAudioPlayer {
         
         // Log periodically
         totalSamplesProcessed += UInt64(sampleCount)
+        #if DEBUG
         if totalSamplesProcessed % UInt64(sampleRate * 2) < UInt64(sampleCount) {
             let leftMs = Double(leftRingBuffer.availableSamples) / Double(sampleRate) * 1000
             let ratePercent = (playbackRate - 1.0) * 100
             print("[LowLatencyAudio] Buffer L: \(String(format: "%.1f", leftMs))ms, Rate: \(String(format: "%+.2f", ratePercent))%")
         }
+        #endif
     }
     
     // MARK: - v10.0 Stereo Emitter Array Setup
@@ -277,7 +279,7 @@ final class LowLatencyAudioPlayer {
         try session.setActive(true)
         
         let actualBuffer = session.ioBufferDuration * 1000
-        print("[LowLatencyAudio] IO Buffer: \(String(format: "%.1f", actualBuffer))ms")
+        DebugLog.info("LowLatencyAudio", "IO Buffer: \(String(format: "%.1f", actualBuffer))ms")
     }
     
     /// v10.0: Setup Stereo Emitter Array with L/R positioned at screen edges
@@ -332,8 +334,7 @@ final class LowLatencyAudioPlayer {
             leftSource.pan = -1.0   // Full left
             rightSource.pan = +1.0  // Full right
             
-            print("[LowLatencyAudio] 🎧 v10.1 Direct Stereo enabled (HRTF bypassed)")
-            print("[LowLatencyAudio]   PS5 Tempest Engine audio preserved")
+            DebugLog.info("LowLatencyAudio", "🎧 Direct Stereo enabled (HRTF bypassed, Tempest preserved)")
             return
         }
         
@@ -344,7 +345,7 @@ final class LowLatencyAudioPlayer {
             // Fallback: direct to mixer (no spatial audio)
             engine.connect(leftSource, to: engine.mainMixerNode, format: format)
             engine.connect(rightSource, to: engine.mainMixerNode, format: format)
-            print("[LowLatencyAudio] ⚠️ Fallback to non-spatial stereo")
+            DebugLog.warning("LowLatencyAudio", "Fallback to non-spatial stereo")
             return
         }
         
@@ -379,9 +380,7 @@ final class LowLatencyAudioPlayer {
         engine.connect(rightSource, to: envNode, format: format)
         engine.connect(envNode, to: engine.mainMixerNode, format: nil)
         
-        print("[LowLatencyAudio] 🔊 v10.0 Stereo Emitter Array enabled (HRTF active)")
-        print("[LowLatencyAudio]   L: (-\(halfWidth), 0, -\(virtualScreenDistance))")
-        print("[LowLatencyAudio]   R: (+\(halfWidth), 0, -\(virtualScreenDistance))")
+        DebugLog.info("LowLatencyAudio", "🔊 Stereo Emitter Array enabled (HRTF active, L: -\(halfWidth), R: +\(halfWidth), dist: \(virtualScreenDistance)m)")
     }
     
     /// Render callback for a single channel (L or R)
@@ -498,7 +497,7 @@ final class LowLatencyAudioPlayer {
                 let skipSamples = syncController.driftCorrector.calculateSampleAdjustment()
                 pendingSkipSamples = skipSamples
                 playbackRate = 1.0
-                print("[LowLatencyAudio] ⏩ Skip \(skipSamples) samples (\(String(format: "%.0f", Double(skipSamples) / Double(sampleRate) * 1000))ms)")
+                DebugLog.info("LowLatencyAudio", "⏩ Skip \(skipSamples) samples (\(String(format: "%.0f", Double(skipSamples) / Double(sampleRate) * 1000))ms)")
                 
             case .duplicateSamples:
                 // Slow down via rate (duplicate is harder in pull model)

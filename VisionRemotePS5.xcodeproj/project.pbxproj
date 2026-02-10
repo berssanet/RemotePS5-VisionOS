@@ -16,6 +16,7 @@
 		APP007 /* StreamingImmersiveView.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC007 /* StreamingImmersiveView.swift */; };
 		APP008 /* Console.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC008 /* Console.swift */; };
 		APP009 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = RES001 /* Assets.xcassets */; };
+		WHEELBLD001 /* MercedesF1Wheel.usdz in Resources */ = {isa = PBXBuildFile; fileRef = WHEELREF001 /* MercedesF1Wheel.usdz */; };
 		APP010 /* ConsoleDiscoveryService.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC009 /* ConsoleDiscoveryService.swift */; };
 		APP011 /* PSNAuthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC010 /* PSNAuthService.swift */; };
 		APP012 /* StreamingSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC011 /* StreamingSession.swift */; };
@@ -44,16 +45,8 @@
 		EF5C41972F0645C3007A7B67 /* HolepunchService.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF5C41962F0645C3007A7B67 /* HolepunchService.swift */; };
 		EF5C41992F0645D2007A7B67 /* PSNConnectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF5C41982F0645D2007A7B67 /* PSNConnectionView.swift */; };
 		EF5C419B2F0645E0007A7B67 /* PSNWebSocketService.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF5C419A2F0645E0007A7B67 /* PSNWebSocketService.swift */; };
-		EFCA533A2F34BCA200D9EEB2 /* GPUOptimizationGuide.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFCA53392F34BCA200D9EEB2 /* GPUOptimizationGuide.swift */; };
-		EFCA533C2F34BCE000D9EEB2 /* Shaders.metal in Sources */ = {isa = PBXBuildFile; fileRef = EFCA533B2F34BCE000D9EEB2 /* Shaders.metal */; };
-		EFCA533E2F34BD2000D9EEB2 /* EnhancedStreamingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFCA533D2F34BD2000D9EEB2 /* EnhancedStreamingView.swift */; };
-		EFCA53402F34BD7900D9EEB2 /* GPU_OPTIMIZATION_README.md in Resources */ = {isa = PBXBuildFile; fileRef = EFCA533F2F34BD7900D9EEB2 /* GPU_OPTIMIZATION_README.md */; };
-		EFCA53422F34BDC800D9EEB2 /* IntegrationExamples.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFCA53412F34BDC800D9EEB2 /* IntegrationExamples.swift */; };
-		EFCA53442F34BE1C00D9EEB2 /* COMO_USAR_GPU.md in Resources */ = {isa = PBXBuildFile; fileRef = EFCA53432F34BE1C00D9EEB2 /* COMO_USAR_GPU.md */; };
-		EFCA53462F34BF1600D9EEB2 /* AJUSTES_REALIZADOS.md in Resources */ = {isa = PBXBuildFile; fileRef = EFCA53452F34BF1600D9EEB2 /* AJUSTES_REALIZADOS.md */; };
+
 		ENHUPSRC001 /* EnhancedUpscaler.swift in Sources */ = {isa = PBXBuildFile; fileRef = ENHUPREF001 /* EnhancedUpscaler.swift */; };
-		F1COCK001 /* F1CockpitControllerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1COCKREF001 /* F1CockpitControllerView.swift */; };
-		F1WHEEL3D001 /* F1SteeringWheel3DModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1WHEEL3DREF001 /* F1SteeringWheel3DModel.swift */; };
 		FRMPCRSRC001 /* FramePacer.swift in Sources */ = {isa = PBXBuildFile; fileRef = FRMPCRREF001 /* FramePacer.swift */; };
 		LOWLATAUDSRC001 /* LowLatencyAudioPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = LOWLATAUDREF001 /* LowLatencyAudioPlayer.swift */; };
 		MFXUPSRC001 /* MetalFXUpscaler.swift in Sources */ = {isa = PBXBuildFile; fileRef = MFXUPREF001 /* MetalFXUpscaler.swift */; };
@@ -62,7 +55,7 @@
 		RKVIDEOVIEWSRC001 /* RealityKitVideoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = RKVIDEOVIEWREF001 /* RealityKitVideoView.swift */; };
 		SAFEBUFPOOLSRC001 /* SafeBufferPool.swift in Sources */ = {isa = PBXBuildFile; fileRef = SAFEBUFPOOLREF001 /* SafeBufferPool.swift */; };
 		SHADER001 /* YUVToRGB.metal in Sources */ = {isa = PBXBuildFile; fileRef = SHADERSRC001 /* YUVToRGB.metal */; };
-		SIMP001 /* SimpleTestView.swift in Sources */ = {isa = PBXBuildFile; fileRef = SIMPSRC001 /* SimpleTestView.swift */; };
+
 		STRMSVC001 /* StreamingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = STRMSRCSVC001 /* StreamingService.swift */; };
 		STRMVIEW001 /* StreamingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = STRMSRCVIEW001 /* StreamingView.swift */; };
 		TRIPLEBUFSRC001 /* TripleBufferPool.swift in Sources */ = {isa = PBXBuildFile; fileRef = TRIPLEBUFREF001 /* TripleBufferPool.swift */; };
@@ -74,8 +67,8 @@
 		TST006 /* ConsoleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TSTSRC006 /* ConsoleTests.swift */; };
 		UPSPIPESRC001 /* UpscalingPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = UPSPIPEREF001 /* UpscalingPipeline.swift */; };
 		VSTEER001 /* VirtualSteeringWheelService.swift in Sources */ = {isa = PBXBuildFile; fileRef = VSTEERREF001 /* VirtualSteeringWheelService.swift */; };
-		VSTEERVW001 /* VirtualSteeringWheelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = VSTEERVWREF001 /* VirtualSteeringWheelView.swift */; };
 		WOLSVC001 /* WakeOnLanService.swift in Sources */ = {isa = PBXBuildFile; fileRef = WOLSRCSVC001 /* WakeOnLanService.swift */; };
+		LOGGERSRC001 /* Logger.swift in Sources */ = {isa = PBXBuildFile; fileRef = LOGGERREF001 /* Logger.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -110,16 +103,8 @@
 		EF5C41962F0645C3007A7B67 /* HolepunchService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HolepunchService.swift; sourceTree = "<group>"; };
 		EF5C41982F0645D2007A7B67 /* PSNConnectionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PSNConnectionView.swift; sourceTree = "<group>"; };
 		EF5C419A2F0645E0007A7B67 /* PSNWebSocketService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PSNWebSocketService.swift; sourceTree = "<group>"; };
-		EFCA53392F34BCA200D9EEB2 /* GPUOptimizationGuide.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GPUOptimizationGuide.swift; sourceTree = "<group>"; };
-		EFCA533B2F34BCE000D9EEB2 /* Shaders.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = Shaders.metal; sourceTree = "<group>"; };
-		EFCA533D2F34BD2000D9EEB2 /* EnhancedStreamingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnhancedStreamingView.swift; sourceTree = "<group>"; };
-		EFCA533F2F34BD7900D9EEB2 /* GPU_OPTIMIZATION_README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = GPU_OPTIMIZATION_README.md; sourceTree = "<group>"; };
-		EFCA53412F34BDC800D9EEB2 /* IntegrationExamples.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntegrationExamples.swift; sourceTree = "<group>"; };
-		EFCA53432F34BE1C00D9EEB2 /* COMO_USAR_GPU.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = COMO_USAR_GPU.md; sourceTree = "<group>"; };
-		EFCA53452F34BF1600D9EEB2 /* AJUSTES_REALIZADOS.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = AJUSTES_REALIZADOS.md; sourceTree = "<group>"; };
+
 		ENHUPREF001 /* EnhancedUpscaler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnhancedUpscaler.swift; sourceTree = "<group>"; };
-		F1COCKREF001 /* F1CockpitControllerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = F1CockpitControllerView.swift; sourceTree = "<group>"; };
-		F1WHEEL3DREF001 /* F1SteeringWheel3DModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = F1SteeringWheel3DModel.swift; sourceTree = "<group>"; };
 		FRMPCRREF001 /* FramePacer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FramePacer.swift; sourceTree = "<group>"; };
 		LOWLATAUDREF001 /* LowLatencyAudioPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LowLatencyAudioPlayer.swift; sourceTree = "<group>"; };
 		MFXUPREF001 /* MetalFXUpscaler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetalFXUpscaler.swift; sourceTree = "<group>"; };
@@ -132,7 +117,7 @@
 		RKVIDEOVIEWREF001 /* RealityKitVideoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RealityKitVideoView.swift; sourceTree = "<group>"; };
 		SAFEBUFPOOLREF001 /* SafeBufferPool.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SafeBufferPool.swift; sourceTree = "<group>"; };
 		SHADERSRC001 /* YUVToRGB.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = YUVToRGB.metal; sourceTree = "<group>"; };
-		SIMPSRC001 /* SimpleTestView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimpleTestView.swift; sourceTree = "<group>"; };
+
 		SRC001 /* VisionRemotePS5App.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisionRemotePS5App.swift; sourceTree = "<group>"; };
 		SRC002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		SRC003 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
@@ -160,8 +145,9 @@
 		TSTSRC006 /* ConsoleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConsoleTests.swift; sourceTree = "<group>"; };
 		UPSPIPEREF001 /* UpscalingPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpscalingPipeline.swift; sourceTree = "<group>"; };
 		VSTEERREF001 /* VirtualSteeringWheelService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VirtualSteeringWheelService.swift; sourceTree = "<group>"; };
-		VSTEERVWREF001 /* VirtualSteeringWheelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VirtualSteeringWheelView.swift; sourceTree = "<group>"; };
+		LOGGERREF001 /* Logger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Logger.swift; sourceTree = "<group>"; };
 		WOLSRCSVC001 /* WakeOnLanService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WakeOnLanService.swift; sourceTree = "<group>"; };
+		WHEELREF001 /* MercedesF1Wheel.usdz */ = {isa = PBXFileReference; lastKnownFileType = file.usdz; path = MercedesF1Wheel.usdz; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -211,7 +197,6 @@
 				GRP008 /* Streaming */,
 				GRP009 /* Controllers */,
 				GRP011 /* Chiaki */,
-				GRP012 /* Rendering */,
 				GRP006 /* Resources */,
 				RES002 /* Info.plist */,
 			);
@@ -222,9 +207,6 @@
 			isa = PBXGroup;
 			children = (
 				EF3CB6A32F29066A005E85E1 /* ControllerOverlayView.swift */,
-				F1COCKREF001 /* F1CockpitControllerView.swift */,
-				VSTEERVWREF001 /* VirtualSteeringWheelView.swift */,
-				F1WHEEL3DREF001 /* F1SteeringWheel3DModel.swift */,
 				EF3CB6A42F29066A005E85E1 /* ControllerWindow.swift */,
 				EF3CB6A52F29066A005E85E1 /* MenuBarWindow.swift */,
 				EF3CB6A62F29066A005E85E1 /* StreamingVideoWindow.swift */,
@@ -235,17 +217,9 @@
 				SRC005 /* LoginView.swift */,
 				SRC006 /* PairingView.swift */,
 				SRC007 /* StreamingImmersiveView.swift */,
-				SIMPSRC001 /* SimpleTestView.swift */,
 				STRMSRCVIEW001 /* StreamingView.swift */,
 				MTLTEXVIEWREF001 /* MetalTextureView.swift */,
 				RKVIDEOVIEWREF001 /* RealityKitVideoView.swift */,
-				EFCA53392F34BCA200D9EEB2 /* GPUOptimizationGuide.swift */,
-				EFCA533B2F34BCE000D9EEB2 /* Shaders.metal */,
-				EFCA533D2F34BD2000D9EEB2 /* EnhancedStreamingView.swift */,
-				EFCA533F2F34BD7900D9EEB2 /* GPU_OPTIMIZATION_README.md */,
-				EFCA53412F34BDC800D9EEB2 /* IntegrationExamples.swift */,
-				EFCA53432F34BE1C00D9EEB2 /* COMO_USAR_GPU.md */,
-				EFCA53452F34BF1600D9EEB2 /* AJUSTES_REALIZADOS.md */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -274,6 +248,7 @@
 				CHKFSESSRC001 /* ChiakiFullSession.swift */,
 				WOLSRCSVC001 /* WakeOnLanService.swift */,
 				VSTEERREF001 /* VirtualSteeringWheelService.swift */,
+				LOGGERREF001 /* Logger.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -282,6 +257,7 @@
 			isa = PBXGroup;
 			children = (
 				RES001 /* Assets.xcassets */,
+				WHEELREF001 /* MercedesF1Wheel.usdz */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -351,13 +327,7 @@
 			path = Chiaki;
 			sourceTree = "<group>";
 		};
-		GRP012 /* Rendering */ = {
-			isa = PBXGroup;
-			children = (
-			);
-			path = Rendering;
-			sourceTree = "<group>";
-		};
+
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -439,10 +409,9 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				EFCA53462F34BF1600D9EEB2 /* AJUSTES_REALIZADOS.md in Resources */,
-				EFCA53442F34BE1C00D9EEB2 /* COMO_USAR_GPU.md in Resources */,
-				EFCA53402F34BD7900D9EEB2 /* GPU_OPTIMIZATION_README.md in Resources */,
+
 				APP009 /* Assets.xcassets in Resources */,
+				WHEELBLD001 /* MercedesF1Wheel.usdz in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -461,8 +430,7 @@
 				APP003 /* HomeView.swift in Sources */,
 				APP004 /* SettingsView.swift in Sources */,
 				APP005 /* LoginView.swift in Sources */,
-				EFCA533C2F34BCE000D9EEB2 /* Shaders.metal in Sources */,
-				EFCA53422F34BDC800D9EEB2 /* IntegrationExamples.swift in Sources */,
+
 				APP006 /* PairingView.swift in Sources */,
 				APP007 /* StreamingImmersiveView.swift in Sources */,
 				APP008 /* Console.swift in Sources */,
@@ -480,28 +448,26 @@
 				EF3CB6A22F26B44E005E85E1 /* NetworkBufferPool.swift in Sources */,
 				APP016 /* RegistrationService.swift in Sources */,
 				APP017 /* ChiakiCrypto.swift in Sources */,
-				SIMP001 /* SimpleTestView.swift in Sources */,
+
 				STRMSVC001 /* StreamingService.swift in Sources */,
 				SHADER001 /* YUVToRGB.metal in Sources */,
 				EF3CB6A02F26AD85005E85E1 /* HighFrequencyInputController.swift in Sources */,
 				STRMVIEW001 /* StreamingView.swift in Sources */,
-				EFCA533A2F34BCA200D9EEB2 /* GPUOptimizationGuide.swift in Sources */,
+
 				EF3CB69C2F26AB2C005E85E1 /* AudioVideoSyncController.swift in Sources */,
 				CNSSTO001 /* ConsoleStorageService.swift in Sources */,
 				CHKFSES001 /* ChiakiFullSession.swift in Sources */,
 				WOLSVC001 /* WakeOnLanService.swift in Sources */,
+				LOGGERSRC001 /* Logger.swift in Sources */,
 				MFXUPSRC001 /* MetalFXUpscaler.swift in Sources */,
 				UPSPIPESRC001 /* UpscalingPipeline.swift in Sources */,
 				MTLTEXVIEWSRC001 /* MetalTextureView.swift in Sources */,
-				EFCA533E2F34BD2000D9EEB2 /* EnhancedStreamingView.swift in Sources */,
+
 				EF3CB6A72F29066A005E85E1 /* MenuBarWindow.swift in Sources */,
 				EF3CB6A82F29066A005E85E1 /* ControllerOverlayView.swift in Sources */,
 				EF3CB6A92F29066A005E85E1 /* StreamingVideoWindow.swift in Sources */,
 				EF3CB6AA2F29066A005E85E1 /* ControllerWindow.swift in Sources */,
-				F1COCK001 /* F1CockpitControllerView.swift in Sources */,
 				VSTEER001 /* VirtualSteeringWheelService.swift in Sources */,
-				VSTEERVW001 /* VirtualSteeringWheelView.swift in Sources */,
-				F1WHEEL3D001 /* F1SteeringWheel3DModel.swift in Sources */,
 				RKVIDEOVIEWSRC001 /* RealityKitVideoView.swift in Sources */,
 				TRIPLEBUFSRC001 /* TripleBufferPool.swift in Sources */,
 				FRMPCRSRC001 /* FramePacer.swift in Sources */,
