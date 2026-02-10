@@ -51,6 +51,37 @@ struct MenuBarWindow: View {
             .background(.ultraThinMaterial)
             .cornerRadius(20)
             
+            // v11.0: GPU Quality Menu
+            Menu {
+                Button("🏎️ Racing") {
+                    appState.gpuPreset = .racing
+                }
+                Button("🔫 FPS") {
+                    appState.gpuPreset = .fps
+                }
+                Button("🛡️ RPG") {
+                    appState.gpuPreset = .rpg
+                }
+                Button("🎬 Cinematic") {
+                    appState.gpuPreset = .cinematic
+                }
+                Divider()
+                Button("✨ Auto") {
+                    appState.gpuPreset = .auto
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "cpu.fill")
+                    Text(gpuPresetLabel)
+                        .font(.caption)
+                }
+                .foregroundColor(.cyan)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(.ultraThinMaterial)
+            .cornerRadius(20)
+            
             // VR mode toggle
             Button(action: {
                 if appState.isImmersiveActive {
@@ -103,6 +134,16 @@ struct MenuBarWindow: View {
         .padding(.horizontal, 16)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .glassBackgroundEffect()
+    }
+    
+    private var gpuPresetLabel: String {
+        switch appState.gpuPreset {
+        case .auto: return "Auto"
+        case .racing: return "Racing"
+        case .fps: return "FPS"
+        case .rpg: return "RPG"
+        case .cinematic: return "Cinema"
+        }
     }
     
     private func enterVRMode() {

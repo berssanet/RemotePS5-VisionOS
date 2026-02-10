@@ -60,6 +60,7 @@ class AppState: ObservableObject {
     @Published var isImmersiveActive: Bool = false  // v10.5: Track VR mode globally
     @Published var isInStreamingSession: Bool = false  // v10.5.2: Hide console selection when streaming
     @Published var controllerMode: ControllerMode = .standard  // v10.6: F1 cockpit support
+    @Published var gpuPreset: GPUPreset = .auto  // v11.0: GPU optimization preset
     @Published var selectedConsole: Console?
     @Published var discoveredConsoles: [Console] = []
     @Published var streamQuality: StreamQuality = .hd720
@@ -102,6 +103,35 @@ class AppState: ObservableObject {
             switch self {
             case .standard: return "Touch controls"
             case .virtualWheel: return "Hand tracking wheel (VR only)"
+            }
+        }
+    }
+    
+    /// v11.0: GPU Processing Preset
+    enum GPUPreset: String, CaseIterable {
+        case auto = "Auto"
+        case racing = "Racing"
+        case fps = "FPS"
+        case rpg = "RPG"
+        case cinematic = "Cinematic"
+        
+        var icon: String {
+            switch self {
+            case .auto: return "sparkles.rectangle.stack"
+            case .racing: return "steeringwheel"
+            case .fps: return "scope"
+            case .rpg: return "shield.fill"
+            case .cinematic: return "film.fill"
+            }
+        }
+        
+        var description: String {
+            switch self {
+            case .auto: return "Ajuste automático por thermal state"
+            case .racing: return "Motion blur reduction máximo"
+            case .fps: return "Latência mínima, sharpening alto"
+            case .rpg: return "Qualidade visual máxima"
+            case .cinematic: return "HDR e cores cinematográficas"
             }
         }
     }

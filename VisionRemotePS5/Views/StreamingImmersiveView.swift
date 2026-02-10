@@ -179,15 +179,22 @@ struct StreamingImmersiveView: View {
     @State private var wheelPosition: SIMD3<Float> = [0, 0.6, -0.7]  // 70cm in front, 60cm height
     @State private var wheelDragOffset: SIMD3<Float> = .zero
     
+    // v11.0: GPU Optimizations
+    @StateObject private var gpuProcessor = GPUProcessor()
+    @StateObject private var thermalMonitor = ThermalStateMonitor()
+    @State private var showPerformanceHUD = false
+    @State private var selectedGPUPreset: GPUPreset = .auto
+    
     var body: some View {
         ZStack {
-            // Main streaming surface
+            // Main streaming surface with GPU processing
             if upscalingPipeline.isEnabled,
                let texture4K = upscalingPipeline.upscaledTexture {
                 if #available(visionOS 2.0, *) {
-                    Immersive4KSurface(
+                    EnhancedImmersive4KSurface(
                         texture: texture4K,
-                        frameId: upscalingPipeline.textureFrameId
+                        frameId: upscalingPipeline.textureFrameId,
+                        gpuProcessor: gpuProcessor
                     )
                 } else if let frame = currentFrame {
                     StreamingSurface(pixelBuffer: frame)
@@ -202,6 +209,19 @@ struct StreamingImmersiveView: View {
                     let entity = ModelEntity(mesh: mesh, materials: [material])
                     entity.position = [0, 1.8, -4.0]
                     content.add(entity)
+                }
+            }
+            
+            // v11.0: Performance HUD (toggle with double-tap)
+            if showPerformanceHUD {
+                VStack {
+                    Spacer()
+                    PerformanceHUD(
+                        fps: gpuProcessor.currentFPS,
+                        thermalState: thermalMonitor.thermalState,
+                        gpuUsage: gpuProcessor.gpuUsage
+                    )
+                    .padding()
                 }
             }
             
@@ -230,8 +250,8 @@ struct StreamingImmersiveView: View {
                 .transition(.opacity)
             }
             
-            // v10.6: 3D F1 Steering Wheel (when in F1 cockpit or virtualWheel mode)
-            if appState.controllerMode == .f1Cockpit || appState.controllerMode == .virtualWheel {
+            // v10.6: 3D Virtual Steering Wheel (when in virtualWheel mode)
+            if appState.controllerMode == .virtualWheel {
                 // 3D wheel entity in RealityKit - user can drag to reposition
                 RealityView { content in
                     print("[StreamingImmersive] 🎡 Creating F1 Steering Wheel 3D model...")
@@ -325,8 +345,24 @@ struct StreamingImmersiveView: View {
                 }
             }
         }
+        .gesture(
+            // Double-tap to toggle performance HUD
+            TapGesture(count: 2).onEnded {
+                withAnimation {
+                    showPerformanceHUD.toggle()
+                }
+            }
+        )
         .onTapGesture {
             toggleControls()
+        }
+        .onChange(of: selectedGPUPreset) { _, newPreset in
+            applyGPUPreset(newPreset)
+        }
+        .onChange(of: thermalMonitor.recommendedQuality) { _, quality in
+            if selectedGPUPreset == .auto {
+                adjustForThermalState(quality)
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .videoFrameReceived)) { notification in
             guard let object = notification.object else { return }
@@ -356,11 +392,11 @@ struct StreamingImmersiveView: View {
         .onAppear {
             upscalingPipeline.initialize()
             
-            // v10.6: Start hand tracking if F1 cockpit or virtual wheel mode
+            // v10.6: Start hand tracking if virtual wheel mode
             print("[StreamingImmersive] 🎮 Controller mode: \(appState.controllerMode)")
-            let isSteeringMode = appState.controllerMode == .f1Cockpit || appState.controllerMode == .virtualWheel
+            let isSteeringMode = appState.controllerMode == .virtualWheel
             if isSteeringMode {
-                print("[StreamingImmersive] 🎯 F1/Virtual Wheel mode ACTIVE - starting hand tracking...")
+                print("[StreamingImmersive] 🎯 Virtual Wheel mode ACTIVE - starting hand tracking...")
                 Task {
                     do {
                         try await steeringService.startTracking()
@@ -444,9 +480,108 @@ struct StreamingImmersiveView: View {
             right: CGPoint(x: 0, y: throttleBrake)
         )
     }
+    
+    // v11.0: Apply GPU preset
+    private func applyGPUPreset(_ preset: GPUPreset) {
+        switch preset {
+        case .auto:
+            // Let thermal monitor decide
+            break
+        case .racing:
+            gpuProcessor.settings = .racingPreset
+            print("[GPU] 🏎️ Preset Racing aplicado")
+        case .fps:
+            gpuProcessor.settings = .fpsPreset
+            print("[GPU] 🔫 Preset FPS aplicado")
+        case .rpg:
+            gpuProcessor.settings = .rpgPreset
+            print("[GPU] 🛡️ Preset RPG aplicado")
+        case .cinematic:
+            gpuProcessor.settings = .cinematicPreset
+            print("[GPU] 🎬 Preset Cinematográfico aplicado")
+        }
+    }
+    
+    // v11.0: Adjust quality based on thermal state
+    private func adjustForThermalState(_ quality: ThermalStateMonitor.Quality) {
+        switch quality {
+        case .ultra:
+            gpuProcessor.settings.sharpeningIntensity = 0.3
+            gpuProcessor.settings.enableColorGrading = true
+            gpuProcessor.settings.reduceMotionBlur = true
+            print("[GPU] 🌡️ Thermal: Ultra - todos os efeitos ON")
+        case .high:
+            gpuProcessor.settings.sharpeningIntensity = 0.2
+            gpuProcessor.settings.enableColorGrading = true
+            gpuProcessor.settings.reduceMotionBlur = false
+            print("[GPU] 🌡️ Thermal: High - motion blur OFF")
+        case .medium:
+            gpuProcessor.settings.sharpeningIntensity = 0.1
+            gpuProcessor.settings.enableColorGrading = false
+            gpuProcessor.settings.reduceMotionBlur = false
+            print("[GPU] 🌡️ Thermal: Medium - color grading OFF")
+        case .low:
+            gpuProcessor.settings.sharpeningIntensity = 0.0
+            gpuProcessor.settings.enableColorGrading = false
+            gpuProcessor.settings.reduceMotionBlur = false
+            print("[GPU] 🌡️ Thermal: Low - apenas upscaling")
+        }
+    }
 }
 
-// MARK: - Immersive 4K Surface (using coordinator)
+// MARK: - Enhanced Immersive 4K Surface (with GPU processing)
+
+@available(visionOS 2.0, *)
+struct EnhancedImmersive4KSurface: View {
+    let texture: MTLTexture
+    let frameId: UInt64
+    let gpuProcessor: GPUProcessor
+    
+    // Cinema-like screen: 6m wide at 4m distance (~85° FOV)
+    // 16:9 aspect ratio: 6.0 x 3.375 meters
+    private let screenWidth: Float = 6.0
+    private let screenHeight: Float = 3.375
+    private let screenDistance: Float = 4.0
+    private let screenElevation: Float = 1.8
+    
+    var body: some View {
+        RealityView { content in
+            let coordinator = ImmersiveTextureCoordinator.shared
+            let entity = coordinator.getOrCreateEntity(
+                width: screenWidth,
+                height: screenHeight,
+                distance: screenDistance,
+                elevation: screenElevation
+            )
+            
+            if entity.parent == nil {
+                content.add(entity)
+                print("[EnhancedImmersive4K] ✅ Entity added to scene")
+            }
+            
+            // Process with GPU and update
+            Task {
+                if let processedTexture = await gpuProcessor.processFrame(texture) {
+                    coordinator.updateTexture(from: processedTexture)
+                } else {
+                    // Fallback to original if processing fails
+                    coordinator.updateTexture(from: texture)
+                }
+            }
+        } update: { content in
+            // Update texture on frame changes
+            Task {
+                if let processedTexture = await gpuProcessor.processFrame(texture) {
+                    ImmersiveTextureCoordinator.shared.updateTexture(from: processedTexture)
+                } else {
+                    ImmersiveTextureCoordinator.shared.updateTexture(from: texture)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Immersive 4K Surface (using coordinator - original without GPU)
 
 @available(visionOS 2.0, *)
 struct Immersive4KSurface: View {

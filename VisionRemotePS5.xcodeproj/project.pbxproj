@@ -44,6 +44,13 @@
 		EF5C41972F0645C3007A7B67 /* HolepunchService.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF5C41962F0645C3007A7B67 /* HolepunchService.swift */; };
 		EF5C41992F0645D2007A7B67 /* PSNConnectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF5C41982F0645D2007A7B67 /* PSNConnectionView.swift */; };
 		EF5C419B2F0645E0007A7B67 /* PSNWebSocketService.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF5C419A2F0645E0007A7B67 /* PSNWebSocketService.swift */; };
+		EFCA533A2F34BCA200D9EEB2 /* GPUOptimizationGuide.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFCA53392F34BCA200D9EEB2 /* GPUOptimizationGuide.swift */; };
+		EFCA533C2F34BCE000D9EEB2 /* Shaders.metal in Sources */ = {isa = PBXBuildFile; fileRef = EFCA533B2F34BCE000D9EEB2 /* Shaders.metal */; };
+		EFCA533E2F34BD2000D9EEB2 /* EnhancedStreamingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFCA533D2F34BD2000D9EEB2 /* EnhancedStreamingView.swift */; };
+		EFCA53402F34BD7900D9EEB2 /* GPU_OPTIMIZATION_README.md in Resources */ = {isa = PBXBuildFile; fileRef = EFCA533F2F34BD7900D9EEB2 /* GPU_OPTIMIZATION_README.md */; };
+		EFCA53422F34BDC800D9EEB2 /* IntegrationExamples.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFCA53412F34BDC800D9EEB2 /* IntegrationExamples.swift */; };
+		EFCA53442F34BE1C00D9EEB2 /* COMO_USAR_GPU.md in Resources */ = {isa = PBXBuildFile; fileRef = EFCA53432F34BE1C00D9EEB2 /* COMO_USAR_GPU.md */; };
+		EFCA53462F34BF1600D9EEB2 /* AJUSTES_REALIZADOS.md in Resources */ = {isa = PBXBuildFile; fileRef = EFCA53452F34BF1600D9EEB2 /* AJUSTES_REALIZADOS.md */; };
 		ENHUPSRC001 /* EnhancedUpscaler.swift in Sources */ = {isa = PBXBuildFile; fileRef = ENHUPREF001 /* EnhancedUpscaler.swift */; };
 		F1COCK001 /* F1CockpitControllerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1COCKREF001 /* F1CockpitControllerView.swift */; };
 		F1WHEEL3D001 /* F1SteeringWheel3DModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1WHEEL3DREF001 /* F1SteeringWheel3DModel.swift */; };
@@ -103,6 +110,13 @@
 		EF5C41962F0645C3007A7B67 /* HolepunchService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HolepunchService.swift; sourceTree = "<group>"; };
 		EF5C41982F0645D2007A7B67 /* PSNConnectionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PSNConnectionView.swift; sourceTree = "<group>"; };
 		EF5C419A2F0645E0007A7B67 /* PSNWebSocketService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PSNWebSocketService.swift; sourceTree = "<group>"; };
+		EFCA53392F34BCA200D9EEB2 /* GPUOptimizationGuide.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GPUOptimizationGuide.swift; sourceTree = "<group>"; };
+		EFCA533B2F34BCE000D9EEB2 /* Shaders.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = Shaders.metal; sourceTree = "<group>"; };
+		EFCA533D2F34BD2000D9EEB2 /* EnhancedStreamingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnhancedStreamingView.swift; sourceTree = "<group>"; };
+		EFCA533F2F34BD7900D9EEB2 /* GPU_OPTIMIZATION_README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = GPU_OPTIMIZATION_README.md; sourceTree = "<group>"; };
+		EFCA53412F34BDC800D9EEB2 /* IntegrationExamples.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntegrationExamples.swift; sourceTree = "<group>"; };
+		EFCA53432F34BE1C00D9EEB2 /* COMO_USAR_GPU.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = COMO_USAR_GPU.md; sourceTree = "<group>"; };
+		EFCA53452F34BF1600D9EEB2 /* AJUSTES_REALIZADOS.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = AJUSTES_REALIZADOS.md; sourceTree = "<group>"; };
 		ENHUPREF001 /* EnhancedUpscaler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnhancedUpscaler.swift; sourceTree = "<group>"; };
 		F1COCKREF001 /* F1CockpitControllerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = F1CockpitControllerView.swift; sourceTree = "<group>"; };
 		F1WHEEL3DREF001 /* F1SteeringWheel3DModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = F1SteeringWheel3DModel.swift; sourceTree = "<group>"; };
@@ -225,6 +239,13 @@
 				STRMSRCVIEW001 /* StreamingView.swift */,
 				MTLTEXVIEWREF001 /* MetalTextureView.swift */,
 				RKVIDEOVIEWREF001 /* RealityKitVideoView.swift */,
+				EFCA53392F34BCA200D9EEB2 /* GPUOptimizationGuide.swift */,
+				EFCA533B2F34BCE000D9EEB2 /* Shaders.metal */,
+				EFCA533D2F34BD2000D9EEB2 /* EnhancedStreamingView.swift */,
+				EFCA533F2F34BD7900D9EEB2 /* GPU_OPTIMIZATION_README.md */,
+				EFCA53412F34BDC800D9EEB2 /* IntegrationExamples.swift */,
+				EFCA53432F34BE1C00D9EEB2 /* COMO_USAR_GPU.md */,
+				EFCA53452F34BF1600D9EEB2 /* AJUSTES_REALIZADOS.md */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -418,6 +439,9 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				EFCA53462F34BF1600D9EEB2 /* AJUSTES_REALIZADOS.md in Resources */,
+				EFCA53442F34BE1C00D9EEB2 /* COMO_USAR_GPU.md in Resources */,
+				EFCA53402F34BD7900D9EEB2 /* GPU_OPTIMIZATION_README.md in Resources */,
 				APP009 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -437,6 +461,8 @@
 				APP003 /* HomeView.swift in Sources */,
 				APP004 /* SettingsView.swift in Sources */,
 				APP005 /* LoginView.swift in Sources */,
+				EFCA533C2F34BCE000D9EEB2 /* Shaders.metal in Sources */,
+				EFCA53422F34BDC800D9EEB2 /* IntegrationExamples.swift in Sources */,
 				APP006 /* PairingView.swift in Sources */,
 				APP007 /* StreamingImmersiveView.swift in Sources */,
 				APP008 /* Console.swift in Sources */,
@@ -459,6 +485,7 @@
 				SHADER001 /* YUVToRGB.metal in Sources */,
 				EF3CB6A02F26AD85005E85E1 /* HighFrequencyInputController.swift in Sources */,
 				STRMVIEW001 /* StreamingView.swift in Sources */,
+				EFCA533A2F34BCA200D9EEB2 /* GPUOptimizationGuide.swift in Sources */,
 				EF3CB69C2F26AB2C005E85E1 /* AudioVideoSyncController.swift in Sources */,
 				CNSSTO001 /* ConsoleStorageService.swift in Sources */,
 				CHKFSES001 /* ChiakiFullSession.swift in Sources */,
@@ -466,6 +493,7 @@
 				MFXUPSRC001 /* MetalFXUpscaler.swift in Sources */,
 				UPSPIPESRC001 /* UpscalingPipeline.swift in Sources */,
 				MTLTEXVIEWSRC001 /* MetalTextureView.swift in Sources */,
+				EFCA533E2F34BD2000D9EEB2 /* EnhancedStreamingView.swift in Sources */,
 				EF3CB6A72F29066A005E85E1 /* MenuBarWindow.swift in Sources */,
 				EF3CB6A82F29066A005E85E1 /* ControllerOverlayView.swift in Sources */,
 				EF3CB6A92F29066A005E85E1 /* StreamingVideoWindow.swift in Sources */,
