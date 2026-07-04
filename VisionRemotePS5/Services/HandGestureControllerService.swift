@@ -475,28 +475,40 @@ final class HandGestureControllerService: ObservableObject {
             // middle-finger presses rocking the middleKnuckle and bursting
             // the stick (button input leaking into the camera: the
             // "commands feel swapped" symptom).
-            // v12.9.2: angles are measured RELATIVE TO THE FOREARM, not the
-            // world — telemetry showed right-hand yaw pinned at +1.00 when
-            // the whole relaxed arm rolled on the thigh (indistinguishable
-            // from a deliberate hold in world space). Forearm and hand move
-            // together on arm drift → relative angle unchanged → no phantom;
-            // a true wrist flick (radial deviation / flexion) is the input,
-            // and the wrist's own anatomy is the return spring.
+            // v12.10: stick X = PALM ROLL, GRAVITY-REFERENCED. Absolute zero
+            // = palm flat toward the floor — no adaptive reference exists to
+            // deadlock, no forearm joint needed (v12.9.2's elbow is inferred
+            // outside the camera FOV and proved too unstable), and the hand
+            // resting flat is a real physical return spring. Roll the palm
+            // right → camera right. Stick Y stays pitch vs the settle-
+            // captured reference (telemetry showed it responsive).
             let anchorX = origin.columns.0
             let forward = simd_normalize(SIMD3<Float>(anchorX.x, anchorX.y, anchorX.z))
-            let forearmPos = worldAny(.forearmArm)
-            let forearmDir = simd_normalize(wrist - forearmPos)   // elbow → wrist
-            var lateral = simd_cross(forearmDir, SIMD3<Float>(0, 1, 0))
-            let lateralLength = simd_length(lateral)
-            // Degenerate only when the forearm points straight up/down —
-            // not a gameplay pose; hold the stick neutral there.
-            let frameValid = lateralLength > 0.05
-            lateral = frameValid ? lateral / lateralLength : SIMD3<Float>(1, 0, 0)
-            let upInFrame = simd_cross(lateral, forearmDir)
-            let yawNow = atan2(simd_dot(forward, lateral), simd_dot(forward, forearmDir))
-            let pitchNow = asin(max(-1, min(1, simd_dot(forward, upInFrame))))
+            let handUp = -palmNormal   // palm-down hand ⇒ this points up
+            let worldUp = SIMD3<Float>(0, 1, 0)
+            // Signed roll: angle between world-up and hand-up, both projected
+            // perpendicular to the forward axis.
+            let upPerp = worldUp - forward * simd_dot(worldUp, forward)
+            let handUpPerp = handUp - forward * simd_dot(handUp, forward)
+            let upPerpLen = simd_length(upPerp)
+            let handUpPerpLen = simd_length(handUpPerp)
+            let frameValid = upPerpLen > 0.05 && handUpPerpLen > 0.05
+            let rollNow: Float
+            if frameValid {
+                let a = upPerp / upPerpLen
+                let b = handUpPerp / handUpPerpLen
+                rollNow = atan2(simd_dot(simd_cross(a, b), forward), simd_dot(a, b))
+            } else {
+                rollNow = 0
+            }
+            let pitchNow = asin(max(-1, min(1, forward.y)))
+            let yawNow = rollNow   // stick X source (naming kept for the ref plumbing)
 
-            var refYaw = state.wristRefYaw ?? yawNow
+            // v12.10.1: telemetry proved resting hands sit ~25° rolled on
+            // the thigh — gravity-absolute zero pinned both sticks at -1.
+            // Roll now uses the SAME settle-captured reference design as
+            // pitch (the axis telemetry showed working perfectly).
+            var refYaw = state.wristRefYaw ?? rollNow
             var refPitch = state.wristRefPitch ?? pitchNow
 
             func shortestAngle(_ a: Float) -> Float {
@@ -506,15 +518,19 @@ final class HandGestureControllerService: ObservableObject {
                 return angle
             }
 
-            // Settling window: fast-converge the reference to wherever the
-            // hand is actually coming to rest; stick stays neutral.
+            // Settling window: fast-converge both references to wherever
+            // the hand is actually coming to rest; stick stays neutral.
             if settling {
-                refYaw += shortestAngle(yawNow - refYaw) * settleAdaptRate
+                refYaw += shortestAngle(rollNow - refYaw) * settleAdaptRate
                 refPitch += (pitchNow - refPitch) * settleAdaptRate
             }
 
             let deltaYaw = shortestAngle(yawNow - refYaw)
             let deltaPitch = pitchNow - refPitch
+
+            // Raw-angle telemetry (~1Hz per hand) for remote tuning.
+            DebugLog.every(stickLogCounter, interval: 180, "HoloPad",
+                           "📐 \(isRight ? "R" : "L") roll=\(String(format: "%+.2f", rollNow)) pitch=\(String(format: "%+.2f", pitchNow)) refPitch=\(String(format: "%+.2f", refPitch)) resting=\(state.restingPose)")
 
             func axisValue(_ delta: Float) -> Float {
                 let magnitude = abs(delta)
@@ -546,15 +562,14 @@ final class HandGestureControllerService: ObservableObject {
                 }
             }
 
-            // Reference adapts ONLY inside the deadzone. v12.9.1: the v12.9
+            // Pitch reference adapts ONLY inside the deadzone (roll has no
+            // reference at all — gravity is absolute). v12.9.1: the v12.9
             // "mid-range bleed" and the saturation escape are GONE — the
             // adversarial review proved both destroy legitimate gameplay
             // (every sustained pan/walk decayed mid-hold and rubber-banded
-            // in reverse on release; full-tilt holds glitched at 1.5s).
-            // With the rigid anchor axis + settling window + entry debounce
-            // the bad-reference sources are fixed at the root; the manual
-            // escape for a rare bad capture is simply lifting the hand or
-            // flipping the palm and resting again (fresh 0.8s settle).
+            // in reverse on release). The manual escape for a rare bad pitch
+            // capture is lifting the hand or flipping the palm and resting
+            // again (fresh 0.8s settle).
             if abs(deltaYaw) < wristDeadzone && abs(deltaPitch) < wristDeadzone {
                 refYaw += deltaYaw * wristRefAdaptRate
                 refPitch += deltaPitch * wristRefAdaptRate
