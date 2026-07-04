@@ -154,7 +154,7 @@ final class UpscalingPipeline: ObservableObject {
         // Step 1: Color space conversion (P010→Linear RGB or BGRA→Linear RGB)
         if isP010, let converter = colorSpaceConverter {
             // HDR path: P010 YUV → Linear RGB (RGBA16Float)
-            if let convertedTexture = converter.convert(frame) {
+            if converter.convert(frame) != nil {
                 if frameCount == 0 {
                     DebugLog.info("UpscalingPipeline", "🎨 HDR path: P010→RGBA16Float→Upscale")
                 }
@@ -192,7 +192,7 @@ final class UpscalingPipeline: ObservableObject {
         #if DEBUG
         if frameCount > 0 && frameCount % 60 == 0 {
             let hdrStatus = hdrMode == .forceHDR || (hdrMode == .auto && isP010) ? "HDR" : "SDR"
-            print("[UpscalingPipeline] 📊 \(frameCount) frames, \(String(format: "%.1f", elapsed))ms/frame (\(upscalerType.rawValue), \(hdrStatus))")
+            DebugLog.print("[UpscalingPipeline] 📊 \(frameCount) frames, \(String(format: "%.1f", elapsed))ms/frame (\(upscalerType.rawValue), \(hdrStatus))")
         }
         #endif
         

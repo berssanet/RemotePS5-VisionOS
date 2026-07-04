@@ -47,7 +47,7 @@ actor ConsoleStorageService {
     // MARK: - Initialization
     
     private init() {
-        print("[ConsoleStorage] Actor initialized")
+        DebugLog.print("[ConsoleStorage] Actor initialized")
     }
     
     // MARK: - Public API
@@ -60,10 +60,10 @@ actor ConsoleStorageService {
         // Update or add console
         if let index = consoles.firstIndex(where: { $0.id == console.id || $0.ipAddress == console.ipAddress }) {
             consoles[index] = console
-            print("[ConsoleStorage] Updated existing console: \(console.name)")
+            DebugLog.print("[ConsoleStorage] Updated existing console: \(console.name)")
         } else {
             consoles.append(console)
-            print("[ConsoleStorage] Added new console: \(console.name)")
+            DebugLog.print("[ConsoleStorage] Added new console: \(console.name)")
         }
         
         // Save to UserDefaults
@@ -118,7 +118,7 @@ actor ConsoleStorageService {
         // Remove RP-Key from Keychain
         deleteRPKeyFromKeychain(for: console)
         
-        print("[ConsoleStorage] Removed console: \(console.name)")
+        DebugLog.print("[ConsoleStorage] Removed console: \(console.name)")
     }
     
     /// Check if a console is registered with valid credentials.
@@ -138,7 +138,7 @@ actor ConsoleStorageService {
         defaults.removeObject(forKey: registeredConsolesKey)
         cachedConsoles = []
         
-        print("[ConsoleStorage] Cleared all consoles")
+        DebugLog.print("[ConsoleStorage] Cleared all consoles")
     }
     
     /// Invalidate the cache, forcing a reload from disk on next access.
@@ -163,7 +163,7 @@ actor ConsoleStorageService {
             
             return consoles
         } catch {
-            print("[ConsoleStorage] Failed to decode consoles: \(error)")
+            DebugLog.print("[ConsoleStorage] Failed to decode consoles: \(error)")
             return []
         }
     }
@@ -178,9 +178,9 @@ actor ConsoleStorageService {
             
             let data = try JSONEncoder().encode(consolesToSave)
             defaults.set(data, forKey: registeredConsolesKey)
-            print("[ConsoleStorage] Saved \(consoles.count) consoles")
+            DebugLog.print("[ConsoleStorage] Saved \(consoles.count) consoles")
         } catch {
-            print("[ConsoleStorage] Failed to encode consoles: \(error)")
+            DebugLog.print("[ConsoleStorage] Failed to encode consoles: \(error)")
         }
     }
     
@@ -209,9 +209,9 @@ actor ConsoleStorageService {
         
         let status = SecItemAdd(addQuery as CFDictionary, nil)
         if status == errSecSuccess {
-            print("[ConsoleStorage] RP-Key saved to Keychain for \(console.ipAddress)")
+            DebugLog.print("[ConsoleStorage] RP-Key saved to Keychain for \(console.ipAddress)")
         } else {
-            print("[ConsoleStorage] Failed to save RP-Key: \(status)")
+            DebugLog.print("[ConsoleStorage] Failed to save RP-Key: \(status)")
         }
     }
     
@@ -246,7 +246,7 @@ actor ConsoleStorageService {
         ]
         
         SecItemDelete(query as CFDictionary)
-        print("[ConsoleStorage] RP-Key deleted from Keychain for \(console.ipAddress)")
+        DebugLog.print("[ConsoleStorage] RP-Key deleted from Keychain for \(console.ipAddress)")
     }
 }
 
@@ -261,46 +261,6 @@ extension Console {
     }
 }
 
-// MARK: - Synchronous Bridge (for non-async contexts)
-
-/// Provides synchronous access to ConsoleStorageService for legacy code paths.
-/// Use sparingly - prefer async/await syntax.
-extension ConsoleStorageService {
-    
-    /// Synchronously save a console (blocks calling thread).
-    /// - Warning: Use only when async is not possible.
-    nonisolated func saveRegisteredConsoleSync(_ console: Console) {
-        let semaphore = DispatchSemaphore(value: 0)
-        Task {
-            await self.saveRegisteredConsole(console)
-            semaphore.signal()
-        }
-        semaphore.wait()
-    }
-    
-    /// Synchronously get all registered consoles (blocks calling thread).
-    /// - Warning: Use only when async is not possible.
-    nonisolated func getRegisteredConsolesSync() -> [Console] {
-        let semaphore = DispatchSemaphore(value: 0)
-        var result: [Console] = []
-        Task {
-            result = await self.getRegisteredConsoles()
-            semaphore.signal()
-        }
-        semaphore.wait()
-        return result
-    }
-    
-    /// Synchronously check if console is registered (blocks calling thread).
-    /// - Warning: Use only when async is not possible.
-    nonisolated func isConsoleRegisteredSync(ip: String) -> Bool {
-        let semaphore = DispatchSemaphore(value: 0)
-        var result = false
-        Task {
-            result = await self.isConsoleRegistered(ip: ip)
-            semaphore.signal()
-        }
-        semaphore.wait()
-        return result
-    }
-}
+// Phase 5.17: removed `*Sync` semaphore-on-actor wrappers. They had zero
+// callers outside the file itself and would deadlock if invoked from MainActor
+// while the cooperative pool was saturated. Use the `await`-based methods.

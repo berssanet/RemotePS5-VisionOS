@@ -138,6 +138,9 @@ final class LowLatencyAudioPlayer {
         floatBuffer?.deallocate()
         crossfadeLeftBuffer?.deallocate()
         crossfadeRightBuffer?.deallocate()
+        // Phase 5.16: release the pre-allocated deinterleave scratch buffers.
+        deinterleaveLeftScratch?.deallocate()
+        deinterleaveRightScratch?.deallocate()
     }
     
     // MARK: - v10.2 Sync Controller Setup
@@ -221,35 +224,58 @@ final class LowLatencyAudioPlayer {
         
         let stats = syncController?.driftCorrector.stats
         #if DEBUG
-        print("[LowLatencyAudio] Stopped (underruns: \(underrunCount), drift adjustments: \(driftAdjustments))")
+        DebugLog.print("[LowLatencyAudio] Stopped (underruns: \(underrunCount), drift adjustments: \(driftAdjustments))")
         if let stats = stats {
-            print("[LowLatencyAudio]   Sync stats: corrections=\(stats.correctionCount), skipped=\(stats.samplesSkipped), dup=\(stats.samplesDuplicated), drops=\(stats.emergencyDrops)")
+            DebugLog.print("[LowLatencyAudio]   Sync stats: corrections=\(stats.correctionCount), skipped=\(stats.samplesSkipped), dup=\(stats.samplesDuplicated), drops=\(stats.emergencyDrops)")
         }
         #endif
     }
     
+    /// Phase 5.16: Pre-allocated deinterleave scratch buffers (re-used across
+    /// every audio packet so the producer-side hot path performs zero heap
+    /// allocations). Capacity is grown on demand and never shrunk.
+    private var deinterleaveLeftScratch: UnsafeMutableBufferPointer<Int16>?
+    private var deinterleaveRightScratch: UnsafeMutableBufferPointer<Int16>?
+    private var deinterleaveScratchCapacity: Int = 0
+
+    private func ensureDeinterleaveScratch(forFrameCount frameCount: Int) {
+        guard frameCount > deinterleaveScratchCapacity else { return }
+        deinterleaveLeftScratch?.deallocate()
+        deinterleaveRightScratch?.deallocate()
+        deinterleaveLeftScratch = UnsafeMutableBufferPointer<Int16>.allocate(capacity: frameCount)
+        deinterleaveRightScratch = UnsafeMutableBufferPointer<Int16>.allocate(capacity: frameCount)
+        deinterleaveScratchCapacity = frameCount
+    }
+
     /// Enqueue PCM samples from chiaki callback (producer side)
     /// Input: Interleaved stereo Int16 samples
     func enqueueSamples(_ data: Data, sampleCount: Int) {
-        // v10.0: Deinterleave stereo into separate L/R buffers
+        // Phase 5.16: deinterleave stereo into pre-allocated L/R scratch
+        // buffers, then push to ring buffers. Previously allocated two new
+        // [Int16] arrays + two Data copies per audio packet (~100/sec).
+        let frameCount = sampleCount / channels
+        guard frameCount > 0 else { return }
+        ensureDeinterleaveScratch(forFrameCount: frameCount)
+
+        guard let leftScratch = deinterleaveLeftScratch,
+              let rightScratch = deinterleaveRightScratch else { return }
+
         data.withUnsafeBytes { (ptr: UnsafeRawBufferPointer) in
             guard let int16Ptr = ptr.baseAddress?.assumingMemoryBound(to: Int16.self) else { return }
-            
-            let frameCount = sampleCount / channels
-            
-            // Temporary buffers for deinterleaving
-            var leftSamples = [Int16](repeating: 0, count: frameCount)
-            var rightSamples = [Int16](repeating: 0, count: frameCount)
-            
+
             // Deinterleave: LRLRLR → L L L, R R R
             for i in 0..<frameCount {
-                leftSamples[i] = int16Ptr[i * 2]
-                rightSamples[i] = int16Ptr[i * 2 + 1]
+                leftScratch[i] = int16Ptr[i * 2]
+                rightScratch[i] = int16Ptr[i * 2 + 1]
             }
-            
-            // Write to separate ring buffers
-            leftSamples.withUnsafeBytes { leftRingBuffer.write(Data($0)) }
-            rightSamples.withUnsafeBytes { rightRingBuffer.write(Data($0)) }
+
+            let bytePerChannel = frameCount * MemoryLayout<Int16>.size
+            leftRingBuffer.write(Data(bytesNoCopy: UnsafeMutableRawPointer(leftScratch.baseAddress!),
+                                      count: bytePerChannel,
+                                      deallocator: .none))
+            rightRingBuffer.write(Data(bytesNoCopy: UnsafeMutableRawPointer(rightScratch.baseAddress!),
+                                       count: bytePerChannel,
+                                       deallocator: .none))
         }
         
         // Log periodically
@@ -258,7 +284,7 @@ final class LowLatencyAudioPlayer {
         if totalSamplesProcessed % UInt64(sampleRate * 2) < UInt64(sampleCount) {
             let leftMs = Double(leftRingBuffer.availableSamples) / Double(sampleRate) * 1000
             let ratePercent = (playbackRate - 1.0) * 100
-            print("[LowLatencyAudio] Buffer L: \(String(format: "%.1f", leftMs))ms, Rate: \(String(format: "%+.2f", ratePercent))%")
+            DebugLog.print("[LowLatencyAudio] Buffer L: \(String(format: "%.1f", leftMs))ms, Rate: \(String(format: "%+.2f", ratePercent))%")
         }
         #endif
     }
@@ -267,17 +293,25 @@ final class LowLatencyAudioPlayer {
     
     private func configureAudioSession() throws {
         let session = AVAudioSession.sharedInstance()
-        
+
+        // Phase 5.15: switch from .playAndRecord/.voiceChat to .playback/.moviePlayback.
+        //   - `.voiceChat` enables AEC + AGC, which crushes the dynamic range of
+        //     game audio (transients clipped, music sounds compressed).
+        //   - `.playAndRecord` would force microphone-permission prompt on
+        //     first launch even though no voice chat is implemented.
+        //   - `.allowBluetoothHFP` is a deprecated low-quality mono codec and
+        //     is irrelevant on visionOS where Bluetooth audio routes via A2DP.
         try session.setCategory(
-            .playAndRecord,
-            mode: .voiceChat,
-            options: [.defaultToSpeaker, .allowBluetoothHFP, .mixWithOthers]
+            .playback,
+            mode: .moviePlayback,
+            options: [.mixWithOthers]
         )
-        
+
         try session.setPreferredSampleRate(Double(sampleRate))
         try session.setPreferredIOBufferDuration(0.005)  // 5ms
+
         try session.setActive(true)
-        
+
         let actualBuffer = session.ioBufferDuration * 1000
         DebugLog.info("LowLatencyAudio", "IO Buffer: \(String(format: "%.1f", actualBuffer))ms")
     }

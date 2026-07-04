@@ -56,11 +56,11 @@ struct LoginView: View {
                 try await appState.psnAuthService.exchangeCodeForToken(authCode)
                 await MainActor.run {
                     appState.isAuthenticated = true
-                    print("[LoginView] PSN login successful, accountId: \(appState.psnAuthService.userProfile?.accountId ?? "nil")")
+                    DebugLog.print("[LoginView] PSN login successful, accountId: \(appState.psnAuthService.userProfile?.accountId ?? "nil")")
                     goHome()
                 }
             } catch {
-                print("[LoginView] Failed to exchange code for token: \(error)")
+                DebugLog.print("[LoginView] Failed to exchange code for token: \(error)")
                 await MainActor.run {
                     goHome()
                 }
@@ -167,16 +167,16 @@ struct PSNWebView: UIViewRepresentable {
             
             // Log available cookies for debugging
             let cookieNames = cookies.map { $0.name }.joined(separator: ", ")
-            print("[LoginView] Available cookies: \(cookieNames)")
+            DebugLog.print("[LoginView] Available cookies: \(cookieNames)")
             
             // Look for npsso cookie
             if let npssoCookie = cookies.first(where: { $0.name.lowercased() == "npsso" }) {
-                print("[LoginView] Found NPSSO cookie: \(npssoCookie.value.prefix(20))...")
+                DebugLog.print("[LoginView] Found NPSSO cookie: \(npssoCookie.value.prefix(20))...")
                 
                 // Use NPSSO to get account ID from SSO cookie endpoint
                 await fetchAccountIdWithNPSSO(npsso: npssoCookie.value)
             } else {
-                print("[LoginView] NPSSO cookie not found, trying ssocookie endpoint...")
+                DebugLog.print("[LoginView] NPSSO cookie not found, trying ssocookie endpoint...")
                 
                 // Alternative: Try to fetch ssocookie directly using current session cookies
                 await fetchAccountIdFromSsoCookie(cookies: cookies)
@@ -185,7 +185,7 @@ struct PSNWebView: UIViewRepresentable {
         
         /// Fetch account ID using NPSSO token via proper OAuth exchange
         private func fetchAccountIdWithNPSSO(npsso: String) async {
-            print("[LoginView] Exchanging NPSSO for account ID...")
+            DebugLog.print("[LoginView] Exchanging NPSSO for account ID...")
             
             // Step 1: Exchange NPSSO for authorization code
             // Use the auth endpoint with proper scopes that include user identity
@@ -207,33 +207,33 @@ struct PSNWebView: UIViewRepresentable {
                 let (data, response) = try await URLSession.shared.data(for: request)
                 
                 guard let httpResponse = response as? HTTPURLResponse else { return }
-                print("[LoginView] NPSSO auth response status: \(httpResponse.statusCode)")
+                DebugLog.print("[LoginView] NPSSO auth response status: \(httpResponse.statusCode)")
                 
                 // Check for redirect with code
                 if httpResponse.statusCode == 302 || httpResponse.statusCode == 303,
                    let location = httpResponse.value(forHTTPHeaderField: "Location"),
                    let redirectUrl = URLComponents(string: location),
                    let code = redirectUrl.queryItems?.first(where: { $0.name == "code" })?.value {
-                    print("[LoginView] Got auth code from NPSSO exchange: \(code.prefix(20))...")
+                    DebugLog.print("[LoginView] Got auth code from NPSSO exchange: \(code.prefix(20))...")
                     
                     // Step 2: Exchange code for token
                     await exchangeCodeForAccountId(code: code)
                 } else {
                     // If no redirect, try to parse response
                     if let rawResponse = String(data: data, encoding: .utf8) {
-                        print("[LoginView] NPSSO auth response: \(rawResponse.prefix(300))...")
+                        DebugLog.print("[LoginView] NPSSO auth response: \(rawResponse.prefix(300))...")
                     }
                     
                     // Try alternative: decode the response URL
                     if let finalURL = httpResponse.url,
                        let redirectComponents = URLComponents(url: finalURL, resolvingAgainstBaseURL: false),
                        let code = redirectComponents.queryItems?.first(where: { $0.name == "code" })?.value {
-                        print("[LoginView] Got auth code from final URL: \(code.prefix(20))...")
+                        DebugLog.print("[LoginView] Got auth code from final URL: \(code.prefix(20))...")
                         await exchangeCodeForAccountId(code: code)
                     }
                 }
             } catch {
-                print("[LoginView] NPSSO auth exchange failed: \(error)")
+                DebugLog.print("[LoginView] NPSSO auth exchange failed: \(error)")
             }
         }
         
@@ -266,38 +266,38 @@ struct PSNWebView: UIViewRepresentable {
                 let (data, response) = try await URLSession.shared.data(for: request)
                 
                 guard let httpResponse = response as? HTTPURLResponse else { return }
-                print("[LoginView] Token exchange status: \(httpResponse.statusCode)")
+                DebugLog.print("[LoginView] Token exchange status: \(httpResponse.statusCode)")
                 
                 if let rawResponse = String(data: data, encoding: .utf8) {
-                    print("[LoginView] Token response: \(rawResponse.prefix(400))...")
+                    DebugLog.print("[LoginView] Token response: \(rawResponse.prefix(400))...")
                 }
                 
                 if httpResponse.statusCode == 200,
                    let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                    print("[LoginView] Token response keys: \(json.keys.joined(separator: ", "))")
+                    DebugLog.print("[LoginView] Token response keys: \(json.keys.joined(separator: ", "))")
                     
                     // Check for account_id directly
                     if let accountId = json["account_id"] as? String ?? json["accountId"] as? String {
-                        print("[LoginView] ✅ Found account_id in token response: \(accountId)")
+                        DebugLog.print("[LoginView] ✅ Found account_id in token response: \(accountId)")
                         await storeAccountId(accountId)
                         return
                     }
                     
                     // Check for id_token (JWT with user info)
                     if let idToken = json["id_token"] as? String {
-                        print("[LoginView] Found id_token, decoding...")
+                        DebugLog.print("[LoginView] Found id_token, decoding...")
                         await decodeIdTokenForAccountId(idToken)
                         return
                     }
                     
                     // Check for access_token that might be a JWT
                     if let accessToken = json["access_token"] as? String {
-                        print("[LoginView] Trying to decode access_token as JWT...")
+                        DebugLog.print("[LoginView] Trying to decode access_token as JWT...")
                         await decodeIdTokenForAccountId(accessToken)
                     }
                 }
             } catch {
-                print("[LoginView] Token exchange failed: \(error)")
+                DebugLog.print("[LoginView] Token exchange failed: \(error)")
             }
         }
         
@@ -305,7 +305,7 @@ struct PSNWebView: UIViewRepresentable {
         private func decodeIdTokenForAccountId(_ token: String) async {
             let parts = token.split(separator: ".")
             guard parts.count >= 2 else {
-                print("[LoginView] Token is not JWT format (parts: \(parts.count))")
+                DebugLog.print("[LoginView] Token is not JWT format (parts: \(parts.count))")
                 return
             }
             
@@ -320,22 +320,22 @@ struct PSNWebView: UIViewRepresentable {
             
             guard let payloadData = Data(base64Encoded: payloadBase64),
                   let json = try? JSONSerialization.jsonObject(with: payloadData) as? [String: Any] else {
-                print("[LoginView] Failed to decode JWT payload")
+                DebugLog.print("[LoginView] Failed to decode JWT payload")
                 return
             }
             
-            print("[LoginView] JWT claims: \(json.keys.sorted().joined(separator: ", "))")
+            DebugLog.print("[LoginView] JWT claims: \(json.keys.sorted().joined(separator: ", "))")
             
             // PSN uses 'sub' claim for account ID
             if let sub = json["sub"] as? String {
-                print("[LoginView] ✅ Found account ID from JWT sub: \(sub)")
+                DebugLog.print("[LoginView] ✅ Found account ID from JWT sub: \(sub)")
                 await storeAccountId(sub)
                 return
             }
             
             // Also check for explicit account_id
             if let accountId = json["account_id"] as? String ?? json["accountId"] as? String {
-                print("[LoginView] ✅ Found account_id in JWT: \(accountId)")
+                DebugLog.print("[LoginView] ✅ Found account_id in JWT: \(accountId)")
                 await storeAccountId(accountId)
             }
         }
@@ -354,20 +354,20 @@ struct PSNWebView: UIViewRepresentable {
                 let (data, response) = try await URLSession.shared.data(for: request)
                 
                 guard let httpResponse = response as? HTTPURLResponse else { return }
-                print("[LoginView] ssocookie (alt) response status: \(httpResponse.statusCode)")
+                DebugLog.print("[LoginView] ssocookie (alt) response status: \(httpResponse.statusCode)")
                 
                 if let rawResponse = String(data: data, encoding: .utf8) {
-                    print("[LoginView] ssocookie (alt) response: \(rawResponse.prefix(300))...")
+                    DebugLog.print("[LoginView] ssocookie (alt) response: \(rawResponse.prefix(300))...")
                 }
                 
                 if httpResponse.statusCode == 200, let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                     if let npsso = json["npsso"] as? String {
-                        print("[LoginView] Got NPSSO from response, using for account ID exchange...")
+                        DebugLog.print("[LoginView] Got NPSSO from response, using for account ID exchange...")
                         await fetchAccountIdWithNPSSO(npsso: npsso)
                     }
                 }
             } catch {
-                print("[LoginView] Failed to fetch ssocookie (alt): \(error)")
+                DebugLog.print("[LoginView] Failed to fetch ssocookie (alt): \(error)")
             }
         }
         
@@ -376,7 +376,7 @@ struct PSNWebView: UIViewRepresentable {
             // NPSSO might be a JWT - try to decode it
             let parts = npsso.split(separator: ".")
             guard parts.count >= 2 else {
-                print("[LoginView] NPSSO is not a JWT format")
+                DebugLog.print("[LoginView] NPSSO is not a JWT format")
                 return
             }
             
@@ -391,14 +391,14 @@ struct PSNWebView: UIViewRepresentable {
             
             guard let payloadData = Data(base64Encoded: payloadBase64),
                   let json = try? JSONSerialization.jsonObject(with: payloadData) as? [String: Any] else {
-                print("[LoginView] Failed to decode NPSSO JWT payload")
+                DebugLog.print("[LoginView] Failed to decode NPSSO JWT payload")
                 return
             }
             
-            print("[LoginView] NPSSO JWT claims: \(json.keys.sorted().joined(separator: ", "))")
+            DebugLog.print("[LoginView] NPSSO JWT claims: \(json.keys.sorted().joined(separator: ", "))")
             
             if let accountId = json["sub"] as? String ?? json["account_id"] as? String {
-                print("[LoginView] ✅ Found accountId from NPSSO: \(accountId)")
+                DebugLog.print("[LoginView] ✅ Found accountId from NPSSO: \(accountId)")
                 await storeAccountId(accountId)
             }
         }
@@ -407,7 +407,7 @@ struct PSNWebView: UIViewRepresentable {
         private func storeAccountId(_ accountId: String) async {
             await MainActor.run {
                 UserDefaults.standard.set(accountId, forKey: "psn_account_id")
-                print("[LoginView] ✅ Stored PSN Account ID: \(accountId)")
+                DebugLog.print("[LoginView] ✅ Stored PSN Account ID: \(accountId)")
             }
         }
         
@@ -421,7 +421,7 @@ struct PSNWebView: UIViewRepresentable {
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
             Task { @MainActor in
                 parent.isLoading = false
-                print("WebView navigation error: \(error.localizedDescription)")
+                DebugLog.print("WebView navigation error: \(error.localizedDescription)")
             }
         }
     }

@@ -34,6 +34,17 @@ enum DebugLog {
         #endif
     }
     
+    /// Drop-in replacement for bare `print` in app code (Phase 4.1 / 5.24):
+    /// identical call syntax, but the console I/O compiles out of Release
+    /// builds. Prefer `info`/`warning`/`error` with a tag for new code.
+    @inline(__always)
+    static func print(_ items: Any..., separator: String = " ", terminator: String = "\n") {
+        #if DEBUG
+        Swift.print(items.map { String(describing: $0) }.joined(separator: separator),
+                    terminator: terminator)
+        #endif
+    }
+
     /// Throttled log — only prints every `n` calls. Useful for per-frame stats.
     /// - Parameters:
     ///   - counter: The current frame/call counter value.

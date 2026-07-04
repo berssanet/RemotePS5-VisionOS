@@ -12,7 +12,9 @@ import RealityKit
 struct StreamingVideoWindow: View {
     @EnvironmentObject var appState: AppState
     @ObservedObject private var upscalingPipeline = UpscalingPipeline.shared
-    
+    @Environment(\.openImmersiveSpace) private var openImmersiveSpace
+    @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
+
     let console: Console
     
     var body: some View {
@@ -54,11 +56,23 @@ struct StreamingVideoWindow: View {
             // Initialize upscaling pipeline
             upscalingPipeline.initialize()
             upscalingPipeline.enable()
-            
+
             // v10.5.1: Only start streaming if not already connected
             // (e.g., when returning from VR mode, streaming is already active)
             if !appState.streamingViewModel.isConnected {
                 await appState.streamingViewModel.startStreaming(console: console)
+            }
+
+            // v12.6: hand tracking needs an open immersive space — bring up
+            // the invisible mixed HoloPad space so gestures work in WINDOWED
+            // streaming too (full VR opens its own space instead).
+            if appState.controllerMode == .handGesture,
+               !appState.isImmersiveActive, !appState.isHoloPadSpaceActive {
+                let result = await openImmersiveSpace(id: "HoloPadSpace")
+                if case .opened = result {
+                    appState.isHoloPadSpaceActive = true
+                    DebugLog.info("StreamingWindow", "🖐️ HoloPad space opened (windowed input)")
+                }
             }
         }
         .onDisappear {
@@ -67,6 +81,11 @@ struct StreamingVideoWindow: View {
             if !appState.isImmersiveActive {
                 appState.streamingViewModel.stopStreaming()
                 upscalingPipeline.disable()
+                // v12.6: tear down the companion HoloPad space with the window
+                if appState.isHoloPadSpaceActive {
+                    appState.isHoloPadSpaceActive = false
+                    Task { await dismissImmersiveSpace() }
+                }
             }
             // Note: Pipeline stays enabled for VR mode to continue processing frames
         }

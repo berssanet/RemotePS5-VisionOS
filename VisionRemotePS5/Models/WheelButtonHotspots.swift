@@ -24,10 +24,10 @@ class WheelButtonHotspotsFactory {
             let hotspot = createHotspot(for: buttonId)
             parentEntity.addChild(hotspot)
             hotspots[buttonId] = hotspot
-            print("[WheelHotspots] ✅ Created hotspot: \(buttonId.displayName)")
+            DebugLog.print("[WheelHotspots] ✅ Created hotspot: \(buttonId.displayName)")
         }
         
-        print("[WheelHotspots] 🎯 Created \(hotspots.count) total hotspots")
+        DebugLog.print("[WheelHotspots] 🎯 Created \(hotspots.count) total hotspots")
         return hotspots
     }
     
@@ -107,7 +107,7 @@ class WheelHotspotsManager: ObservableObject {
         wheelEntity = entity
         hotspots = WheelButtonHotspotsFactory.createHotspots(attachedTo: entity)
         
-        print("[WheelHotspotsManager] ✅ Attached \(hotspots.count) hotspots to wheel")
+        DebugLog.print("[WheelHotspotsManager] ✅ Attached \(hotspots.count) hotspots to wheel")
     }
     
     /// Gets the button ID from an entity name
@@ -167,6 +167,6 @@ class WheelHotspotsManager: ObservableObject {
         }
         hotspots.removeAll()
         wheelEntity = nil
-        print("[WheelHotspotsManager] 🔄 Reset")
+        DebugLog.print("[WheelHotspotsManager] 🔄 Reset")
     }
 }

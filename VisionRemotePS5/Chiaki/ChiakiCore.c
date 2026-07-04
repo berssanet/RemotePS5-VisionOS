@@ -131,9 +131,12 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_decrypt_regist_response_wrapper(
   memcpy(rpcrypt.bright, bright_key, 16);
   memcpy(rpcrypt.ambassador, ambassador_key, 16);
 
-  uint8_t *decrypted = malloc(data_size);
+  // +1 so the buffer is always NUL-terminated: the parser below relies on
+  // strstr/strchr/strlen, which must never scan past the allocation.
+  uint8_t *decrypted = malloc(data_size + 1);
   if (!decrypted)
     return CHIAKI_ERR_MEMORY;
+  decrypted[data_size] = '\0';
 
   ChiakiErrorCode err =
       chiaki_rpcrypt_decrypt(&rpcrypt, 0, encrypted_data, decrypted, data_size);
@@ -437,7 +440,7 @@ static void session_event_cb(ChiakiEvent *event, void *user) {
 
 // Custom log callback
 static void chiaki_log_cb(ChiakiLogLevel level, const char *msg, void *user) {
-  const char *level_str = "???";
+  const char *level_str;
   switch (level) {
   case CHIAKI_LOG_DEBUG:
     level_str = "DBG";
@@ -453,6 +456,9 @@ static void chiaki_log_cb(ChiakiLogLevel level, const char *msg, void *user) {
     break;
   case CHIAKI_LOG_ERROR:
     level_str = "ERR";
+    break;
+  default:
+    level_str = "???";
     break;
   }
   fprintf(stderr, "[Chiaki/%s] %s\n", level_str, msg);
@@ -598,6 +604,26 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_fullsession_start_wrapper(
   chiaki_session_set_video_sample_cb(g_active_session->session,
                                      session_video_sample_cb, g_active_session);
 
+// ABI FIX (2026-07-04): the EVENT callback suffers the SAME +944 skew as the
+// video/audio callbacks (header 592 -> library 1536, user 600 -> 1544; delta
+// identical to video 608->1552 and audio 624->1568). Without this manual
+// write the library never fires events: the session streams video but Swift
+// never sees CHIAKI_EVENT_CONNECTED, so StreamingService stays in
+// "negotiating" and ALL controller input is discarded ("Not streaming,
+// ignoring input" on device). Dual-path per skills/chiaki-abi-shim: manual
+// write at the library offset + the existing header-side setter above.
+#define LIBRARY_EVENT_CB_OFFSET 1536
+#define LIBRARY_EVENT_CB_USER_OFFSET 1544
+
+  *((ChiakiEventCallback *)(session_bytes + LIBRARY_EVENT_CB_OFFSET)) =
+      session_event_cb;
+  *((void **)(session_bytes + LIBRARY_EVENT_CB_USER_OFFSET)) =
+      g_active_session;
+  fprintf(stderr,
+          "[ChiakiCore] DEBUG ABI: event_cb manually written at library "
+          "offset %d (header offset %zu)\n",
+          LIBRARY_EVENT_CB_OFFSET, offsetof(ChiakiSession, event_cb));
+
   fprintf(stderr, "[ChiakiCore] Set callbacks with wrapper=%p as user_data\n",
           (void *)g_active_session);
 
@@ -721,7 +747,10 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_fullsession_set_controller_wrapper(
     return CHIAKI_ERR_UNINITIALIZED;
   }
 
-  ChiakiControllerState state = {0};
+  // set_idle, NOT {0}: touch ids use -1 = up; a zeroed struct registers a
+  // PHANTOM touchpad touch at (0,0) on every input packet.
+  ChiakiControllerState state;
+  chiaki_controller_state_set_idle(&state);
   state.buttons = buttons;
   state.left_x = left_x;
   state.left_y = left_y;

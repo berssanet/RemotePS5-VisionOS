@@ -108,7 +108,7 @@ public final class ChiakiBridgeService {
     
     private init() {
         // Initialize chiaki library
-        print("[ChiakiBridgeService] Initializing Chiaki C Core")
+        DebugLog.print("[ChiakiBridgeService] Initializing Chiaki C Core")
     }
     
     // MARK: - RPCrypt Functions
@@ -143,7 +143,7 @@ public final class ChiakiBridgeService {
         }
         
         guard result == CHIAKI_ERR_SUCCESS else {
-            print("[ChiakiBridgeService] RPCrypt init failed with error: \(result.rawValue)")
+            DebugLog.print("[ChiakiBridgeService] RPCrypt init failed with error: \(result.rawValue)")
             throw ChiakiBridgeError(rawValue: Int32(result.rawValue)) ?? .unknown
         }
         
@@ -166,8 +166,8 @@ public final class ChiakiBridgeService {
             ))
         }
         
-        print("[ChiakiBridgeService] ✅ Initialized RPCrypt for target: \(target)")
-        print("[ChiakiBridgeService] Bright: \(swiftRpcrypt.bright.map { String(format: "%02x", $0) }.joined())")
+        DebugLog.print("[ChiakiBridgeService] ✅ Initialized RPCrypt for target: \(target)")
+        DebugLog.print("[ChiakiBridgeService] Bright: \(swiftRpcrypt.bright.map { String(format: "%02x", $0) }.joined())")
         return swiftRpcrypt
     }
     
@@ -205,11 +205,11 @@ public final class ChiakiBridgeService {
         }
         
         guard result == CHIAKI_ERR_SUCCESS else {
-            print("[ChiakiBridgeService] Encryption failed with error: \(result.rawValue)")
+            DebugLog.print("[ChiakiBridgeService] Encryption failed with error: \(result.rawValue)")
             throw ChiakiBridgeError(rawValue: Int32(result.rawValue)) ?? .unknown
         }
         
-        print("[ChiakiBridgeService] ✅ Encrypted \(data.count) bytes with counter \(counter)")
+        DebugLog.print("[ChiakiBridgeService] ✅ Encrypted \(data.count) bytes with counter \(counter)")
         return outputData
     }
     
@@ -247,11 +247,11 @@ public final class ChiakiBridgeService {
         }
         
         guard result == CHIAKI_ERR_SUCCESS else {
-            print("[ChiakiBridgeService] Decryption failed with error: \(result.rawValue)")
+            DebugLog.print("[ChiakiBridgeService] Decryption failed with error: \(result.rawValue)")
             throw ChiakiBridgeError(rawValue: Int32(result.rawValue)) ?? .unknown
         }
         
-        print("[ChiakiBridgeService] ✅ Decrypted \(data.count) bytes with counter \(counter)")
+        DebugLog.print("[ChiakiBridgeService] ✅ Decrypted \(data.count) bytes with counter \(counter)")
         return outputData
     }
     
@@ -284,11 +284,11 @@ public final class ChiakiBridgeService {
         }
         
         guard result == CHIAKI_ERR_SUCCESS else {
-            print("[ChiakiBridgeService] Aeropause calculation failed with error: \(result.rawValue)")
+            DebugLog.print("[ChiakiBridgeService] Aeropause calculation failed with error: \(result.rawValue)")
             throw ChiakiBridgeError(rawValue: Int32(result.rawValue)) ?? .unknown
         }
         
-        print("[ChiakiBridgeService] ✅ Calculated Aeropause: \(outputAeropause.map { String(format: "%02x", $0) }.joined())")
+        DebugLog.print("[ChiakiBridgeService] ✅ Calculated Aeropause: \(outputAeropause.map { String(format: "%02x", $0) }.joined())")
         return outputAeropause
     }
 
@@ -303,7 +303,7 @@ public final class ChiakiBridgeService {
         target: ChiakiTargetSwift,
         completion: @escaping (Result<ChiakiRegisteredHostSwift, ChiakiBridgeError>) -> Void
     ) {
-        print("[ChiakiBridgeService] Starting registration with host: \(host), target: \(target)")
+        DebugLog.print("[ChiakiBridgeService] Starting registration with host: \(host), target: \(target)")
         
         // This would be implemented as:
         // 1. Create ChiakiRegistInfo struct
@@ -345,7 +345,7 @@ public final class ChiakiBridgeService {
         let key0Offset = Int(payload[0x18D] & 0x1F)
         let key1Offset = Int(payload[0] >> 3)
         
-        print("[ChiakiBridgeService] key_0_off: \(key0Offset), key_1_off: \(key1Offset)")
+        DebugLog.print("[ChiakiBridgeService] key_0_off: \(key0Offset), key_1_off: \(key1Offset)")
         
         // Step 3: Initialize RPCrypt with PIN
         let rpcrypt = try initRPCryptRegistration(
@@ -355,7 +355,7 @@ public final class ChiakiBridgeService {
             pin: pin
         )
         
-        print("[ChiakiBridgeService] Bright key: \(rpcrypt.bright.map { String(format: "%02x", $0) }.joined())")
+        DebugLog.print("[ChiakiBridgeService] Bright key: \(rpcrypt.bright.map { String(format: "%02x", $0) }.joined())")
         
         // Step 4: Generate aeropause
         let aeropause = try calculateAeropause(
@@ -364,7 +364,7 @@ public final class ChiakiBridgeService {
             ambassador: Data(rpcrypt.ambassador)
         )
         
-        print("[ChiakiBridgeService] Aeropause: \(aeropause.map { String(format: "%02x", $0) }.joined())")
+        DebugLog.print("[ChiakiBridgeService] Aeropause: \(aeropause.map { String(format: "%02x", $0) }.joined())")
         
         // Place aeropause at specific offsets
         let aeropauseBytes = [UInt8](aeropause)
@@ -388,7 +388,7 @@ public final class ChiakiBridgeService {
             throw ChiakiBridgeError.invalidData
         }
         
-        print("[ChiakiBridgeService] Inner header size: \(innerData.count)")
+        DebugLog.print("[ChiakiBridgeService] Inner header size: \(innerData.count)")
         
         // Step 6: Encrypt inner header
         let encryptedInner = try encrypt(
@@ -506,13 +506,13 @@ extension ChiakiBridgeService {
         }
         
         guard result == CHIAKI_ERR_SUCCESS else {
-            print("[ChiakiBridgeService] Native payload format failed with error: \(result.rawValue)")
+            DebugLog.print("[ChiakiBridgeService] Native payload format failed with error: \(result.rawValue)")
             throw ChiakiBridgeError(rawValue: Int32(result.rawValue)) ?? .unknown
         }
         
-        print("[ChiakiBridgeService] ✅ Native payload formatted: \(payloadSize) bytes")
-        print("[ChiakiBridgeService] Native Bright: \(brightKey.map { String(format: "%02x", $0) }.joined())")
-        print("[ChiakiBridgeService] Native Ambassador (computed): \(ambassadorKey.map { String(format: "%02x", $0) }.joined())")
+        DebugLog.print("[ChiakiBridgeService] ✅ Native payload formatted: \(payloadSize) bytes")
+        DebugLog.print("[ChiakiBridgeService] Native Bright: \(brightKey.map { String(format: "%02x", $0) }.joined())")
+        DebugLog.print("[ChiakiBridgeService] Native Ambassador (computed): \(ambassadorKey.map { String(format: "%02x", $0) }.joined())")
         
         return (Data(payloadBuffer.prefix(payloadSize)), brightKey, ambassadorKey)
     }
@@ -563,7 +563,7 @@ extension ChiakiBridgeService {
         }
         
         guard result == CHIAKI_ERR_SUCCESS else {
-            print("[ChiakiBridgeService] Response decryption failed: \(result.rawValue)")
+            DebugLog.print("[ChiakiBridgeService] Response decryption failed: \(result.rawValue)")
             throw ChiakiBridgeError(rawValue: Int32(result.rawValue)) ?? .unknown
         }
         
@@ -584,22 +584,23 @@ extension ChiakiBridgeService {
         let registKey: String
         if registKeyData.isEmpty {
             registKey = ""
-            print("[ChiakiBridgeService] RegistKey: empty")
+            DebugLog.print("[ChiakiBridgeService] RegistKey: empty")
         } else {
             registKey = registKeyData.map { String(format: "%02x", $0) }.joined()
-            print("[ChiakiBridgeService] RegistKey bytes: \(registKeyData.map { String(format: "%02x", $0) }.joined())")
+            DebugLog.print("[ChiakiBridgeService] RegistKey bytes: \(registKeyData.map { String(format: "%02x", $0) }.joined())")
         }
         
-        let serverMAC = Array(UnsafeBufferPointer(start: &hostInfo.server_mac.0, count: 6))
+        let serverMAC = withUnsafeBytes(of: hostInfo.server_mac) { Array($0.prefix(6)) }
         
+        let nicknameFieldSize = MemoryLayout.size(ofValue: hostInfo.server_nickname)  // char[0x20] in regist.h
         let nickname = withUnsafePointer(to: &hostInfo.server_nickname) { ptr -> String in
             let cstr = UnsafeRawPointer(ptr).assumingMemoryBound(to: CChar.self)
             var len = 0
-            while len < 128 && cstr[len] != 0 { len += 1 }
+            while len < nicknameFieldSize && cstr[len] != 0 { len += 1 }
             return String(bytes: UnsafeBufferPointer(start: UnsafePointer<UInt8>(OpaquePointer(cstr)), count: len), encoding: .utf8) ?? ""
         }
         
-        print("[ChiakiBridgeService] ✅ Decrypted response - Nickname: \(nickname), RP-Key: \(rpKey.map { String(format: "%02x", $0) }.joined())")
+        DebugLog.print("[ChiakiBridgeService] ✅ Decrypted response - Nickname: \(nickname), RP-Key: \(rpKey.map { String(format: "%02x", $0) }.joined())")
         
         return RegisteredHostInfo(
             rpKey: rpKey,
@@ -645,10 +646,10 @@ extension ChiakiBridgeService {
         var registKeyPadded = Data(count: 16)
         registKeyPadded.replaceSubrange(0..<min(registKey.count, 16), with: registKey.prefix(16))
         
-        print("[ChiakiBridgeService] Generating session headers...")
-        print("[ChiakiBridgeService] Nonce: \(nonce.map { String(format: "%02x", $0) }.joined())")
-        print("[ChiakiBridgeService] RP-Key: \(rpKey.map { String(format: "%02x", $0) }.joined())")
-        print("[ChiakiBridgeService] RegistKey: \(registKeyPadded.map { String(format: "%02x", $0) }.joined())")
+        DebugLog.print("[ChiakiBridgeService] Generating session headers...")
+        DebugLog.print("[ChiakiBridgeService] Nonce: \(nonce.map { String(format: "%02x", $0) }.joined())")
+        DebugLog.print("[ChiakiBridgeService] RP-Key: \(rpKey.map { String(format: "%02x", $0) }.joined())")
+        DebugLog.print("[ChiakiBridgeService] RegistKey: \(registKeyPadded.map { String(format: "%02x", $0) }.joined())")
         
         // Allocate output buffers
         var rpAuthBuffer = [Int8](repeating: 0, count: 64)
@@ -676,7 +677,7 @@ extension ChiakiBridgeService {
         }
         
         if result != CHIAKI_ERR_SUCCESS {
-            print("[ChiakiBridgeService] ❌ Failed to generate session headers: \(result.rawValue)")
+            DebugLog.print("[ChiakiBridgeService] ❌ Failed to generate session headers: \(result.rawValue)")
             throw ChiakiBridgeError(rawValue: Int32(result.rawValue)) ?? .unknown
         }
         
@@ -684,10 +685,10 @@ extension ChiakiBridgeService {
         let rpDid = String(cString: rpDidBuffer)
         let rpOsType = String(cString: rpOsTypeBuffer)
         
-        print("[ChiakiBridgeService] ✅ Basic headers generated")
-        print("[ChiakiBridgeService] RP-Auth: \(rpAuth)")
-        print("[ChiakiBridgeService] RP-Did: \(rpDid)")
-        print("[ChiakiBridgeService] RP-OSType: \(rpOsType)")
+        DebugLog.print("[ChiakiBridgeService] ✅ Basic headers generated")
+        DebugLog.print("[ChiakiBridgeService] RP-Auth: \(rpAuth)")
+        DebugLog.print("[ChiakiBridgeService] RP-Did: \(rpDid)")
+        DebugLog.print("[ChiakiBridgeService] RP-OSType: \(rpOsType)")
         
         // Generate RP-StartBitrate (required for PS5, counter 3)
         var rpStartBitrateBuffer = [Int8](repeating: 0, count: 32)
@@ -697,7 +698,7 @@ extension ChiakiBridgeService {
         )
         
         if bitrateResult != CHIAKI_ERR_SUCCESS {
-            print("[ChiakiBridgeService] ❌ Failed to generate bitrate: \(bitrateResult.rawValue)")
+            DebugLog.print("[ChiakiBridgeService] ❌ Failed to generate bitrate: \(bitrateResult.rawValue)")
             throw ChiakiBridgeError(rawValue: Int32(bitrateResult.rawValue)) ?? .unknown
         }
         
@@ -711,14 +712,14 @@ extension ChiakiBridgeService {
         )
         
         if streamResult2 != CHIAKI_ERR_SUCCESS {
-            print("[ChiakiBridgeService] ❌ Failed to generate streaming type: \(streamResult2.rawValue)")
+            DebugLog.print("[ChiakiBridgeService] ❌ Failed to generate streaming type: \(streamResult2.rawValue)")
             throw ChiakiBridgeError(rawValue: Int32(streamResult2.rawValue)) ?? .unknown
         }
         
         let rpStreamingTypeFinal = String(cString: rpStreamingTypeBuffer2)
         
-        print("[ChiakiBridgeService] RP-StartBitrate: \(rpStartBitrate)")
-        print("[ChiakiBridgeService] RP-StreamingType (final): \(rpStreamingTypeFinal)")
+        DebugLog.print("[ChiakiBridgeService] RP-StartBitrate: \(rpStartBitrate)")
+        DebugLog.print("[ChiakiBridgeService] RP-StreamingType (final): \(rpStreamingTypeFinal)")
         
         return SessionHeaders(
             rpAuth: rpAuth,
@@ -732,7 +733,7 @@ extension ChiakiBridgeService {
     /// Reset session crypto state
     public func resetSessionCrypto() {
         chiaki_session_crypto_reset_wrapper()
-        print("[ChiakiBridgeService] Session crypto reset")
+        DebugLog.print("[ChiakiBridgeService] Session crypto reset")
     }
 }
 

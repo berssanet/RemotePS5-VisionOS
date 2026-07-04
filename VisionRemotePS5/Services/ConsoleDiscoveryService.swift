@@ -76,12 +76,12 @@ final class ConsoleDiscoveryService: ObservableObject {
     
     init(configuration: DiscoveryConfiguration = .default) {
         self.configuration = configuration
-        print("[Discovery] Service initialized")
+        DebugLog.print("[Discovery] Service initialized")
     }
     
     deinit {
         discoveryTask?.cancel()
-        print("[Discovery] Service deinitialized")
+        DebugLog.print("[Discovery] Service deinitialized")
     }
     
     // MARK: - Public API
@@ -90,7 +90,7 @@ final class ConsoleDiscoveryService: ObservableObject {
     /// This method returns immediately; discovery runs asynchronously in the background.
     func startDiscovery() {
         guard state != .searching else {
-            print("[Discovery] Already searching")
+            DebugLog.print("[Discovery] Already searching")
             return
         }
         
@@ -98,7 +98,7 @@ final class ConsoleDiscoveryService: ObservableObject {
         statusMessage = "Searching for PlayStation consoles..."
         discoveredConsoles = []
         
-        print("[Discovery] Starting DDP discovery...")
+        DebugLog.print("[Discovery] Starting DDP discovery...")
         
         // Launch discovery in a detached task to ensure UI never blocks
         discoveryTask = Task.detached(priority: .userInitiated) { [weak self] in
@@ -118,7 +118,7 @@ final class ConsoleDiscoveryService: ObservableObject {
         discoveryTask = nil
         state = .idle
         statusMessage = "Search stopped"
-        print("[Discovery] Discovery stopped")
+        DebugLog.print("[Discovery] Discovery stopped")
     }
     
     /// Clear all discovered consoles and reset state.
@@ -126,7 +126,7 @@ final class ConsoleDiscoveryService: ObservableObject {
         stopDiscovery()
         discoveredConsoles.removeAll()
         statusMessage = ""
-        print("[Discovery] Cache cleared")
+        DebugLog.print("[Discovery] Cache cleared")
     }
     
     /// Add a console manually (for testing or manual pairing).
@@ -154,7 +154,7 @@ final class ConsoleDiscoveryService: ObservableObject {
     /// Performs the actual discovery. Runs entirely off the main thread.
     private nonisolated func performDiscovery() async -> [Console] {
         let broadcastAddresses = getBroadcastAddresses() + ["255.255.255.255"]
-        print("[Discovery] Probing \(broadcastAddresses.count) broadcast addresses")
+        DebugLog.print("[Discovery] Probing \(broadcastAddresses.count) broadcast addresses")
         
         // Use TaskGroup for concurrent probing with automatic cancellation handling
         let consoles = await withTaskGroup(of: Console?.self, returning: [Console].self) { group in
@@ -200,7 +200,7 @@ final class ConsoleDiscoveryService: ObservableObject {
                 if !seenIPs.contains(console.ipAddress) {
                     seenIPs.insert(console.ipAddress)
                     discovered.append(console)
-                    print("[Discovery] Found: \(console.name) at \(console.ipAddress)")
+                    DebugLog.print("[Discovery] Found: \(console.name) at \(console.ipAddress)")
                 }
             }
             
@@ -252,7 +252,7 @@ final class ConsoleDiscoveryService: ObservableObject {
                     case .failed(let error):
                         if resumed.setIfFalse() {
                             timeoutTask.cancel()
-                            print("[Discovery] Probe failed to \(address):\(port) - \(error)")
+                            DebugLog.print("[Discovery] Probe failed to \(address):\(port) - \(error)")
                             continuation.resume(returning: nil)
                         }
                         
@@ -288,7 +288,7 @@ final class ConsoleDiscoveryService: ObservableObject {
                 if resumed.setIfFalse() {
                     timeoutTask.cancel()
                     connection.cancel()
-                    print("[Discovery] Send error to \(address): \(error)")
+                    DebugLog.print("[Discovery] Send error to \(address): \(error)")
                     continuation.resume(returning: nil)
                 }
                 return
@@ -302,7 +302,7 @@ final class ConsoleDiscoveryService: ObservableObject {
                 guard resumed.setIfFalse() else { return }
                 
                 if let error = error {
-                    print("[Discovery] Receive error from \(address): \(error)")
+                    DebugLog.print("[Discovery] Receive error from \(address): \(error)")
                     continuation.resume(returning: nil)
                     return
                 }
@@ -331,7 +331,7 @@ final class ConsoleDiscoveryService: ObservableObject {
             statusMessage = "Found \(consoles.count) console(s)"
         }
         
-        print("[Discovery] Completed - found \(consoles.count) consoles")
+        DebugLog.print("[Discovery] Completed - found \(consoles.count) consoles")
     }
     
     // MARK: - Private: Response Parsing

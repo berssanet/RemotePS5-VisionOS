@@ -36,7 +36,7 @@ final class WakeOnLanService {
     // MARK: - Initialization
     
     private init() {
-        print("[WakeOnLan] Service initialized (PS5 WAKEUP protocol)")
+        DebugLog.print("[WakeOnLan] Service initialized (PS5 WAKEUP protocol)")
     }
     
     // MARK: - Public Methods
@@ -52,14 +52,14 @@ final class WakeOnLanService {
         // Convert registKey to user_credential (interpret bytes as hex number)
         let userCredential = registKeyToCredential(registKey)
         
-        print("[WakeOnLan] Sending WAKEUP to \(host) | isPS5=\(isPS5) | credential=\(String(format: "%llx", userCredential))")
+        DebugLog.print("[WakeOnLan] Sending WAKEUP to \(host) | isPS5=\(isPS5) | credential=\(String(format: "%llx", userCredential))")
         
         // Build WAKEUP packet (HTTP-like format as per chiaki_discovery_packet_fmt)
         let protocolVersion = isPS5 ? ps5ProtocolVersion : ps4ProtocolVersion
         let packet = buildWakeupPacket(userCredential: userCredential, protocolVersion: protocolVersion)
         
         guard let packetData = packet.data(using: .utf8) else {
-            print("[WakeOnLan] ❌ Failed to encode WAKEUP packet")
+            DebugLog.print("[WakeOnLan] ❌ Failed to encode WAKEUP packet")
             return false
         }
         
@@ -71,9 +71,9 @@ final class WakeOnLanService {
         let success = await sendUDPPacket(dataWithNull, to: host, port: port)
         
         if success {
-            print("[WakeOnLan] ✅ WAKEUP packet sent to \(host):\(port)")
+            DebugLog.print("[WakeOnLan] ✅ WAKEUP packet sent to \(host):\(port)")
         } else {
-            print("[WakeOnLan] ❌ Failed to send WAKEUP packet")
+            DebugLog.print("[WakeOnLan] ❌ Failed to send WAKEUP packet")
         }
         
         return success
@@ -84,7 +84,7 @@ final class WakeOnLanService {
     func wakeConsole(_ console: Console) async -> Bool {
         // Check if we have registration key (required for PS5 wakeup)
         guard let registKeyString = console.registKey, !registKeyString.isEmpty else {
-            print("[WakeOnLan] ❌ Console \(console.name) has no registration key (required for wakeup)")
+            DebugLog.print("[WakeOnLan] ❌ Console \(console.name) has no registration key (required for wakeup)")
             // Fallback: try traditional WoL if we have MAC address (for PS4 compatibility)
             return await wakeConsoleTraditional(console)
         }
@@ -92,7 +92,7 @@ final class WakeOnLanService {
         // chiaki-ng expects the registKey as a hex STRING, not as bytes!
         // Example: registKey = "12345678" -> credential = strtoull("12345678", NULL, 16) = 0x12345678
         guard let registKeyData = registKeyString.data(using: .utf8) else {
-            print("[WakeOnLan] ❌ Invalid registration key encoding")
+            DebugLog.print("[WakeOnLan] ❌ Invalid registration key encoding")
             return false
         }
         
@@ -111,7 +111,7 @@ final class WakeOnLanService {
                     return await sendMagicPacket(macAddress: parsed)
                 }
             }
-            print("[WakeOnLan] ❌ No valid MAC address for traditional WoL")
+            DebugLog.print("[WakeOnLan] ❌ No valid MAC address for traditional WoL")
             return false
         }
         return await sendMagicPacket(macAddress: mac)
@@ -181,37 +181,35 @@ final class WakeOnLanService {
         let connection = NWConnection(host: host, port: nwPort, using: params)
         
         return await withCheckedContinuation { continuation in
-            var resumed = false
-            
+            let gate = ContinuationGate()
+
             connection.stateUpdateHandler = { state in
                 switch state {
                 case .ready:
                     connection.send(content: data, completion: .contentProcessed { error in
                         connection.cancel()
-                        guard !resumed else { return }
-                        resumed = true
+                        guard gate.tryResume() else { return }
                         if let error = error {
-                            print("[WakeOnLan] Send error to \(address):\(port): \(error)")
+                            DebugLog.print("[WakeOnLan] Send error to \(address):\(port): \(error)")
                             continuation.resume(returning: false)
                         } else {
                             continuation.resume(returning: true)
                         }
                     })
-                    
+
                 case .failed(let error):
-                    guard !resumed else { return }
-                    resumed = true
-                    print("[WakeOnLan] Connection failed to \(address):\(port): \(error)")
+                    guard gate.tryResume() else { return }
+                    DebugLog.print("[WakeOnLan] Connection failed to \(address):\(port): \(error)")
                     continuation.resume(returning: false)
-                    
+
                 case .cancelled:
                     break
-                    
+
                 default:
                     break
                 }
             }
-            
+
             connection.start(queue: DispatchQueue.global(qos: .utility))
         }
     }

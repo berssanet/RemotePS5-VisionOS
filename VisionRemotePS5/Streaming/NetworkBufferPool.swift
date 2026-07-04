@@ -204,7 +204,7 @@ final class NetworkBufferPool: @unchecked Sendable {
             _allocCount += 1
         }
         
-        print("[NetworkBufferPool] ✅ Initialized \(poolSize) × \(bufferSize/1024)KB buffers")
+        DebugLog.print("[NetworkBufferPool] ✅ Initialized \(poolSize) × \(bufferSize/1024)KB buffers")
     }
     
     deinit {
@@ -232,11 +232,11 @@ final class NetworkBufferPool: @unchecked Sendable {
         if _allocCount < maxPoolSize * 2 {
             _allocCount += 1
             let buffer = NetworkBuffer(capacity: bufferSize, pool: self)
-            print("[NetworkBufferPool] ⚠️ Pool miss, allocated new buffer (total: \(_allocCount))")
+            DebugLog.print("[NetworkBufferPool] ⚠️ Pool miss, allocated new buffer (total: \(_allocCount))")
             return buffer
         }
         
-        print("[NetworkBufferPool] ❌ Pool exhausted!")
+        DebugLog.print("[NetworkBufferPool] ❌ Pool exhausted!")
         return nil
     }
     
@@ -320,7 +320,7 @@ final class ZeroCopyAESGCMDecryptor: @unchecked Sendable {
         os_unfair_lock_unlock(keyLock)
         
         if newKey != nil {
-            print("[ZeroCopyDecryptor] ✅ Key set")
+            DebugLog.print("[ZeroCopyDecryptor] ✅ Key set")
         }
     }
     

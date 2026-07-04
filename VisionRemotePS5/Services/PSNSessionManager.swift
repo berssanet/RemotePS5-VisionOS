@@ -30,19 +30,19 @@ class PSNSessionManager: ObservableObject {
     
     private func setupWebSocketCallbacks() {
         webSocketService.onSessionCreated = { [weak self] (sessionId: String) in
-            print("[PSNSession] WebSocket: Session created with ID: \(sessionId)")
+            DebugLog.print("[PSNSession] WebSocket: Session created with ID: \(sessionId)")
             self?.currentSessionId = sessionId
             self?.sessionCreatedContinuation?.resume(returning: sessionId)
             self?.sessionCreatedContinuation = nil
         }
         
         webSocketService.onMemberCreated = { [weak self] () in
-            print("[PSNSession] WebSocket: Member created")
+            DebugLog.print("[PSNSession] WebSocket: Member created")
             _ = self  // Silence warning
         }
         
         webSocketService.onSessionMessage = { (message: [String: Any]) in
-            print("[PSNSession] WebSocket: Session message received")
+            DebugLog.print("[PSNSession] WebSocket: Session message received")
         }
     }
     
@@ -65,7 +65,7 @@ class PSNSessionManager: ObservableObject {
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         
-        print("[PSNSession] Listing devices...")
+        DebugLog.print("[PSNSession] Listing devices...")
         
         let (data, response) = try await URLSession.shared.data(for: request)
         
@@ -73,10 +73,10 @@ class PSNSessionManager: ObservableObject {
             throw PSNSessionError.invalidResponse
         }
         
-        print("[PSNSession] List devices status: \(httpResponse.statusCode)")
+        DebugLog.print("[PSNSession] List devices status: \(httpResponse.statusCode)")
         
         if let responseStr = String(data: data, encoding: .utf8) {
-            print("[PSNSession] Response: \(responseStr.prefix(500))")
+            DebugLog.print("[PSNSession] Response: \(responseStr.prefix(500))")
         }
         
         if httpResponse.statusCode == 401 {
@@ -93,7 +93,7 @@ class PSNSessionManager: ObservableObject {
         let devicesResponse = try JSONDecoder().decode(PSNDevicesResponse.self, from: data)
         devices = devicesResponse.clients ?? []
         
-        print("[PSNSession] Found \(devices.count) devices")
+        DebugLog.print("[PSNSession] Found \(devices.count) devices")
         return devices
     }
     
@@ -110,10 +110,10 @@ class PSNSessionManager: ObservableObject {
         
         // Step 1: Connect WebSocket FIRST (required before HTTP session creation)
         if !webSocketService.isConnected {
-            print("[PSNSession] Connecting WebSocket before session creation...")
+            DebugLog.print("[PSNSession] Connecting WebSocket before session creation...")
             try await webSocketService.connect(accessToken: accessToken)
             isWebSocketConnected = true
-            print("[PSNSession] ✅ WebSocket connected!")
+            DebugLog.print("[PSNSession] ✅ WebSocket connected!")
         }
         
         // Use the pushContextId from WebSocket service
@@ -152,11 +152,11 @@ class PSNSessionManager: ObservableObject {
         
         request.httpBody = try JSONSerialization.data(withJSONObject: sessionJson)
         
-        print("[PSNSession] Creating session for device: \(device.name ?? device.deviceId)")
-        print("[PSNSession] Using pushContextId: \(pushContextId)")
-        print("[PSNSession] Token (first 20 chars): \(String(accessToken.prefix(20)))...")
+        DebugLog.print("[PSNSession] Creating session for device: \(device.name ?? device.deviceId)")
+        DebugLog.print("[PSNSession] Using pushContextId: \(pushContextId)")
+        DebugLog.print("[PSNSession] Token (first 20 chars): \(String(accessToken.prefix(20)))...")
         if let bodyStr = String(data: request.httpBody ?? Data(), encoding: .utf8) {
-            print("[PSNSession] Request body: \(bodyStr)")
+            DebugLog.print("[PSNSession] Request body: \(bodyStr)")
         }
         
         // Step 2: Send HTTP session creation request
@@ -166,10 +166,10 @@ class PSNSessionManager: ObservableObject {
             throw PSNSessionError.invalidResponse
         }
         
-        print("[PSNSession] Create session status: \(httpResponse.statusCode)")
+        DebugLog.print("[PSNSession] Create session status: \(httpResponse.statusCode)")
         
         if let responseStr = String(data: data, encoding: .utf8) {
-            print("[PSNSession] Create session response: \(responseStr.prefix(500))")
+            DebugLog.print("[PSNSession] Create session response: \(responseStr.prefix(500))")
         }
         
         if httpResponse.statusCode == 401 {
@@ -190,14 +190,14 @@ class PSNSessionManager: ObservableObject {
            let sessions = json["remotePlaySessions"] as? [[String: Any]],
            let firstSession = sessions.first,
            let sessionId = firstSession["sessionId"] as? String {
-            print("[PSNSession] ✅ Session created: \(sessionId)")
+            DebugLog.print("[PSNSession] ✅ Session created: \(sessionId)")
             currentSessionId = sessionId
             return PSNSession(sessionId: sessionId, status: "created", createdAt: nil)
         }
         
         // Try standard decode as fallback
         let session = try JSONDecoder().decode(PSNSession.self, from: data)
-        print("[PSNSession] ✅ Session created: \(session.sessionId ?? "N/A")")
+        DebugLog.print("[PSNSession] ✅ Session created: \(session.sessionId ?? "N/A")")
         currentSessionId = session.sessionId
         
         return session
@@ -241,7 +241,7 @@ class PSNSessionManager: ObservableObject {
         
         request.httpBody = try JSONSerialization.data(withJSONObject: commandJson)
         
-        print("[PSNSession] Sending remotePlay command to device")
+        DebugLog.print("[PSNSession] Sending remotePlay command to device")
         
         let (data, response) = try await URLSession.shared.data(for: request)
         
@@ -249,10 +249,10 @@ class PSNSessionManager: ObservableObject {
             throw PSNSessionError.invalidResponse
         }
         
-        print("[PSNSession] Command status: \(httpResponse.statusCode)")
+        DebugLog.print("[PSNSession] Command status: \(httpResponse.statusCode)")
         
         if let responseStr = String(data: data, encoding: .utf8) {
-            print("[PSNSession] Command response: \(responseStr.prefix(500))")
+            DebugLog.print("[PSNSession] Command response: \(responseStr.prefix(500))")
         }
     }
     
@@ -280,7 +280,7 @@ class PSNSessionManager: ObservableObject {
         
         request.httpBody = try JSONEncoder().encode(startRequest)
         
-        print("[PSNSession] Starting session: \(sessionId)")
+        DebugLog.print("[PSNSession] Starting session: \(sessionId)")
         
         let (data, response) = try await URLSession.shared.data(for: request)
         
@@ -288,7 +288,7 @@ class PSNSessionManager: ObservableObject {
             throw PSNSessionError.invalidResponse
         }
         
-        print("[PSNSession] Start session status: \(httpResponse.statusCode)")
+        DebugLog.print("[PSNSession] Start session status: \(httpResponse.statusCode)")
         
         guard httpResponse.statusCode == 200 else {
             let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
@@ -296,7 +296,7 @@ class PSNSessionManager: ObservableObject {
         }
         
         let startResponse = try JSONDecoder().decode(PSNSessionStartResponse.self, from: data)
-        print("[PSNSession] ✅ Session started successfully")
+        DebugLog.print("[PSNSession] ✅ Session started successfully")
         
         return startResponse
     }
@@ -314,7 +314,7 @@ class PSNSessionManager: ObservableObject {
         request.httpMethod = "DELETE"
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         
-        print("[PSNSession] Deleting session: \(sessionId)")
+        DebugLog.print("[PSNSession] Deleting session: \(sessionId)")
         
         let (_, response) = try await URLSession.shared.data(for: request)
         
@@ -323,7 +323,7 @@ class PSNSessionManager: ObservableObject {
             throw PSNSessionError.sessionDeleteFailed
         }
         
-        print("[PSNSession] ✅ Session deleted")
+        DebugLog.print("[PSNSession] ✅ Session deleted")
     }
     
     // MARK: - DUID Generation

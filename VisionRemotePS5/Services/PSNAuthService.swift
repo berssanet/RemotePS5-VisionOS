@@ -3,12 +3,21 @@ import Security
 
 // MARK: - PSN Auth Constants
 
+/// PSN OAuth constants. Phase 5.19: secrets are sourced from Info.plist
+/// (`PSNClientID`, `PSNClientSecret`) which are populated at build time from
+/// `Local.xcconfig` (gitignored) — never hardcoded in source. The app falls back
+/// to empty strings if missing, which causes login to fail loudly rather than
+/// shipping someone else's PSN client.
 struct PSNAuthConstants {
-    static let clientID = "ba495a24-818c-472b-b12d-ff231c1b5745"
-    static let clientSecret = "mvaiZkRsAsI1IBkY"
+    static var clientID: String {
+        return (Bundle.main.object(forInfoDictionaryKey: "PSNClientID") as? String) ?? ""
+    }
+    static var clientSecret: String {
+        return (Bundle.main.object(forInfoDictionaryKey: "PSNClientSecret") as? String) ?? ""
+    }
     static let tokenURL = "https://auth.api.sonyentertainmentnetwork.com/2.0/oauth/token"
     static let redirectURI = "https://remoteplay.dl.playstation.net/remoteplay/redirect"
-    
+
     static let scopes = [
         "psn:clientapp",
         "referenceDataService:countryConfig.read",
@@ -66,10 +75,13 @@ class PSNAuthService: ObservableObject {
         static var profileURL: URL { URL(string: "\(profileBase)/api/basicProfile/v1/profile/users/me")! }
     }
     
+    /// Phase 5.19: collapsed to a thin alias over `PSNAuthConstants` so there
+    /// is a single source of truth and the literal secret string never appears
+    /// in the binary.
     private enum ClientCredentials {
-        static let clientId = "ba495a24-818c-472b-b12d-ff231c1b5745"
-        static let clientSecret = "mvaiZkRsAsI1IBkY"
-        static let redirectURI = "https://remoteplay.dl.playstation.net/remoteplay/redirect"
+        static var clientId: String { PSNAuthConstants.clientID }
+        static var clientSecret: String { PSNAuthConstants.clientSecret }
+        static var redirectURI: String { PSNAuthConstants.redirectURI }
     }
     
     // MARK: - Initialization
@@ -99,7 +111,7 @@ class PSNAuthService: ObservableObject {
             // Try to extract user profile from JWT, then fallback to API
             await loadUserProfile(from: tokenResponse.accessToken)
             
-            print("[PSNAuth] ✅ Authentication successful")
+            DebugLog.print("[PSNAuth] ✅ Authentication successful")
             
         } catch let error as PSNAuthError {
             lastError = error
@@ -121,7 +133,7 @@ class PSNAuthService: ObservableObject {
         do {
             let tokenResponse = try await performTokenRefresh(refreshToken: refreshToken)
             try await storeTokens(tokenResponse)
-            print("[PSNAuth] ✅ Token refreshed successfully")
+            DebugLog.print("[PSNAuth] ✅ Token refreshed successfully")
             
         } catch {
             // Refresh failed - sign out and require re-authentication
@@ -141,7 +153,7 @@ class PSNAuthService: ObservableObject {
         try? keychainDelete(key: KeychainKeys.refreshToken)
         try? keychainDelete(key: KeychainKeys.tokenExpiry)
         
-        print("[PSNAuth] Signed out")
+        DebugLog.print("[PSNAuth] Signed out")
     }
     
     /// Get the current access token, refreshing if expired.
@@ -199,7 +211,7 @@ class PSNAuthService: ObservableObject {
         
         // Debug logging
         if let rawResponse = String(data: data, encoding: .utf8) {
-            print("[PSNAuth] Token response (\(httpResponse.statusCode)): \(rawResponse.prefix(300))...")
+            DebugLog.print("[PSNAuth] Token response (\(httpResponse.statusCode)): \(rawResponse.prefix(300))...")
         }
         
         guard httpResponse.statusCode == 200 else {
@@ -256,7 +268,7 @@ class PSNAuthService: ObservableObject {
         do {
             userProfile = try await fetchUserProfileFromAPI()
         } catch {
-            print("[PSNAuth] Profile fetch failed: \(error.localizedDescription)")
+            DebugLog.print("[PSNAuth] Profile fetch failed: \(error.localizedDescription)")
         }
     }
     
@@ -274,7 +286,7 @@ class PSNAuthService: ObservableObject {
             throw PSNAuthError.invalidResponse
         }
         
-        print("[PSNAuth] Profile response status: \(httpResponse.statusCode)")
+        DebugLog.print("[PSNAuth] Profile response status: \(httpResponse.statusCode)")
         
         guard httpResponse.statusCode == 200 else {
             throw PSNAuthError.httpError(statusCode: httpResponse.statusCode)
@@ -306,7 +318,7 @@ class PSNAuthService: ObservableObject {
             throw PSNAuthError.profileNotFound
         }
         
-        print("[PSNAuth] ✅ Profile parsed - onlineId: \(finalOnlineId)")
+        DebugLog.print("[PSNAuth] ✅ Profile parsed - onlineId: \(finalOnlineId)")
         return PSNUserProfile(onlineId: finalOnlineId, accountId: finalAccountId)
     }
     
@@ -335,7 +347,7 @@ class PSNAuthService: ObservableObject {
                 return nil
             }
             
-            print("[PSNAuth] ✅ Extracted profile from JWT - accountId: \(accountId)")
+            DebugLog.print("[PSNAuth] ✅ Extracted profile from JWT - accountId: \(accountId)")
             return PSNUserProfile(onlineId: onlineId ?? "PSN User", accountId: accountId)
             
         } catch {

@@ -92,7 +92,7 @@ final class VideoTextureCoordinator: @unchecked Sendable {
     
     private func setupMetal() {
         guard let device = MTLCreateSystemDefaultDevice() else {
-            print("[VideoTextureCoordinator] ❌ No Metal device")
+            DebugLog.print("[VideoTextureCoordinator] ❌ No Metal device")
             return
         }
         self.device = device
@@ -113,9 +113,9 @@ final class VideoTextureCoordinator: @unchecked Sendable {
         
         if status == kCVReturnSuccess, let cache = cache {
             self.textureCache = cache
-            print("[VideoTextureCoordinator] ✅ Metal initialized (HDR: bgra10_xr, MTLEvent enabled)")
+            DebugLog.print("[VideoTextureCoordinator] ✅ Metal initialized (HDR: bgra10_xr, MTLEvent enabled)")
         } else {
-            print("[VideoTextureCoordinator] ⚠️ Failed to create texture cache: \(status)")
+            DebugLog.print("[VideoTextureCoordinator] ⚠️ Failed to create texture cache: \(status)")
         }
     }
     
@@ -140,7 +140,7 @@ final class VideoTextureCoordinator: @unchecked Sendable {
         
         videoEntity = entity
         
-        print("[VideoTextureCoordinator] ✅ Entity created: \(width)x\(height)")
+        DebugLog.print("[VideoTextureCoordinator] ✅ Entity created: \(width)x\(height)")
         
         return entity
     }
@@ -151,7 +151,7 @@ final class VideoTextureCoordinator: @unchecked Sendable {
     func updateTexture(from pixelBuffer: CVPixelBuffer) {
         guard let textureCache = textureCache,
               let device = device else {
-            print("[VideoTextureCoordinator] ❌ No texture cache or device")
+            DebugLog.print("[VideoTextureCoordinator] ❌ No texture cache or device")
             return
         }
         
@@ -177,7 +177,7 @@ final class VideoTextureCoordinator: @unchecked Sendable {
             // Check IOSurface backing - CRITICAL for Metal compatibility
             let ioSurface = CVPixelBufferGetIOSurface(pixelBuffer)
             let hasIOSurface = ioSurface != nil
-            print("[VideoTextureCoordinator] 📥 First frame: \(width)x\(height) format=\(formatStr) IOSurface=\(hasIOSurface ? "YES" : "NO")")
+            DebugLog.print("[VideoTextureCoordinator] 📥 First frame: \(width)x\(height) format=\(formatStr) IOSurface=\(hasIOSurface ? "YES" : "NO")")
         }
         
         // CRITICAL: CVMetalTextureCacheCreateTextureFromImage ONLY supports bgra8Unorm for BGRA buffers!
@@ -186,7 +186,7 @@ final class VideoTextureCoordinator: @unchecked Sendable {
         case kCVPixelFormatType_32BGRA:
             metalFormat = .bgra8Unorm
         default:
-            print("[VideoTextureCoordinator] ⚠️ Unsupported format, expected BGRA")
+            DebugLog.print("[VideoTextureCoordinator] ⚠️ Unsupported format, expected BGRA")
             return
         }
         
@@ -209,7 +209,7 @@ final class VideoTextureCoordinator: @unchecked Sendable {
            let metalTexture = CVMetalTextureGetTexture(cvTexture) {
             // Fast path: Zero-copy Metal texture
             if shouldLog {
-                print("[VideoTextureCoordinator] ✅ Zero-copy CVMetalTexture created")
+                DebugLog.print("[VideoTextureCoordinator] ✅ Zero-copy CVMetalTexture created")
             }
             updateTexture(from: metalTexture)
             return
@@ -217,7 +217,7 @@ final class VideoTextureCoordinator: @unchecked Sendable {
         
         // Fallback: Manual copy to Metal texture (slower but always works)
         if shouldLog {
-            print("[VideoTextureCoordinator] ⚠️ CVMetalTexture failed (\(status)), using manual copy fallback")
+            DebugLog.print("[VideoTextureCoordinator] ⚠️ CVMetalTexture failed (\(status)), using manual copy fallback")
         }
         
         // Lock pixel buffer for CPU access
@@ -226,7 +226,7 @@ final class VideoTextureCoordinator: @unchecked Sendable {
         
         guard let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else {
             if shouldLog {
-                print("[VideoTextureCoordinator] ❌ Failed to get pixel buffer base address")
+                DebugLog.print("[VideoTextureCoordinator] ❌ Failed to get pixel buffer base address")
             }
             return
         }
@@ -246,7 +246,7 @@ final class VideoTextureCoordinator: @unchecked Sendable {
             descriptor.storageMode = .shared
             fallbackTexture = device.makeTexture(descriptor: descriptor)
             if shouldLog {
-                print("[VideoTextureCoordinator] 📦 Created fallback texture: \(width)x\(height)")
+                DebugLog.print("[VideoTextureCoordinator] 📦 Created fallback texture: \(width)x\(height)")
             }
         }
         lock.unlock()
@@ -327,7 +327,7 @@ final class VideoTextureCoordinator: @unchecked Sendable {
         
         // Debug log every 60 frames
         if Self.updateCounter % 60 == 0 {
-            print("[VideoTextureCoordinator] 📊 Frame \(Self.updateCounter): needsInit=\(needsInit), initialized=\(currentlyInitialized), initializing=\(alreadyInitializing)")
+            DebugLog.print("[VideoTextureCoordinator] 📊 Frame \(Self.updateCounter): needsInit=\(needsInit), initialized=\(currentlyInitialized), initializing=\(alreadyInitializing)")
         }
         
         if !needsInit {
@@ -339,12 +339,12 @@ final class VideoTextureCoordinator: @unchecked Sendable {
         if alreadyInitializing {
             // Already initializing, skip this frame
             if Self.updateCounter <= 10 {
-                print("[VideoTextureCoordinator] ⏳ Frame \(Self.updateCounter): Skipping (already initializing)")
+                DebugLog.print("[VideoTextureCoordinator] ⏳ Frame \(Self.updateCounter): Skipping (already initializing)")
             }
             return
         }
         
-        print("[VideoTextureCoordinator] 🔧 Frame \(Self.updateCounter): Starting initialization")
+        DebugLog.print("[VideoTextureCoordinator] 🔧 Frame \(Self.updateCounter): Starting initialization")
         // Need initialization - dispatch to MainActor
         Task { @MainActor in
             await initializeTexture(from: sourceTexture)
@@ -387,18 +387,18 @@ final class VideoTextureCoordinator: @unchecked Sendable {
             let llTexture = try LowLevelTexture(descriptor: descriptor)
             let resource = try await TextureResource(from: llTexture)
             
-            lock.lock()
-            lowLevelTexture = llTexture
-            textureResource = resource
-            textureSize = (sourceTexture.width, sourceTexture.height)
-            isInitialized = true
-            isInitializing = false
-            lock.unlock()
+            lock.withLock {
+                lowLevelTexture = llTexture
+                textureResource = resource
+                textureSize = (sourceTexture.width, sourceTexture.height)
+                isInitialized = true
+                isInitializing = false
+            }
             
             hasValidTexture = true
             
             let formatName = hdrEnabled ? "bgra10_xr (HDR/EDR)" : "bgra8Unorm (SDR)"
-            print("[VideoTextureCoordinator] ✅ Texture: \(sourceTexture.width)x\(sourceTexture.height) [\(formatName)]")
+            DebugLog.print("[VideoTextureCoordinator] ✅ Texture: \(sourceTexture.width)x\(sourceTexture.height) [\(formatName)]")
             
             // Apply texture to entity with EDR support
             applyToEntity()
@@ -407,10 +407,10 @@ final class VideoTextureCoordinator: @unchecked Sendable {
             copyTextureContent(from: sourceTexture, commandBuffer: nil)
             
         } catch {
-            lock.lock()
-            isInitializing = false
-            lock.unlock()
-            print("[VideoTextureCoordinator] ❌ Failed: \(error)")
+            lock.withLock {
+                isInitializing = false
+            }
+            DebugLog.print("[VideoTextureCoordinator] ❌ Failed: \(error)")
         }
     }
     
@@ -441,11 +441,11 @@ final class VideoTextureCoordinator: @unchecked Sendable {
             // reducing peak brightness. Values > 1.0 will "bloom" on HDR display.
             material.blending = .opaque
             
-            print("[VideoTextureCoordinator] 🎨 HDR Material applied (EDR-optimized, opaque blending)")
+            DebugLog.print("[VideoTextureCoordinator] 🎨 HDR Material applied (EDR-optimized, opaque blending)")
         } else {
             // SDR Configuration: Standard texture application
             material.color = .init(texture: .init(resource))
-            print("[VideoTextureCoordinator] 🎨 SDR Material applied")
+            DebugLog.print("[VideoTextureCoordinator] 🎨 SDR Material applied")
         }
         
         entity.model?.materials = [material]
@@ -477,7 +477,7 @@ final class VideoTextureCoordinator: @unchecked Sendable {
     private func performTextureCopy(from sourceTexture: MTLTexture, using existingBuffer: MTLCommandBuffer?) {
         guard let llTexture = lowLevelTexture,
               let queue = commandQueue else {
-            print("[VideoTextureCoordinator] ❌ performTextureCopy: Missing llTexture or queue")
+            DebugLog.print("[VideoTextureCoordinator] ❌ performTextureCopy: Missing llTexture or queue")
             return
         }
         
@@ -489,7 +489,7 @@ final class VideoTextureCoordinator: @unchecked Sendable {
             commandBuffer = existing
         } else {
             guard let newBuffer = queue.makeCommandBuffer() else {
-                print("[VideoTextureCoordinator] ❌ performTextureCopy: Failed to create command buffer")
+                DebugLog.print("[VideoTextureCoordinator] ❌ performTextureCopy: Failed to create command buffer")
                 return
             }
             commandBuffer = newBuffer
@@ -500,12 +500,12 @@ final class VideoTextureCoordinator: @unchecked Sendable {
         // CRITICAL: Check format compatibility before blit
         if sourceTexture.pixelFormat != destTexture.pixelFormat {
             if Self.copyCounter <= 5 || Self.copyCounter % 60 == 0 {
-                print("[VideoTextureCoordinator] ⚠️ Format mismatch: source=\(sourceTexture.pixelFormat.rawValue), dest=\(destTexture.pixelFormat.rawValue)")
+                DebugLog.print("[VideoTextureCoordinator] ⚠️ Format mismatch: source=\(sourceTexture.pixelFormat.rawValue), dest=\(destTexture.pixelFormat.rawValue)")
             }
         }
         
         guard let blitEncoder = commandBuffer.makeBlitCommandEncoder() else {
-            print("[VideoTextureCoordinator] ❌ performTextureCopy: Failed to create blit encoder")
+            DebugLog.print("[VideoTextureCoordinator] ❌ performTextureCopy: Failed to create blit encoder")
             return
         }
         
@@ -533,9 +533,9 @@ final class VideoTextureCoordinator: @unchecked Sendable {
         
         // Log first few copies
         if Self.copyCounter <= 5 {
-            print("[VideoTextureCoordinator] 📦 Copy #\(Self.copyCounter): \(copyWidth)x\(copyHeight)")
+            DebugLog.print("[VideoTextureCoordinator] 📦 Copy #\(Self.copyCounter): \(copyWidth)x\(copyHeight)")
         } else if Self.copyCounter % 60 == 0 {
-            print("[VideoTextureCoordinator] 📦 Copy #\(Self.copyCounter): \(copyWidth)x\(copyHeight) (periodic)")
+            DebugLog.print("[VideoTextureCoordinator] 📦 Copy #\(Self.copyCounter): \(copyWidth)x\(copyHeight) (periodic)")
         }
     }
     
@@ -552,7 +552,7 @@ final class VideoTextureCoordinator: @unchecked Sendable {
         
         videoEntity = nil
         hasValidTexture = false
-        print("[VideoTextureCoordinator] 🔄 Reset")
+        DebugLog.print("[VideoTextureCoordinator] 🔄 Reset")
     }
 }
 

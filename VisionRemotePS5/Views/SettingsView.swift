@@ -106,7 +106,7 @@ struct SettingsView: View {
     private func saveAccountId() {
         if !manualAccountId.isEmpty {
             UserDefaults.standard.set(manualAccountId, forKey: "psn_account_id")
-            print("[Settings] ✅ Saved Account ID: \(manualAccountId)")
+            DebugLog.print("[Settings] ✅ Saved Account ID: \(manualAccountId)")
         }
     }
     

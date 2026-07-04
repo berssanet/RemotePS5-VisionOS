@@ -75,7 +75,9 @@ struct MetalFXHDRConfig {
 
 /// Color metadata extracted from CVPixelBuffer for HDR color management.
 /// These values describe how to interpret the pixel data.
-struct HDRColorMetadata: Sendable {
+/// `@unchecked` because CFString is immutable and thread-safe but is not
+/// statically marked Sendable by the CoreFoundation overlay.
+struct HDRColorMetadata: @unchecked Sendable {
     /// Color primaries (e.g., BT.709, BT.2020, Display P3)
     let colorPrimaries: CFString?
     
@@ -353,16 +355,12 @@ final class MetalFXUpscaler {
         var ycbcrMatrix: CFString?
         
         if let attachments = attachments as? [CFString: Any] {
-            // CFString values - use direct access and cast
-            if let cp = attachments[kCVImageBufferColorPrimariesKey] {
-                colorPrimaries = (cp as! CFString)
-            }
-            if let tf = attachments[kCVImageBufferTransferFunctionKey] {
-                transferFunction = (tf as! CFString)
-            }
-            if let mat = attachments[kCVImageBufferYCbCrMatrixKey] {
-                ycbcrMatrix = (mat as! CFString)
-            }
+            // Conditional casts (via String bridging): attachment values come
+            // from the network stream's decoder output — never trust them to
+            // be CFString.
+            colorPrimaries = (attachments[kCVImageBufferColorPrimariesKey] as? String).map { $0 as CFString }
+            transferFunction = (attachments[kCVImageBufferTransferFunctionKey] as? String).map { $0 as CFString }
+            ycbcrMatrix = (attachments[kCVImageBufferYCbCrMatrixKey] as? String).map { $0 as CFString }
         }
         
         let metadata = HDRColorMetadata(

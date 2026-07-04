@@ -1,0 +1,14 @@
+// Local.xcconfig.example
+//
+// Phase 5.19: PSN OAuth credentials live OUTSIDE source control.
+// Copy this file to `Local.xcconfig` (gitignored) and fill in real values,
+// then point your scheme/build at it (Project → Info → Configurations → Based on configuration file).
+//
+// The values below are placeholders — login WILL fail until they are set.
+
+PSN_CLIENT_ID = your-psn-client-id-here
+PSN_CLIENT_SECRET = your-psn-client-secret-here
+
+// Optional: set the development team here too so the project file no longer
+// pins QKHSK8L9ZZ. Uncomment after wiring this xcconfig into the build settings.
+// DEVELOPMENT_TEAM = YOURTEAMID

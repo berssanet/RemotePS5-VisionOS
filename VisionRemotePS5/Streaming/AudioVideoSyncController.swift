@@ -193,7 +193,7 @@ final class AudioDriftCorrector: @unchecked Sendable {
         // Check for latency accumulation (buffer overflow)
         if bufferMs > maxBufferMs {
             stats.emergencyDrops += 1
-            print("[AudioSync] ⚠️ Emergency drop: buffer=\(String(format: "%.0f", bufferMs))ms > max=\(maxBufferMs)ms")
+            DebugLog.print("[AudioSync] ⚠️ Emergency drop: buffer=\(String(format: "%.0f", bufferMs))ms > max=\(maxBufferMs)ms")
             return .emergencyDrop
         }
         
@@ -258,7 +258,7 @@ final class AudioDriftCorrector: @unchecked Sendable {
         
         if dropSamples > 0 {
             stats.samplesSkipped += dropSamples
-            print("[AudioSync] 🗑️ Dropping \(dropSamples) samples (\(String(format: "%.0f", Double(dropSamples) / Double(sampleRate) * 1000))ms)")
+            DebugLog.print("[AudioSync] 🗑️ Dropping \(dropSamples) samples (\(String(format: "%.0f", Double(dropSamples) / Double(sampleRate) * 1000))ms)")
         }
         
         return max(0, dropSamples)
@@ -425,7 +425,7 @@ final class AudioDriftCorrector: @unchecked Sendable {
         }
         
         if abs(driftMs) > driftThresholdMs || strategy == .emergencyDrop {
-            print("[AudioSync] Drift: \(String(format: "%+.1f", driftMs))ms | Buffer: \(String(format: "%.0f", bufferMs))ms | Strategy: \(strategyName)")
+            DebugLog.print("[AudioSync] Drift: \(String(format: "%+.1f", driftMs))ms | Buffer: \(String(format: "%.0f", bufferMs))ms | Strategy: \(strategyName)")
         }
     }
     

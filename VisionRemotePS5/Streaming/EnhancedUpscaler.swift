@@ -147,15 +147,15 @@ final class EnhancedUpscaler {
     // MARK: - Initialization
     
     init?() {
-        print("[EnhancedUpscaler] 🚀 Starting initialization...")
+        DebugLog.print("[EnhancedUpscaler] 🚀 Starting initialization...")
         
         guard let device = MTLCreateSystemDefaultDevice() else {
-            print("[EnhancedUpscaler] ❌ No Metal device available")
+            DebugLog.print("[EnhancedUpscaler] ❌ No Metal device available")
             return nil
         }
         
         guard let commandQueue = device.makeCommandQueue() else {
-            print("[EnhancedUpscaler] ❌ Failed to create command queue")
+            DebugLog.print("[EnhancedUpscaler] ❌ Failed to create command queue")
             return nil
         }
         
@@ -166,7 +166,7 @@ final class EnhancedUpscaler {
         var cache: CVMetalTextureCache?
         let status = CVMetalTextureCacheCreate(nil, nil, device, nil, &cache)
         guard status == kCVReturnSuccess, let textureCache = cache else {
-            print("[EnhancedUpscaler] ❌ Failed to create texture cache")
+            DebugLog.print("[EnhancedUpscaler] ❌ Failed to create texture cache")
             return nil
         }
         self.textureCache = textureCache
@@ -181,10 +181,10 @@ final class EnhancedUpscaler {
             return nil
         }
         
-        print("[EnhancedUpscaler] ✅ Initialized")
-        print("[EnhancedUpscaler]   Input: \(Self.inputWidth)x\(Self.inputHeight)")
-        print("[EnhancedUpscaler]   Output: \(Self.outputWidth)x\(Self.outputHeight)")
-        print("[EnhancedUpscaler]   Sharpening: \(enableSharpening ? "ON" : "OFF") (strength: \(sharpenStrength))")
+        DebugLog.print("[EnhancedUpscaler] ✅ Initialized")
+        DebugLog.print("[EnhancedUpscaler]   Input: \(Self.inputWidth)x\(Self.inputHeight)")
+        DebugLog.print("[EnhancedUpscaler]   Output: \(Self.outputWidth)x\(Self.outputHeight)")
+        DebugLog.print("[EnhancedUpscaler]   Sharpening: \(enableSharpening ? "ON" : "OFF") (strength: \(sharpenStrength))")
     }
     
     private func compileShaders() -> Bool {
@@ -193,17 +193,17 @@ final class EnhancedUpscaler {
             
             guard let lanczosFunc = library.makeFunction(name: "lanczosUpscale"),
                   let casFunc = library.makeFunction(name: "casSharpening") else {
-                print("[EnhancedUpscaler] ❌ Failed to find shader functions")
+                DebugLog.print("[EnhancedUpscaler] ❌ Failed to find shader functions")
                 return false
             }
             
             lanczosUpscalePipeline = try device.makeComputePipelineState(function: lanczosFunc)
             casSharpenPipeline = try device.makeComputePipelineState(function: casFunc)
             
-            print("[EnhancedUpscaler] ✅ Shaders compiled")
+            DebugLog.print("[EnhancedUpscaler] ✅ Shaders compiled")
             return true
         } catch {
-            print("[EnhancedUpscaler] ❌ Shader compilation failed: \(error)")
+            DebugLog.print("[EnhancedUpscaler] ❌ Shader compilation failed: \(error)")
             return false
         }
     }
@@ -220,14 +220,14 @@ final class EnhancedUpscaler {
         
         guard let intermediate = device.makeTexture(descriptor: descriptor),
               let output = device.makeTexture(descriptor: descriptor) else {
-            print("[EnhancedUpscaler] ❌ Failed to create textures")
+            DebugLog.print("[EnhancedUpscaler] ❌ Failed to create textures")
             return false
         }
         
         intermediateTexture = intermediate
         outputTexture = output
         
-        print("[EnhancedUpscaler] ✅ Textures created: \(Self.outputWidth)x\(Self.outputHeight)")
+        DebugLog.print("[EnhancedUpscaler] ✅ Textures created: \(Self.outputWidth)x\(Self.outputHeight)")
         return true
     }
     
@@ -257,7 +257,7 @@ final class EnhancedUpscaler {
         guard status == kCVReturnSuccess, let cvTexture = cvTexture,
               let inputTexture = CVMetalTextureGetTexture(cvTexture) else {
             if frameCount <= 5 {
-                print("[EnhancedUpscaler] ❌ Failed to create input texture")
+                DebugLog.print("[EnhancedUpscaler] ❌ Failed to create input texture")
             }
             return nil
         }
@@ -310,11 +310,11 @@ final class EnhancedUpscaler {
         commandBuffer.waitUntilCompleted()
         
         if frameCount == 1 {
-            print("[EnhancedUpscaler] ✅ First frame processed!")
+            DebugLog.print("[EnhancedUpscaler] ✅ First frame processed!")
         }
         
         if frameCount % 60 == 0 {
-            print("[EnhancedUpscaler] 📊 Frame \(frameCount) (Lanczos+CAS)")
+            DebugLog.print("[EnhancedUpscaler] 📊 Frame \(frameCount) (Lanczos+CAS)")
         }
         
         return outputTexture

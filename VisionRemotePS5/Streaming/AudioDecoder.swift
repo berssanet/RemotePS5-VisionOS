@@ -111,7 +111,7 @@ class AudioDecoder: ObservableObject {
         try session.setCategory(
             .playAndRecord,
             mode: .voiceChat,
-            options: [.defaultToSpeaker, .allowBluetooth, .mixWithOthers]
+            options: [.defaultToSpeaker, .allowBluetoothHFP, .mixWithOthers]
         )
         
         try session.setPreferredSampleRate(sampleRate)
@@ -124,7 +124,7 @@ class AudioDecoder: ObservableObject {
         // This simulates decoding by generating silence
         
         let samplesPerFrame = frameSize * Int(channels)
-        var pcmData = Data(count: samplesPerFrame * MemoryLayout<Float>.size)
+        let pcmData = Data(count: samplesPerFrame * MemoryLayout<Float>.size)
         
         // In real implementation:
         // 1. Call opus_decode_float()
@@ -189,7 +189,7 @@ class AudioCapture: ObservableObject {
         try session.setCategory(
             .playAndRecord,
             mode: .voiceChat,
-            options: [.allowBluetooth]
+            options: [.allowBluetoothHFP]
         )
         
         try session.setActive(true)

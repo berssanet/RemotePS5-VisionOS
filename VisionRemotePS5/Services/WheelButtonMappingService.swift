@@ -250,11 +250,11 @@ class WheelButtonMappingService: ObservableObject {
         if let data = UserDefaults.standard.data(forKey: userDefaultsKey),
            let saved = try? JSONDecoder().decode([WheelButtonMapping].self, from: data) {
             mappings = saved
-            print("[WheelButtonMapping] ✅ Loaded \(mappings.count) button mappings")
+            DebugLog.print("[WheelButtonMapping] ✅ Loaded \(mappings.count) button mappings")
         } else {
             // Use defaults
             mappings = WheelButtonMapping.defaultMappings()
-            print("[WheelButtonMapping] 📝 Using default mappings")
+            DebugLog.print("[WheelButtonMapping] 📝 Using default mappings")
         }
     }
     
@@ -265,19 +265,19 @@ class WheelButtonMappingService: ObservableObject {
             isConfigured = true
             isConfiguring = false
             showConfigurationOverlay = false
-            print("[WheelButtonMapping] 💾 Saved \(mappings.count) button mappings")
+            DebugLog.print("[WheelButtonMapping] 💾 Saved \(mappings.count) button mappings")
         }
     }
     
     func resetToDefaults() {
         mappings = WheelButtonMapping.defaultMappings()
-        print("[WheelButtonMapping] 🔄 Reset to default mappings")
+        DebugLog.print("[WheelButtonMapping] 🔄 Reset to default mappings")
     }
     
     func startConfiguration() {
         isConfiguring = true
         showConfigurationOverlay = true
-        print("[WheelButtonMapping] ⚙️ Starting button configuration")
+        DebugLog.print("[WheelButtonMapping] ⚙️ Starting button configuration")
     }
     
     func cancelConfiguration() {
@@ -299,7 +299,7 @@ class WheelButtonMappingService: ObservableObject {
         } else {
             mappings.append(WheelButtonMapping(buttonId: buttonId, action: action))
         }
-        print("[WheelButtonMapping] 🔧 Mapped \(buttonId.displayName) → \(action.displayName)")
+        DebugLog.print("[WheelButtonMapping] 🔧 Mapped \(buttonId.displayName) → \(action.displayName)")
     }
     
     // MARK: - Button Press Handling
@@ -307,7 +307,7 @@ class WheelButtonMappingService: ObservableObject {
     func buttonPressed(_ buttonId: WheelButtonID) {
         activeButtons.insert(buttonId)
         let action = getAction(for: buttonId)
-        print("[WheelButtonMapping] 🔘 Button pressed: \(buttonId.displayName) → \(action.displayName)")
+        DebugLog.print("[WheelButtonMapping] 🔘 Button pressed: \(buttonId.displayName) → \(action.displayName)")
         
         // If in configuration mode, select this button for editing
         if isConfiguring {
@@ -317,7 +317,7 @@ class WheelButtonMappingService: ObservableObject {
     
     func buttonReleased(_ buttonId: WheelButtonID) {
         activeButtons.remove(buttonId)
-        print("[WheelButtonMapping] ⚪ Button released: \(buttonId.displayName)")
+        DebugLog.print("[WheelButtonMapping] ⚪ Button released: \(buttonId.displayName)")
     }
     
     func isButtonActive(_ buttonId: WheelButtonID) -> Bool {

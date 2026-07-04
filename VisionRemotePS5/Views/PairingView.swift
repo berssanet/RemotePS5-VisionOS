@@ -200,10 +200,10 @@ struct PairingView: View {
         // Fallback: check UserDefaults (where we store it from NPSSO cookie)
         if accountId == nil || accountId?.isEmpty == true {
             accountId = UserDefaults.standard.string(forKey: "psn_account_id")
-            print("[PairingView] Using stored PSN Account ID from UserDefaults")
+            DebugLog.print("[PairingView] Using stored PSN Account ID from UserDefaults")
         }
         
-        print("[PairingView] Final PSN Account ID: \(accountId ?? "nil")")
+        DebugLog.print("[PairingView] Final PSN Account ID: \(accountId ?? "nil")")
         
         Task {
             let success = await registrationService.register(with: console, pin: pinCode, accountId: accountId)

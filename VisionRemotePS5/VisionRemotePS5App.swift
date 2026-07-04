@@ -48,6 +48,16 @@ struct VisionRemotePS5App: App {
                 .environmentObject(appState)
         }
         .immersionStyle(selection: .constant(.full), in: .full)
+
+        // v12.6: HoloPad companion space for WINDOWED streaming — mixed
+        // immersion (full passthrough, windows stay visible). Hand tracking
+        // requires an open immersive space; this one renders only the
+        // hand-anchored HoloPad feedback.
+        ImmersiveSpace(id: "HoloPadSpace") {
+            HoloPadSpaceView()
+                .environmentObject(appState)
+        }
+        .immersionStyle(selection: .constant(.mixed), in: .mixed)
     }
 }
 
@@ -58,8 +68,15 @@ class AppState: ObservableObject {
     @Published var isStreaming: Bool = false
     @Published var isAuthenticated: Bool = false
     @Published var isImmersiveActive: Bool = false  // v10.5: Track VR mode globally
+    @Published var isHoloPadSpaceActive: Bool = false  // v12.6: mixed HoloPad space (windowed input)
     @Published var isInStreamingSession: Bool = false  // v10.5.2: Hide console selection when streaming
-    @Published var controllerMode: ControllerMode = .standard  // v10.6: F1 cockpit support
+    // v12.5: HoloPad is THE controller (user direction 2026-07-04). The other
+    // modes stay in code but are not selectable — see ControllerMode.selectable.
+    @Published var controllerMode: ControllerMode = .handGesture
+    // v12.8.2: back to OFF by default — the first on-device VR run with 3D
+    // active ended in a freeze+disconnect; validate the spatial pipeline in
+    // isolation via the 2D/3D panel toggle before making it the default.
+    @Published var spatial3DEnabled: Bool = false
     @Published var gpuPreset: GPUPreset = .auto  // v11.0: GPU optimization preset
     @Published var selectedConsole: Console?
     @Published var discoveredConsoles: [Console] = []
@@ -91,18 +108,25 @@ class AppState: ObservableObject {
     enum ControllerMode: String, CaseIterable {
         case standard = "Standard"
         case virtualWheel = "Virtual Wheel"
-        
+        case handGesture = "HoloPad"
+
+        /// Modes offered in the UI. Standard overlay and the wheel are
+        /// quarantined per user direction (2026-07-04) — HoloPad only.
+        static let selectable: [ControllerMode] = [.handGesture]
+
         var icon: String {
             switch self {
             case .standard: return "gamecontroller"
             case .virtualWheel: return "hand.raised.fingers.spread"
+            case .handGesture: return "hand.point.up.braille"
             }
         }
-        
+
         var description: String {
             switch self {
             case .standard: return "Touch controls"
             case .virtualWheel: return "Hand tracking wheel (VR only)"
+            case .handGesture: return "Finger gestures, full DualSense (VR only)"
             }
         }
     }

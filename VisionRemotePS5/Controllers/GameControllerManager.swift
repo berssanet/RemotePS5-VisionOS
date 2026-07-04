@@ -87,10 +87,18 @@ class GameControllerManager: ObservableObject {
     }
     
     deinit {
-        // Note: deinit cannot call @MainActor methods directly
-        // Invalidate timers inline to avoid actor isolation issues
-        displayLink?.invalidate()
-        pollTimer?.invalidate()
+        // Phase 5.14: deinit may run on any thread. CADisplayLink.invalidate()
+        // must run on the same runloop it was added to (main). Capture locally
+        // and dispatch the invalidation to main; the timer/engine cleanups are
+        // thread-safe so they stay inline. nonisolated(unsafe): CADisplayLink
+        // and Timer are not Sendable, but they are only touched on main inside
+        // the dispatched block.
+        nonisolated(unsafe) let link = displayLink
+        nonisolated(unsafe) let timer = pollTimer
+        DispatchQueue.main.async {
+            link?.invalidate()
+            timer?.invalidate()
+        }
         hapticEngine?.stop()
     }
     
@@ -105,12 +113,14 @@ class GameControllerManager: ObservableObject {
         // Create CADisplayLink on main thread for vsync synchronization
         displayLink = CADisplayLink(target: self, selector: #selector(displayLinkFired(_:)))
         
-        // Configure for high refresh rate (120Hz on Vision Pro)
+        // Configure for high refresh rate (120Hz on Vision Pro).
+        // Phase 5.12: use the public `preferred:` initializer; the underscored
+        // `__preferred:` variant is private SPI and triggers App Store rejection.
         if #available(visionOS 1.0, iOS 15.0, *) {
             displayLink?.preferredFrameRateRange = CAFrameRateRange(
                 minimum: 60,
                 maximum: Float(preferredFPS),
-                __preferred: Float(preferredFPS)
+                preferred: Float(preferredFPS)
             )
         }
         
@@ -118,7 +128,7 @@ class GameControllerManager: ObservableObject {
         displayLink?.add(to: .main, forMode: .common)
         
         lastPollTime = CACurrentMediaTime()
-        print("[Controller] ✅ Display-linked polling started at \(preferredFPS)Hz (vsync-synchronized)")
+        DebugLog.print("[Controller] ✅ Display-linked polling started at \(preferredFPS)Hz (vsync-synchronized)")
     }
     
     /// Start polling with fallback Timer (for when DisplayLink unavailable)
@@ -129,7 +139,7 @@ class GameControllerManager: ObservableObject {
                 self?.pollInput()
             }
         }
-        print("[Controller] ⚠️ Timer-based polling started (fallback mode)")
+        DebugLog.print("[Controller] ⚠️ Timer-based polling started (fallback mode)")
     }
     
     /// Stop all polling methods
@@ -180,7 +190,7 @@ class GameControllerManager: ObservableObject {
         
         #if DEBUG
         if left > 0 || right > 0 {
-            print("[Haptics] Rumble: L=\(left) (\(leftIntensity)) R=\(right) (\(rightIntensity))")
+            DebugLog.print("[Haptics] Rumble: L=\(left) (\(leftIntensity)) R=\(right) (\(rightIntensity))")
         }
         #endif
         
@@ -229,7 +239,7 @@ class GameControllerManager: ObservableObject {
         guard let controller = connectedController,
               let dualSense = controller.physicalInputProfile as? GCDualSenseGamepad else {
             #if DEBUG
-            print("[Haptics] ⚠️ Adaptive triggers require DualSense controller")
+            DebugLog.print("[Haptics] ⚠️ Adaptive triggers require DualSense controller")
             #endif
             return
         }
@@ -251,7 +261,7 @@ class GameControllerManager: ObservableObject {
         
         #if DEBUG
         let side = isLeft ? "L2" : "R2"
-        print("[Haptics] 🎮 \(side) Adaptive Trigger: \(mode), strength: \(strength)")
+        DebugLog.print("[Haptics] 🎮 \(side) Adaptive Trigger: \(mode), strength: \(strength)")
         #endif
     }
     
@@ -276,7 +286,7 @@ class GameControllerManager: ObservableObject {
         // Log significant changes
         #if DEBUG
         if feedback.isActive {
-            print("[Haptics] 🎮 PS5 Feedback: L=\(feedback.leftMotor) R=\(feedback.rightMotor)")
+            DebugLog.print("[Haptics] 🎮 PS5 Feedback: L=\(feedback.leftMotor) R=\(feedback.rightMotor)")
         }
         #endif
     }
@@ -330,7 +340,7 @@ class GameControllerManager: ObservableObject {
         currentLeftIntensity = 0
         currentRightIntensity = 0
         try? continuousPlayer?.stop(atTime: CHHapticTimeImmediate)
-        print("[Haptics] All haptics stopped")
+        DebugLog.print("[Haptics] All haptics stopped")
     }
     
     // MARK: - Private Methods
@@ -421,7 +431,7 @@ class GameControllerManager: ObservableObject {
         #if DEBUG
         if Int(now * 120) % 120 == 0 {
             let fps = 1.0 / deltaTime
-            print("[Controller] 📊 Polling at \(String(format: "%.1f", fps))Hz, latency: \(String(format: "%.2f", inputLatencyMs))ms")
+            DebugLog.print("[Controller] 📊 Polling at \(String(format: "%.1f", fps))Hz, latency: \(String(format: "%.2f", inputLatencyMs))ms")
         }
         #endif
     }
@@ -515,30 +525,30 @@ class GameControllerManager: ObservableObject {
     
     private func setupHapticEngine() {
         guard CHHapticEngine.capabilitiesForHardware().supportsHaptics else {
-            print("[Haptics] Device does not support CoreHaptics")
+            DebugLog.print("[Haptics] Device does not support CoreHaptics")
             return
         }
         
         do {
             hapticEngine = try CHHapticEngine()
             hapticEngine?.stoppedHandler = { [weak self] reason in
-                print("[Haptics] Engine stopped: \(reason)")
+                DebugLog.print("[Haptics] Engine stopped: \(reason)")
                 self?.isHapticsSupported = false
             }
             hapticEngine?.resetHandler = { [weak self] in
-                print("[Haptics] Engine reset, restarting...")
+                DebugLog.print("[Haptics] Engine reset, restarting...")
                 do {
                     try self?.hapticEngine?.start()
                     self?.isHapticsSupported = true
                 } catch {
-                    print("[Haptics] Failed to restart: \(error)")
+                    DebugLog.print("[Haptics] Failed to restart: \(error)")
                 }
             }
             try hapticEngine?.start()
             isHapticsSupported = true
-            print("[Haptics] ✅ CoreHaptics engine initialized")
+            DebugLog.print("[Haptics] ✅ CoreHaptics engine initialized")
         } catch {
-            print("[Haptics] ❌ Failed to create engine: \(error)")
+            DebugLog.print("[Haptics] ❌ Failed to create engine: \(error)")
         }
     }
     
@@ -550,7 +560,7 @@ class GameControllerManager: ObservableObject {
         // This is device-specific and may not work on all controllers
         
         guard let engine = haptics.createEngine(withLocality: .default) else {
-            print("[Haptics] Failed to create controller haptic engine")
+            DebugLog.print("[Haptics] Failed to create controller haptic engine")
             return
         }
         
@@ -576,7 +586,7 @@ class GameControllerManager: ObservableObject {
             try player.start(atTime: CHHapticTimeImmediate)
             
         } catch {
-            print("[Haptics] Controller haptic error: \(error)")
+            DebugLog.print("[Haptics] Controller haptic error: \(error)")
         }
     }
     
@@ -606,7 +616,7 @@ class GameControllerManager: ObservableObject {
             try player.start(atTime: CHHapticTimeImmediate)
             
         } catch {
-            print("[Haptics] CoreHaptics error: \(error)")
+            DebugLog.print("[Haptics] CoreHaptics error: \(error)")
         }
     }
 }

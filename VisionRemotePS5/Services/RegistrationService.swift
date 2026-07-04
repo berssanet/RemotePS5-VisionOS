@@ -31,12 +31,12 @@ final class RegistrationService: ObservableObject {
     private let registrationPath = "/sie/ps5/rp/sess/rgst"
     
     init() {
-        print("[Registration] Service initialized")
+        DebugLog.print("[Registration] Service initialized")
     }
     
     deinit {
         connection?.cancel()
-        print("[Registration] Service deinitialized")
+        DebugLog.print("[Registration] Service deinitialized")
     }
     
     // MARK: - Public Methods
@@ -45,7 +45,7 @@ final class RegistrationService: ObservableObject {
     @MainActor
     func register(with console: Console, pin: String, accountId: String? = nil) async -> Bool {
         guard !isRegistering else {
-            print("[Registration] Already registering")
+            DebugLog.print("[Registration] Already registering")
             return false
         }
         
@@ -57,18 +57,18 @@ final class RegistrationService: ObservableObject {
         isRegistering = true
         registrationError = nil
         
-        print("[Registration] Starting registration with \(console.name) at \(console.ipAddress):\(registrationPort)")
-        print("[Registration] PIN: \(pin.prefix(4))****")
+        DebugLog.print("[Registration] Starting registration with \(console.name) at \(console.ipAddress):\(registrationPort)")
+        DebugLog.print("[Registration] PIN: \(pin.prefix(4))****")
         
         do {
             // Step 1: UDP Search Handshake (CRITICAL - chiaki-ng regist.c line 322)
             // PS5 requires this UDP exchange before accepting TCP registration
-            print("[Registration] Starting UDP search handshake...")
+            DebugLog.print("[Registration] Starting UDP search handshake...")
             let searchSuccess = await performSearchHandshake(ipAddress: console.ipAddress)
             if !searchSuccess {
-                print("[Registration] Warning: UDP search handshake failed/timed out, continuing anyway...")
+                DebugLog.print("[Registration] Warning: UDP search handshake failed/timed out, continuing anyway...")
             } else {
-                print("[Registration] ✅ UDP search handshake completed")
+                DebugLog.print("[Registration] ✅ UDP search handshake completed")
             }
             
             // Brief delay after search (chiaki-ng: SEARCH_REQUEST_SLEEP_MS)
@@ -100,20 +100,20 @@ final class RegistrationService: ObservableObject {
             
             isRegistering = false
             isRegistered = true
-            print("[Registration] Successfully registered with \(console.name)")
-            print("[Registration] RP-Key: \(hostInfo.rpKey.map { String(format: "%02x", $0) }.joined())")
-            print("[Registration] Console saved to persistent storage")
+            DebugLog.print("[Registration] Successfully registered with \(console.name)")
+            DebugLog.print("[Registration] RP-Key: \(hostInfo.rpKey.map { String(format: "%02x", $0) }.joined())")
+            DebugLog.print("[Registration] Console saved to persistent storage")
             return true
             
         } catch let error as RegistrationError {
             isRegistering = false
             registrationError = error.localizedDescription
-            print("[Registration] Error: \(error.localizedDescription)")
+            DebugLog.print("[Registration] Error: \(error.localizedDescription)")
             return false
         } catch {
             isRegistering = false
             registrationError = "Registration failed: \(error.localizedDescription)"
-            print("[Registration] Error: \(error)")
+            DebugLog.print("[Registration] Error: \(error)")
             return false
         }
     }
@@ -149,7 +149,7 @@ final class RegistrationService: ObservableObject {
             kSecAttrAccount as String: console.ipAddress
         ]
         SecItemDelete(query as CFDictionary)
-        print("[Registration] Cleared RP-Key for \(console.ipAddress)")
+        DebugLog.print("[Registration] Cleared RP-Key for \(console.ipAddress)")
     }
     
     // MARK: - Private Methods
@@ -164,38 +164,38 @@ final class RegistrationService: ObservableObject {
         connection = NWConnection(host: host, port: port, using: params)
         
         return await withCheckedContinuation { continuation in
-            var resumed = false
-            
+            let gate = ContinuationGate()
+
             connection?.stateUpdateHandler = { state in
-                guard !resumed else { return }
-                
                 switch state {
                 case .ready:
-                    resumed = true
-                    print("[Registration] Connected to console on port \(self.registrationPort)")
-                    continuation.resume(returning: true)
-                    
+                    if gate.tryResume() {
+                        DebugLog.print("[Registration] Connected to console on port \(self.registrationPort)")
+                        continuation.resume(returning: true)
+                    }
+
                 case .failed(let error):
-                    resumed = true
-                    print("[Registration] Connection failed: \(error)")
-                    continuation.resume(returning: false)
-                    
+                    if gate.tryResume() {
+                        DebugLog.print("[Registration] Connection failed: \(error)")
+                        continuation.resume(returning: false)
+                    }
+
                 case .cancelled:
-                    resumed = true
-                    continuation.resume(returning: false)
-                    
+                    if gate.tryResume() {
+                        continuation.resume(returning: false)
+                    }
+
                 default:
                     break
                 }
             }
-            
+
             connection?.start(queue: .main)
-            
+
             // Timeout after 10 seconds
             Task {
                 try? await Task.sleep(nanoseconds: 10_000_000_000)
-                if !resumed {
-                    resumed = true
+                if gate.tryResume() {
                     connection?.cancel()
                     continuation.resume(returning: false)
                 }
@@ -217,90 +217,84 @@ final class RegistrationService: ObservableObject {
         let udpConnection = NWConnection(host: host, port: port, using: params)
         
         return await withCheckedContinuation { continuation in
-            var resumed = false
-            
+            let gate = ContinuationGate()
+
             udpConnection.stateUpdateHandler = { [weak udpConnection] state in
-                guard !resumed else { return }
-                
                 switch state {
                 case .ready:
                     // Send "SRC3\0" packet (null-terminated string)
                     let searchPacket = Data("SRC3\0".utf8)
-                    print("[Registration] Sending UDP search packet: SRC3")
-                    
+                    DebugLog.print("[Registration] Sending UDP search packet: SRC3")
+
                     udpConnection?.send(content: searchPacket, completion: .contentProcessed { error in
                         if let error = error {
-                            print("[Registration] UDP send error: \(error)")
-                            if !resumed {
-                                resumed = true
+                            DebugLog.print("[Registration] UDP send error: \(error)")
+                            if gate.tryResume() {
                                 udpConnection?.cancel()
                                 continuation.resume(returning: false)
                             }
                             return
                         }
-                        
-                        print("[Registration] UDP search packet sent, waiting for response...")
-                        
+
+                        DebugLog.print("[Registration] UDP search packet sent, waiting for response...")
+
                         // Receive response
                         udpConnection?.receive(minimumIncompleteLength: 1, maximumLength: 256) { data, _, isComplete, error in
-                            // Guard against multiple resumes
-                            guard !resumed else { return }
-                            
                             if let error = error {
-                                print("[Registration] UDP receive error: \(error)")
-                                resumed = true
-                                udpConnection?.cancel()
-                                continuation.resume(returning: false)
+                                DebugLog.print("[Registration] UDP receive error: \(error)")
+                                if gate.tryResume() {
+                                    udpConnection?.cancel()
+                                    continuation.resume(returning: false)
+                                }
                                 return
                             }
-                            
+
                             if let data = data {
                                 let responseStr = String(data: data, encoding: .utf8) ?? ""
-                                print("[Registration] UDP search response: \(data.count) bytes - \(responseStr.prefix(10))")
-                                
+                                DebugLog.print("[Registration] UDP search response: \(data.count) bytes - \(responseStr.prefix(10))")
+
                                 // Check for "RES3" response
                                 if responseStr.hasPrefix("RES3") {
-                                    print("[Registration] ✅ Received valid RES3 response")
-                                    resumed = true
-                                    udpConnection?.cancel()
-                                    continuation.resume(returning: true)
+                                    DebugLog.print("[Registration] ✅ Received valid RES3 response")
+                                    if gate.tryResume() {
+                                        udpConnection?.cancel()
+                                        continuation.resume(returning: true)
+                                    }
                                     return
                                 }
                             }
-                            
+
                             // No valid response
-                            resumed = true
-                            udpConnection?.cancel()
-                            continuation.resume(returning: false)
+                            if gate.tryResume() {
+                                udpConnection?.cancel()
+                                continuation.resume(returning: false)
+                            }
                         }
                     })
-                    
+
                 case .failed(let error):
-                    print("[Registration] UDP connection failed: \(error)")
-                    if !resumed {
-                        resumed = true
+                    DebugLog.print("[Registration] UDP connection failed: \(error)")
+                    if gate.tryResume() {
                         continuation.resume(returning: false)
                     }
-                    
+
                 case .cancelled:
-                    if !resumed {
-                        resumed = true
+                    if gate.tryResume() {
                         continuation.resume(returning: false)
                     }
-                    
+
                 default:
                     break
                 }
             }
-            
+
             udpConnection.start(queue: .main)
-            
+
             // Timeout after 5 seconds
             Task {
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
-                if !resumed {
-                    print("[Registration] UDP search timeout")
-                    resumed = true
+                if gate.tryResume() {
+                    DebugLog.print("[Registration] UDP search timeout")
                     udpConnection.cancel()
                     continuation.resume(returning: false)
                 }
@@ -322,8 +316,8 @@ final class RegistrationService: ObservableObject {
             throw RegistrationError.invalidPin
         }
         
-        print("[Registration] Ambassador: \(ambassador.map { String(format: "%02x", $0) }.joined())")
-        print("[Registration] PIN: \(pin)")
+        DebugLog.print("[Registration] Ambassador: \(ambassador.map { String(format: "%02x", $0) }.joined())")
+        DebugLog.print("[Registration] PIN: \(pin)")
         
         // Use ChiakiBridgeService NATIVE wrapper to format the payload
         // This directly calls chiaki_regist_request_payload_format for bit-perfect parity
@@ -348,15 +342,15 @@ final class RegistrationService: ObservableObject {
         request += "RP-Version: 1.0\r\n"
         request += "\r\n"
         
-        print("[Registration] Sending registration request...")
-        print("[Registration] Endpoint: \(registrationPath)")
-        print("[Registration] Payload size: \(payloadSize)")
+        DebugLog.print("[Registration] Sending registration request...")
+        DebugLog.print("[Registration] Endpoint: \(registrationPath)")
+        DebugLog.print("[Registration] Payload size: \(payloadSize)")
         
         // Debug: Hex dump of key offsets in payload
         let payloadBytes = [UInt8](payload)
-        print("[Registration] Payload[0xc7-0xce] (aeropause 8-16): \(payloadBytes[0xc7..<0xcf].map { String(format: "%02x", $0) }.joined())")
-        print("[Registration] Payload[0x191-0x198] (aeropause 0-8): \(payloadBytes[0x191..<0x199].map { String(format: "%02x", $0) }.joined())")
-        print("[Registration] Payload[0x1e0-0x1f0] (encrypted inner, first 16): \(payloadBytes[0x1e0..<0x1f0].map { String(format: "%02x", $0) }.joined())")
+        DebugLog.print("[Registration] Payload[0xc7-0xce] (aeropause 8-16): \(payloadBytes[0xc7..<0xcf].map { String(format: "%02x", $0) }.joined())")
+        DebugLog.print("[Registration] Payload[0x191-0x198] (aeropause 0-8): \(payloadBytes[0x191..<0x199].map { String(format: "%02x", $0) }.joined())")
+        DebugLog.print("[Registration] Payload[0x1e0-0x1f0] (encrypted inner, first 16): \(payloadBytes[0x1e0..<0x1f0].map { String(format: "%02x", $0) }.joined())")
         
         // Combine header and payload
         guard var requestData = request.data(using: .utf8) else {
@@ -365,9 +359,9 @@ final class RegistrationService: ObservableObject {
         
         // DEBUG: Hex dump of complete HTTP header for byte-level comparison
         let headerBytes = [UInt8](requestData)
-        print("[Registration] HTTP Header (\(headerBytes.count) bytes):")
-        print("[Registration] Header HEX: \(headerBytes.map { String(format: "%02x", $0) }.joined())")
-        print("[Registration] Header ASCII: \(String(data: requestData, encoding: .utf8) ?? "N/A")")
+        DebugLog.print("[Registration] HTTP Header (\(headerBytes.count) bytes):")
+        DebugLog.print("[Registration] Header HEX: \(headerBytes.map { String(format: "%02x", $0) }.joined())")
+        DebugLog.print("[Registration] Header ASCII: \(String(data: requestData, encoding: .utf8) ?? "N/A")")
         
         requestData.append(payload)
         
@@ -378,11 +372,11 @@ final class RegistrationService: ObservableObject {
         let responseData = try await receiveData(connection: connection, timeout: 10.0)
         
         // Debug: Log raw response bytes first
-        print("[Registration] Raw response: \(responseData.count) bytes")
+        DebugLog.print("[Registration] Raw response: \(responseData.count) bytes")
         let responseBytes = [UInt8](responseData)
         if responseData.count > 0 {
             let previewLen = min(100, responseData.count)
-            print("[Registration] Response first \(previewLen) bytes HEX: \(responseBytes.prefix(previewLen).map { String(format: "%02x", $0) }.joined())")
+            DebugLog.print("[Registration] Response first \(previewLen) bytes HEX: \(responseBytes.prefix(previewLen).map { String(format: "%02x", $0) }.joined())")
         }
         
         // Try ASCII decoding first (covers both UTF-8 and ASCII responses)
@@ -391,7 +385,7 @@ final class RegistrationService: ObservableObject {
             if let headerEnd = responseData.firstRange(of: Data("\r\n\r\n".utf8)) {
                 let headerData = responseData[responseData.startIndex..<headerEnd.lowerBound]
                 if let headerStr = String(data: headerData, encoding: .ascii) {
-                    print("[Registration] Parsed header from binary response:\n\(headerStr)")
+                    DebugLog.print("[Registration] Parsed header from binary response:\n\(headerStr)")
                     // Use COMPUTED ambassador from crypt, NOT the original random
                     return try parseRegistrationResponse(headerStr, fullData: responseData, brightKey: result.brightKey, ambassadorKey: result.ambassadorKey)
                 }
@@ -399,7 +393,7 @@ final class RegistrationService: ObservableObject {
             throw RegistrationError.protocolError("Invalid response encoding")
         }
         
-        print("[Registration] Response:\n\(responseStr)")
+        DebugLog.print("[Registration] Response:\n\(responseStr)")
         
         // Parse response with brightKey and COMPUTED ambassador for decryption
         return try parseRegistrationResponse(responseStr, fullData: responseData, brightKey: result.brightKey, ambassadorKey: result.ambassadorKey)
@@ -429,10 +423,10 @@ final class RegistrationService: ObservableObject {
                             encryptedData: Data(body)
                         )
                         
-                        print("[Registration] ✅ Decrypted RP-Key: \(hostInfo.rpKey.map { String(format: "%02x", $0) }.joined())")
-                        print("[Registration] ✅ RegistKey: \(hostInfo.registKey)")
-                        print("[Registration] ✅ Nickname: \(hostInfo.nickname)")
-                        print("[Registration] ✅ MAC: \(hostInfo.serverMAC.map { String(format: "%02x", $0) }.joined())")
+                        DebugLog.print("[Registration] ✅ Decrypted RP-Key: \(hostInfo.rpKey.map { String(format: "%02x", $0) }.joined())")
+                        DebugLog.print("[Registration] ✅ RegistKey: \(hostInfo.registKey)")
+                        DebugLog.print("[Registration] ✅ Nickname: \(hostInfo.nickname)")
+                        DebugLog.print("[Registration] ✅ MAC: \(hostInfo.serverMAC.map { String(format: "%02x", $0) }.joined())")
                         
                         connection?.cancel()
                         connection = nil
@@ -450,7 +444,7 @@ final class RegistrationService: ObservableObject {
                     let keyHex = line.components(separatedBy: ":").last?.trimmingCharacters(in: .whitespaces) ?? ""
                     rpKeyData = Data(hexString: keyHex)
                     registKey = keyHex
-                    print("[Registration] Found RP-Key in response: \(keyHex)")
+                    DebugLog.print("[Registration] Found RP-Key in response: \(keyHex)")
                 }
             }
             
@@ -515,20 +509,21 @@ final class RegistrationService: ObservableObject {
     
     private func receiveData(connection: NWConnection, timeout: TimeInterval) async throws -> Data {
         try await withCheckedThrowingContinuation { continuation in
-            var resumed = false
-            
+            // Lock-protected one-shot gate: the timeout Task and the receive
+            // callback race on different queues; a plain Bool here can double-
+            // resume the continuation and crash.
+            let gate = ContinuationGate()
+
             Task {
                 try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-                if !resumed {
-                    resumed = true
+                if gate.tryResume() {
                     continuation.resume(throwing: RegistrationError.timeout)
                 }
             }
-            
+
             connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, _, error in
-                guard !resumed else { return }
-                resumed = true
-                
+                guard gate.tryResume() else { return }
+
                 if let error = error {
                     continuation.resume(throwing: error)
                 } else if let data = data {
@@ -560,11 +555,11 @@ final class RegistrationService: ObservableObject {
         
         let status = SecItemAdd(addQuery as CFDictionary, nil)
         if status != errSecSuccess {
-            print("[Registration] Failed to store RP-Key: \(status)")
+            DebugLog.print("[Registration] Failed to store RP-Key: \(status)")
             throw RegistrationError.keychainError
         }
         
-        print("[Registration] RP-Key stored successfully")
+        DebugLog.print("[Registration] RP-Key stored successfully")
     }
 }
 

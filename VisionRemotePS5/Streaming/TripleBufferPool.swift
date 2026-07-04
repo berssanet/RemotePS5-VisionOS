@@ -47,7 +47,7 @@ final class TripleBufferPool {
         
         for i in 0..<3 {
             guard let texture = device.makeTexture(descriptor: descriptor) else {
-                print("[TripleBufferPool] ❌ Failed to create texture \(i)")
+                DebugLog.print("[TripleBufferPool] ❌ Failed to create texture \(i)")
                 return nil
             }
             texture.label = "TripleBuffer_\(i)"
@@ -57,7 +57,7 @@ final class TripleBufferPool {
         // Create fence for GPU synchronization
         fence = device.makeFence()
         
-        print("[TripleBufferPool] ✅ Initialized with 3x \(width)x\(height) textures")
+        DebugLog.print("[TripleBufferPool] ✅ Initialized with 3x \(width)x\(height) textures")
     }
     
     // MARK: - Public Methods

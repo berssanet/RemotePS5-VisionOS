@@ -46,7 +46,7 @@ final class MotionEstimator {
         self.device = device
         
         guard let queue = device.makeCommandQueue() else {
-            print("[MotionEstimator] ❌ Failed to create command queue")
+            DebugLog.print("[MotionEstimator] ❌ Failed to create command queue")
             return nil
         }
         self.commandQueue = queue
@@ -62,7 +62,7 @@ final class MotionEstimator {
         mvDescriptor.storageMode = .private
         
         guard let mvTexture = device.makeTexture(descriptor: mvDescriptor) else {
-            print("[MotionEstimator] ❌ Failed to create motion vector texture")
+            DebugLog.print("[MotionEstimator] ❌ Failed to create motion vector texture")
             return nil
         }
         self.motionVectorTexture = mvTexture
@@ -78,7 +78,7 @@ final class MotionEstimator {
         prevDescriptor.storageMode = .private
         
         guard let prevTexture = device.makeTexture(descriptor: prevDescriptor) else {
-            print("[MotionEstimator] ❌ Failed to create previous frame texture")
+            DebugLog.print("[MotionEstimator] ❌ Failed to create previous frame texture")
             return nil
         }
         self.previousFrameTexture = prevTexture
@@ -88,7 +88,7 @@ final class MotionEstimator {
             return nil
         }
         
-        print("[MotionEstimator] ✅ Initialized (\(width)x\(height), block=\(Self.blockSize))")
+        DebugLog.print("[MotionEstimator] ✅ Initialized (\(width)x\(height), block=\(Self.blockSize))")
     }
     
     // MARK: - Compute Pipeline Setup
@@ -166,16 +166,16 @@ final class MotionEstimator {
             let library = try device.makeLibrary(source: shaderSource, options: nil)
             
             guard let motionFunc = library.makeFunction(name: "estimateMotionVectors") else {
-                print("[MotionEstimator] ❌ Failed to find estimateMotionVectors function")
+                DebugLog.print("[MotionEstimator] ❌ Failed to find estimateMotionVectors function")
                 return false
             }
             
             computePipeline = try device.makeComputePipelineState(function: motionFunc)
             
-            print("[MotionEstimator] ✅ Compute pipeline created")
+            DebugLog.print("[MotionEstimator] ✅ Compute pipeline created")
             return true
         } catch {
-            print("[MotionEstimator] ❌ Failed to create compute pipeline: \(error)")
+            DebugLog.print("[MotionEstimator] ❌ Failed to create compute pipeline: \(error)")
             return false
         }
     }
@@ -214,7 +214,7 @@ final class MotionEstimator {
                 blitEncoder.endEncoding()
             }
             isFirstFrame = false
-            print("[MotionEstimator] 📹 First frame - no motion vectors yet")
+            DebugLog.print("[MotionEstimator] 📹 First frame - no motion vectors yet")
             return false
         }
         
@@ -260,7 +260,7 @@ final class MotionEstimator {
         }
         
         if frameCount % 60 == 0 {
-            print("[MotionEstimator] 📊 Frame \(frameCount) - motion vectors computed")
+            DebugLog.print("[MotionEstimator] 📊 Frame \(frameCount) - motion vectors computed")
         }
         
         return true
@@ -269,6 +269,6 @@ final class MotionEstimator {
     /// Reset motion estimation state (call on scene cuts)
     func reset() {
         isFirstFrame = true
-        print("[MotionEstimator] 🔄 Reset - next frame will skip motion estimation")
+        DebugLog.print("[MotionEstimator] 🔄 Reset - next frame will skip motion estimation")
     }
 }

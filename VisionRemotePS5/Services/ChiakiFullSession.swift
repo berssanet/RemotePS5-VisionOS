@@ -8,6 +8,7 @@
 
 import Foundation
 import CoreVideo
+import os  // Phase 5.10: os_unfair_lock for the cross-thread shutdown flag
 
 // MARK: - Chiaki Event Types (from chiaki session.h)
 
@@ -80,12 +81,22 @@ final class ChiakiFullSession: ObservableObject {
     /// Note: fileprivate(set) allows internal callbacks to update state
     @Published fileprivate(set) var state: SessionState = .idle
     
-    /// Flag to prevent callback access during shutdown
-    /// This is checked by C callbacks before accessing Swift objects
-    fileprivate var isShuttingDown: Bool = false
-    
-    /// Serial queue for thread-safe callback processing
-    private let callbackQueue = DispatchQueue(label: "com.visionremote.chiaki.callbacks", qos: .userInteractive)
+    /// Flag to prevent callback access during shutdown.
+    /// Phase 5.10: lock-protected so C callback threads and the Swift main
+    /// thread observe a coherent value without the deadlock-prone
+    /// callbackQueue.sync barrier the previous design used.
+    fileprivate var isShuttingDown: Bool {
+        get {
+            shutdownLock.lock(); defer { shutdownLock.unlock() }
+            return _isShuttingDown
+        }
+        set {
+            shutdownLock.lock(); defer { shutdownLock.unlock() }
+            _isShuttingDown = newValue
+        }
+    }
+    private var _isShuttingDown: Bool = false
+    private let shutdownLock = NSLock()
     
     /// Legacy isActive property for compatibility
     var isActive: Bool { state.isActive && !isShuttingDown }
@@ -101,7 +112,7 @@ final class ChiakiFullSession: ObservableObject {
     // MARK: - Initialization
     
     private init() {
-        print("[ChiakiFullSession] Initialized")
+        DebugLog.info("ChiakiFullSession", "Initialized")
     }
     
     // MARK: - Public API
@@ -131,7 +142,7 @@ final class ChiakiFullSession: ObservableObject {
         }
         
         guard canStart else {
-            print("[ChiakiFullSession] ❌ Session already active (state: \(state))")
+            DebugLog.print("[ChiakiFullSession] ❌ Session already active (state: \(state))")
             return false
         }
         
@@ -139,14 +150,14 @@ final class ChiakiFullSession: ObservableObject {
         
         // Validate input sizes
         guard registKey.count == 16, rpKey.count == 16 else {
-            print("[ChiakiFullSession] ❌ Invalid key sizes: registKey=\(registKey.count), rpKey=\(rpKey.count)")
+            DebugLog.print("[ChiakiFullSession] ❌ Invalid key sizes: registKey=\(registKey.count), rpKey=\(rpKey.count)")
             return false
         }
         
-        print("[ChiakiFullSession] Starting session to \(host)")
-        print("[ChiakiFullSession]   Resolution: \(width)x\(height)@\(fps)fps")
-        print("[ChiakiFullSession]   Bitrate: \(bitrate) bps")
-        print("[ChiakiFullSession]   PS5: \(isPS5)")
+        DebugLog.print("[ChiakiFullSession] Starting session to \(host)")
+        DebugLog.print("[ChiakiFullSession]   Resolution: \(width)x\(height)@\(fps)fps")
+        DebugLog.print("[ChiakiFullSession]   Bitrate: \(bitrate) bps")
+        DebugLog.print("[ChiakiFullSession]   PS5: \(isPS5)")
         
         // Register rumble callback
         chiaki_set_rumble_callback_wrapper(rumbleCallback)
@@ -178,10 +189,10 @@ final class ChiakiFullSession: ObservableObject {
         
         if result == CHIAKI_ERR_SUCCESS {
             state = .connected
-            print("[ChiakiFullSession] ✅ Session started successfully")
+            DebugLog.info("ChiakiFullSession", "✅ Session started successfully")
             return true
         } else {
-            print("[ChiakiFullSession] ❌ Session start failed with error: \(result)")
+            DebugLog.print("[ChiakiFullSession] ❌ Session start failed with error: \(result)")
             return false
         }
     }
@@ -189,21 +200,22 @@ final class ChiakiFullSession: ObservableObject {
     /// Stop the current session
     func stop() {
         guard isActive else {
-            print("[ChiakiFullSession] No active session to stop")
+            DebugLog.info("ChiakiFullSession", "No active session to stop")
             return
         }
         
-        print("[ChiakiFullSession] Stopping session...")
-        
+        DebugLog.info("ChiakiFullSession", "Stopping session...")
+
         // CRITICAL: Set shutdown flag BEFORE stopping to prevent callback crashes
         // C callbacks will check this flag and bail out immediately
         isShuttingDown = true
-        
-        // Small delay to ensure any in-flight callbacks complete
-        callbackQueue.sync {
-            // Barrier to ensure all pending callback work completes
-        }
-        
+
+        // Phase 5.10: replaced the `callbackQueue.sync { }` barrier (which
+        // could deadlock when invoked from main while a callback was waiting
+        // on main) with a brief drain window. The lock-protected flag
+        // guarantees in-flight callbacks see the new value.
+        Thread.sleep(forTimeInterval: 0.01)
+
         let result = chiaki_fullsession_stop_wrapper()
         
         state = .idle
@@ -212,9 +224,9 @@ final class ChiakiFullSession: ObservableObject {
         isShuttingDown = false
         
         if result == CHIAKI_ERR_SUCCESS {
-            print("[ChiakiFullSession] ✅ Session stopped")
+            DebugLog.info("ChiakiFullSession", "✅ Session stopped")
         } else {
-            print("[ChiakiFullSession] ⚠️ Session stop returned: \(result)")
+            DebugLog.print("[ChiakiFullSession] ⚠️ Session stop returned: \(result)")
         }
     }
     
@@ -278,13 +290,13 @@ private let videoCallback: ChiakiWrapperVideoCallback = { buf, bufSize, user in
     
     // GUARD 3: Validate buffer pointer
     guard let buf = buf else {
-        print("[ChiakiCallback] ⚠️ Video buffer is nil!")
+        DebugLog.warning("ChiakiCallback", "⚠️ Video buffer is nil!")
         return
     }
     
     // GUARD 4: Validate buffer size (reasonable range for video frames)
     guard bufSize > 0, bufSize < 10_000_000 else {
-        print("[ChiakiCallback] ⚠️ Invalid buffer size: \(bufSize)")
+        DebugLog.print("[ChiakiCallback] ⚠️ Invalid buffer size: \(bufSize)")
         return
     }
     

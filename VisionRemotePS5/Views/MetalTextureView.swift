@@ -33,7 +33,7 @@ struct MetalTextureView: UIViewRepresentable {
         // TODO: Switch to bgra10_xr when PS5 actually sends HDR (P010) content
         mtkView.colorPixelFormat = .bgra8Unorm
         mtkView.clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
-        print("[MetalTextureView] Using SDR pixel format: bgra8Unorm")
+        DebugLog.print("[MetalTextureView] Using SDR pixel format: bgra8Unorm")
         
         // Use continuous rendering at 60fps for smooth video playback
         mtkView.isPaused = false
@@ -124,9 +124,9 @@ struct MetalTextureView: UIViewRepresentable {
                 pipelineDesc.colorAttachments[0].pixelFormat = pixelFormat
                 
                 pipelineState = try device.makeRenderPipelineState(descriptor: pipelineDesc)
-                print("[MetalTextureView] ✅ Pipeline created (format: \(pixelFormat.rawValue))")
+                DebugLog.print("[MetalTextureView] ✅ Pipeline created (format: \(pixelFormat.rawValue))")
             } catch {
-                print("[MetalTextureView] ❌ Failed to create pipeline: \(error)")
+                DebugLog.print("[MetalTextureView] ❌ Failed to create pipeline: \(error)")
                 return
             }
             

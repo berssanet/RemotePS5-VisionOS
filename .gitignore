@@ -22,9 +22,9 @@ xcuserdata/
 Package.resolved
 .swiftpm/
 
-# ===== Project-specific documentation (not part of the app) =====
-GEMINI.md
-TODO.md
+# ===== Local-only build configuration (per-developer secrets) =====
+Local.xcconfig
+*.local.xcconfig
 
 # ===== Debug logs =====
 chiaki_connection_log.txt
@@ -41,3 +41,6 @@ opus-build/
 *.swp
 *.swo
 *~
+
+# Core ML depth model (48MB, local-only — re-download per TODO.md Spatial 3D notes)
+VisionRemotePS5/Resources/DepthAnythingV2SmallF16.mlmodelc/

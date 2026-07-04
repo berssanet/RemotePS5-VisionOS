@@ -147,7 +147,7 @@ final class StreamingBufferPool: @unchecked Sendable {
             allocatedCount += 1
         }
         
-        print("[BufferPool] Initialized with \(poolSize) buffers of \(bufferSize) bytes")
+        DebugLog.print("[BufferPool] Initialized with \(poolSize) buffers of \(bufferSize) bytes")
     }
     
     // MARK: - Acquire/Release
@@ -173,12 +173,12 @@ final class StreamingBufferPool: @unchecked Sendable {
             // Allow up to 2x pool size for burst handling
             allocatedCount += 1
             let buffer = PooledBuffer(capacity: bufferSize, pool: self)
-            print("[BufferPool] ⚠️ Pool miss #\(missCount), allocated new buffer (total: \(allocatedCount))")
+            DebugLog.print("[BufferPool] ⚠️ Pool miss #\(missCount), allocated new buffer (total: \(allocatedCount))")
             return buffer
         }
         
         // Absolutely out of buffers - this shouldn't happen in normal operation
-        print("[BufferPool] ❌ Pool exhausted!")
+        DebugLog.print("[BufferPool] ❌ Pool exhausted!")
         return nil
     }
     
