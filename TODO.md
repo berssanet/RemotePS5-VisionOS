@@ -633,6 +633,23 @@ keypad — hand never travels, every finger is an independent actuator):**
       hand tracking cannot run in the Shared Space, so a mixed space provides
       it without hiding the room or the window. VR enter/exit swaps spaces.
 
+**⏸️ SESSION CHECKPOINT (2026-07-04 end of day) — resume here:**
+- Installed on device: v12.10.1 (`6c17c52`). Stick design: BOTH axes use the
+  telemetry-proven settle-reference pattern — camera X = palm ROLL from its
+  own resting tilt (~25° on the thigh, gravity-absolute zero was wrong),
+  camera Y = pitch (validated working). Buttons/chords validated clean.
+- FIRST TEST TOMORROW: the 5-step wrist-roll script (rest 1s → roll right →
+  roll left → tip up/down → move arm without rolling). Watch `📐` raw-angle
+  telemetry vs `🕹` stick output; only SIGN flips should remain.
+- Debug loop that works: build signed → `devicectl device install app` →
+  `devicectl device process launch --console --terminate-existing` (do NOT
+  relaunch from the headset — it kills the log capture; telemetry emojis:
+  🎛 mask edges, 🕹 sticks, 🫳 posture, 📐 raw angles).
+- Then in order: (1) axis sign calibration, (2) re-enable lifts/side-tap ONE
+  at a time (`liftsEnabled`/`sideTapEnabled` flags), (3) Spatial 3D isolated
+  test via the 2D/3D toggle (freeze suspect — watch SpatialScreen/Depth logs),
+  (4) remove temporary telemetry before merging PR #2.
+
 **Still open (on-device only):**
 - [ ] Ring hover sign on the `.palm` anchor (flip `hoverOffset` if the ring
       renders inside/behind the hand).
