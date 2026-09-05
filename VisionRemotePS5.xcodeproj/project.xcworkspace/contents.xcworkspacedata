@@ -4,10 +4,4 @@
    <FileRef
       location = "self:">
    </FileRef>
-   <FileRef
-      location = "group:ConsoleBackupService.swift">
-   </FileRef>
-   <FileRef
-      location = "group:BACKUP_GUIDE.md">
-   </FileRef>
 </Workspace>

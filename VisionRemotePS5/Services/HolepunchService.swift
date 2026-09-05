@@ -37,7 +37,7 @@ class HolepunchService: ObservableObject {
             throw HolepunchError.missingPeerInfo
         }
         
-        print("[Holepunch] Starting connection to \(peerAddress):\(peerPort)")
+        DebugLog.print("[Holepunch] Starting connection to \(peerAddress):\(peerPort)")
         
         // Step 1: Punch control hole
         connectionStatus = .punchingControlHole
@@ -66,7 +66,7 @@ class HolepunchService: ObservableObject {
             data2: sessionInfo.data2 ?? ""
         )
         
-        print("[Holepunch] ✅ Connection established!")
+        DebugLog.print("[Holepunch] ✅ Connection established!")
         return connection
     }
     
@@ -77,13 +77,13 @@ class HolepunchService: ObservableObject {
         controlSocket = nil
         dataSocket = nil
         connectionStatus = .idle
-        print("[Holepunch] Disconnected")
+        DebugLog.print("[Holepunch] Disconnected")
     }
     
     // MARK: - Hole Punching
     
     private func punchHole(host: String, port: Int, type: HolepunchPortType) async throws -> NWConnection {
-        print("[Holepunch] Punching \(type) hole to \(host):\(port)")
+        DebugLog.print("[Holepunch] Punching \(type) hole to \(host):\(port)")
         
         let endpoint = NWEndpoint.hostPort(
             host: NWEndpoint.Host(host),
@@ -100,19 +100,19 @@ class HolepunchService: ObservableObject {
             connection.stateUpdateHandler = { state in
                 switch state {
                 case .ready:
-                    print("[Holepunch] \(type) connection ready")
+                    DebugLog.print("[Holepunch] \(type) connection ready")
                     continuation.resume(returning: connection)
                     
                 case .failed(let error):
-                    print("[Holepunch] \(type) connection failed: \(error)")
+                    DebugLog.print("[Holepunch] \(type) connection failed: \(error)")
                     continuation.resume(throwing: HolepunchError.connectionFailed(error.localizedDescription))
                     
                 case .cancelled:
-                    print("[Holepunch] \(type) connection cancelled")
+                    DebugLog.print("[Holepunch] \(type) connection cancelled")
                     continuation.resume(throwing: HolepunchError.cancelled)
                     
                 case .preparing, .setup, .waiting:
-                    print("[Holepunch] \(type) state: \(state)")
+                    DebugLog.print("[Holepunch] \(type) state: \(state)")
                     
                 @unknown default:
                     break
@@ -125,9 +125,9 @@ class HolepunchService: ObservableObject {
             let punchPacket = createPunchPacket(type: type)
             connection.send(content: punchPacket, completion: .contentProcessed { error in
                 if let error = error {
-                    print("[Holepunch] Failed to send punch packet: \(error)")
+                    DebugLog.print("[Holepunch] Failed to send punch packet: \(error)")
                 } else {
-                    print("[Holepunch] Punch packet sent for \(type)")
+                    DebugLog.print("[Holepunch] Punch packet sent for \(type)")
                 }
             })
         }
@@ -159,7 +159,7 @@ class HolepunchService: ObservableObject {
     
     /// Get public IP and port via STUN
     func getPublicEndpoint() async throws -> (host: String, port: Int) {
-        print("[Holepunch] Getting public endpoint via STUN...")
+        DebugLog.print("[Holepunch] Getting public endpoint via STUN...")
         
         for server in Self.stunServers {
             let parts = server.split(separator: ":")
@@ -170,10 +170,10 @@ class HolepunchService: ObservableObject {
             
             do {
                 let result = try await performSTUNRequest(host: host, port: port)
-                print("[Holepunch] Public endpoint: \(result.host):\(result.port)")
+                DebugLog.print("[Holepunch] Public endpoint: \(result.host):\(result.port)")
                 return result
             } catch {
-                print("[Holepunch] STUN request to \(server) failed: \(error)")
+                DebugLog.print("[Holepunch] STUN request to \(server) failed: \(error)")
                 continue
             }
         }
@@ -190,8 +190,8 @@ class HolepunchService: ObservableObject {
         let connection = NWConnection(to: endpoint, using: .udp)
         
         return try await withCheckedThrowingContinuation { continuation in
-            var hasResumed = false
-            
+            let gate = ContinuationGate()
+
             connection.stateUpdateHandler = { state in
                 switch state {
                 case .ready:
@@ -199,57 +199,51 @@ class HolepunchService: ObservableObject {
                     let stunRequest = self.createSTUNBindingRequest()
                     connection.send(content: stunRequest, completion: .contentProcessed { error in
                         if let error = error {
-                            if !hasResumed {
-                                hasResumed = true
+                            if gate.tryResume() {
                                 continuation.resume(throwing: error)
                             }
                         }
                     })
-                    
+
                     // Receive STUN response
                     connection.receive(minimumIncompleteLength: 20, maximumLength: 1024) { data, _, _, error in
                         defer { connection.cancel() }
-                        
+
                         if let error = error {
-                            if !hasResumed {
-                                hasResumed = true
+                            if gate.tryResume() {
                                 continuation.resume(throwing: error)
                             }
                             return
                         }
-                        
+
                         guard let data = data,
                               let result = self.parseSTUNResponse(data) else {
-                            if !hasResumed {
-                                hasResumed = true
+                            if gate.tryResume() {
                                 continuation.resume(throwing: HolepunchError.stunParseFailed)
                             }
                             return
                         }
-                        
-                        if !hasResumed {
-                            hasResumed = true
+
+                        if gate.tryResume() {
                             continuation.resume(returning: result)
                         }
                     }
-                    
+
                 case .failed(let error):
-                    if !hasResumed {
-                        hasResumed = true
+                    if gate.tryResume() {
                         continuation.resume(throwing: error)
                     }
-                    
+
                 default:
                     break
                 }
             }
-            
+
             connection.start(queue: .main)
-            
+
             // Timeout after 5 seconds
             DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
-                if !hasResumed {
-                    hasResumed = true
+                if gate.tryResume() {
                     connection.cancel()
                     continuation.resume(throwing: HolepunchError.timeout)
                 }

@@ -49,12 +49,6 @@ final class AudioRingBuffer: @unchecked Sendable {
         }
     }
     
-    /// Number of samples that can be written (thread-safe)
-    var availableSpace: Int {
-        // -1 to distinguish full from empty
-        return capacity - availableSamples - 1
-    }
-    
     // MARK: - Initialization
     
     /// Initialize with capacity in number of samples (not bytes)
@@ -199,61 +193,6 @@ final class AudioRingBuffer: @unchecked Sendable {
     func reset() {
         readPosition.pointee = 0
         writePosition.pointee = 0
-    }
-    
-    /// Skip samples without reading them (fast discard for drift correction).
-    /// **Thread safety**: Only call from consumer thread.
-    /// - Parameter count: Number of samples to skip
-    /// - Returns: Number of samples actually skipped
-    @discardableResult
-    @inline(__always)
-    func skip(_ count: Int) -> Int {
-        // Load current write position (acquire - see producer's writes)
-        let writePos = loadAcquire(writePosition)
-        let readPos = readPosition.pointee
-        
-        // Calculate available samples
-        let available: Int
-        if writePos >= readPos {
-            available = writePos - readPos
-        } else {
-            available = capacity - readPos + writePos
-        }
-        
-        let toSkip = min(count, available)
-        guard toSkip > 0 else { return 0 }
-        
-        // Update read position with release semantics
-        let newReadPos = (readPos + toSkip) % capacity
-        storeRelease(readPosition, value: newReadPos)
-        
-        return toSkip
-    }
-    
-    /// Emergency fast discard for latency spike recovery.
-    /// Keeps only `keepSamples` in buffer, discards the rest.
-    /// **Thread safety**: Only call from consumer thread.
-    /// - Parameter keepSamples: Number of samples to keep (target buffer level)
-    /// - Returns: Number of samples discarded
-    @discardableResult
-    func fastDiscard(keepSamples: Int) -> Int {
-        let available = availableSamples
-        let toDiscard = max(0, available - keepSamples)
-        
-        if toDiscard > 0 {
-            return skip(toDiscard)
-        }
-        return 0
-    }
-    
-    /// Get buffer level as percentage (0.0-1.0)
-    var fillLevel: Float {
-        return Float(availableSamples) / Float(max(capacity - 1, 1))
-    }
-    
-    /// Get buffer level in milliseconds (for sample rate)
-    func bufferMs(sampleRate: Int) -> Double {
-        return Double(availableSamples) / Double(sampleRate) * 1000.0
     }
     
     // MARK: - Private: Memory Ordering Primitives

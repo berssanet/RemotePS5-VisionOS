@@ -10,7 +10,6 @@ class PSNWebSocketService: NSObject, ObservableObject {
     static let shared = PSNWebSocketService()
     
     @Published var isConnected = false
-    @Published var error: String?
     
     private var connection: NWConnection?
     private var pushContextId: String = ""
@@ -35,7 +34,6 @@ class PSNWebSocketService: NSObject, ObservableObject {
     var onSessionCreated: ((String) -> Void)?
     var onMemberCreated: (() -> Void)?
     var onSessionMessage: (([String: Any]) -> Void)?
-    var onDisconnected: (() -> Void)?
     
     override init() {
         super.init()
@@ -50,11 +48,11 @@ class PSNWebSocketService: NSObject, ObservableObject {
     
     /// Connect to PSN WebSocket for push notifications
     func connect(accessToken: String) async throws {
-        print("[PSNWebSocket] Starting WebSocket connection...")
+        DebugLog.print("[PSNWebSocket] Starting WebSocket connection...")
         
         // Step 1: Get WebSocket FQDN
         let fqdn = try await getWebSocketFQDN(accessToken: accessToken)
-        print("[PSNWebSocket] Got FQDN: \(fqdn)")
+        DebugLog.print("[PSNWebSocket] Got FQDN: \(fqdn)")
         
         // Step 2: Connect to WebSocket with manual handshake
         try await connectWebSocket(fqdn: fqdn, accessToken: accessToken)
@@ -66,7 +64,7 @@ class PSNWebSocketService: NSObject, ObservableObject {
         connection?.cancel()
         connection = nil
         isConnected = false
-        print("[PSNWebSocket] Disconnected")
+        DebugLog.print("[PSNWebSocket] Disconnected")
     }
     
     // MARK: - Private Methods
@@ -82,7 +80,7 @@ class PSNWebSocketService: NSObject, ObservableObject {
         // chiaki-ng only sends Authorization header for FQDN request
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         
-        print("[PSNWebSocket] Fetching FQDN from: \(Self.fqdnAPIURL)")
+        DebugLog.print("[PSNWebSocket] Fetching FQDN from: \(Self.fqdnAPIURL)")
         
         // Use shared session to maintain cookies (like chiaki-ng's CURLOPT_SHARE)
         let (data, response) = try await sharedSession.data(for: request)
@@ -91,15 +89,15 @@ class PSNWebSocketService: NSObject, ObservableObject {
             throw PSNWebSocketError.invalidResponse
         }
         
-        print("[PSNWebSocket] FQDN API status: \(httpResponse.statusCode)")
+        DebugLog.print("[PSNWebSocket] FQDN API status: \(httpResponse.statusCode)")
         
         // Capture cookies from the response
         if let headerFields = httpResponse.allHeaderFields as? [String: String] {
             let cookies = HTTPCookie.cookies(withResponseHeaderFields: headerFields, for: url)
             sessionCookies.append(contentsOf: cookies)
-            print("[PSNWebSocket] Captured \(cookies.count) cookies from FQDN response")
+            DebugLog.print("[PSNWebSocket] Captured \(cookies.count) cookies from FQDN response")
             for cookie in cookies {
-                print("[PSNWebSocket]   Cookie: \(cookie.name)=\(cookie.value.prefix(20))...")
+                DebugLog.print("[PSNWebSocket]   Cookie: \(cookie.name)=\(cookie.value.prefix(20))...")
             }
         }
         
@@ -108,11 +106,11 @@ class PSNWebSocketService: NSObject, ObservableObject {
             for cookie in storedCookies where !sessionCookies.contains(where: { $0.name == cookie.name }) {
                 sessionCookies.append(cookie)
             }
-            print("[PSNWebSocket] Total cookies in storage: \(storedCookies.count)")
+            DebugLog.print("[PSNWebSocket] Total cookies in storage: \(storedCookies.count)")
         }
         
         if let responseStr = String(data: data, encoding: .utf8) {
-            print("[PSNWebSocket] FQDN response: \(responseStr)")
+            DebugLog.print("[PSNWebSocket] FQDN response: \(responseStr)")
         }
         
         guard httpResponse.statusCode == 200 else {
@@ -132,7 +130,7 @@ class PSNWebSocketService: NSObject, ObservableObject {
     private func connectWebSocket(fqdn: String, accessToken: String) async throws {
         let wsPath = "/np/pushNotification"
         
-        print("[PSNWebSocket] Connecting to: wss://\(fqdn)\(wsPath)")
+        DebugLog.print("[PSNWebSocket] Connecting to: wss://\(fqdn)\(wsPath)")
         
         // Create TLS parameters
         let tlsOptions = NWProtocolTLS.Options()
@@ -154,48 +152,44 @@ class PSNWebSocketService: NSObject, ObservableObject {
         
         // Wait for connection to be ready
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            var hasResumed = false
-            
+            let gate = ContinuationGate()
+
             conn.stateUpdateHandler = { state in
                 switch state {
                 case .ready:
-                    print("[PSNWebSocket] TCP+TLS connection ready")
-                    if !hasResumed {
-                        hasResumed = true
+                    DebugLog.print("[PSNWebSocket] TCP+TLS connection ready")
+                    if gate.tryResume() {
                         continuation.resume()
                     }
-                    
+
                 case .failed(let error):
-                    print("[PSNWebSocket] ❌ Connection failed: \(error)")
-                    if !hasResumed {
-                        hasResumed = true
+                    DebugLog.print("[PSNWebSocket] ❌ Connection failed: \(error)")
+                    if gate.tryResume() {
                         continuation.resume(throwing: PSNWebSocketError.connectionFailed(error.localizedDescription))
                     }
-                    
+
                 case .cancelled:
-                    if !hasResumed {
-                        hasResumed = true
+                    if gate.tryResume() {
                         continuation.resume(throwing: PSNWebSocketError.connectionFailed("Connection cancelled"))
                     }
-                    
+
                 case .waiting(let error):
-                    print("[PSNWebSocket] Waiting: \(error)")
-                    
+                    DebugLog.print("[PSNWebSocket] Waiting: \(error)")
+
                 case .preparing:
-                    print("[PSNWebSocket] Preparing connection...")
-                    
+                    DebugLog.print("[PSNWebSocket] Preparing connection...")
+
                 default:
                     break
                 }
             }
-            
+
             conn.start(queue: .main)
-            
+
             // Timeout
             Task {
                 try? await Task.sleep(nanoseconds: 15_000_000_000)
-                if !hasResumed {
-                    hasResumed = true
+                if gate.tryResume() {
                     conn.cancel()
                     continuation.resume(throwing: PSNWebSocketError.connectionFailed("Connection timeout"))
                 }
@@ -209,7 +203,7 @@ class PSNWebSocketService: NSObject, ObservableObject {
         isConnected = true
         startReceivingFrames()
         
-        print("[PSNWebSocket] ✅ WebSocket connected with manual handshake!")
+        DebugLog.print("[PSNWebSocket] ✅ WebSocket connected with manual handshake!")
     }
     
     /// Perform WebSocket handshake with custom headers
@@ -241,7 +235,7 @@ class PSNWebSocketService: NSObject, ObservableObject {
         if !sessionCookies.isEmpty {
             let cookieString = sessionCookies.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
             request += "Cookie: \(cookieString)\r\n"
-            print("[PSNWebSocket] Adding Cookie header with \(sessionCookies.count) cookies")
+            DebugLog.print("[PSNWebSocket] Adding Cookie header with \(sessionCookies.count) cookies")
         }
         
         request += "\r\n"  // End of headers
@@ -250,14 +244,14 @@ class PSNWebSocketService: NSObject, ObservableObject {
             throw PSNWebSocketError.connectionFailed("Failed to encode request")
         }
         
-        print("[PSNWebSocket] Sending handshake request...")
+        DebugLog.print("[PSNWebSocket] Sending handshake request...")
         // Show first 200 bytes as hex to verify format
         let previewBytes = Array(requestData.prefix(200))
         let hexStr = previewBytes.map { String(format: "%02x", $0) }.joined(separator: " ")
-        print("[PSNWebSocket] First 200 bytes (hex): \(hexStr)")
+        DebugLog.print("[PSNWebSocket] First 200 bytes (hex): \(hexStr)")
         // Also log escaping CR/LF
         let escapedRequest = request.replacingOccurrences(of: "\r", with: "\\r").replacingOccurrences(of: "\n", with: "\\n")
-        print("[PSNWebSocket] Request (escaped): \(escapedRequest.prefix(500))...")
+        DebugLog.print("[PSNWebSocket] Request (escaped): \(escapedRequest.prefix(500))...")
         
         // Send handshake request
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
@@ -288,7 +282,7 @@ class PSNWebSocketService: NSObject, ObservableObject {
             throw PSNWebSocketError.connectionFailed("Failed to decode response")
         }
         
-        print("[PSNWebSocket] Handshake response: \(response.prefix(200))...")
+        DebugLog.print("[PSNWebSocket] Handshake response: \(response.prefix(200))...")
         
         // Check for 101 Switching Protocols
         guard response.contains("101") && response.lowercased().contains("upgrade") else {
@@ -302,10 +296,10 @@ class PSNWebSocketService: NSObject, ObservableObject {
         // Verify Sec-WebSocket-Accept (non-critical check)
         let expectedAccept = calculateWebSocketAccept(key: wsKey)
         if !response.contains(expectedAccept) {
-            print("[PSNWebSocket] ⚠️ Sec-WebSocket-Accept mismatch (may still work)")
+            DebugLog.print("[PSNWebSocket] ⚠️ Sec-WebSocket-Accept mismatch (may still work)")
         }
         
-        print("[PSNWebSocket] ✅ WebSocket handshake successful!")
+        DebugLog.print("[PSNWebSocket] ✅ WebSocket handshake successful!")
     }
     
     /// Calculate expected Sec-WebSocket-Accept value
@@ -320,16 +314,15 @@ class PSNWebSocketService: NSObject, ObservableObject {
     private func startReceivingFrames() {
         receiveTask = Task { [weak self] in
             while !Task.isCancelled {
-                guard let self = self, let connection = await self.connection else { break }
+                guard let self = self, let connection = self.connection else { break }
                 
                 do {
                     let frame = try await self.receiveWebSocketFrame(connection: connection)
                     await self.handleWebSocketFrame(frame)
                 } catch {
-                    print("[PSNWebSocket] Receive error: \(error)")
+                    DebugLog.print("[PSNWebSocket] Receive error: \(error)")
                     await MainActor.run {
                         self.isConnected = false
-                        self.onDisconnected?()
                     }
                     break
                 }
@@ -342,7 +335,6 @@ class PSNWebSocketService: NSObject, ObservableObject {
         // Read first 2 bytes for header
         let header = try await receiveBytes(connection: connection, count: 2)
         
-        let fin = (header[0] & 0x80) != 0
         let opcode = header[0] & 0x0F
         let masked = (header[1] & 0x80) != 0
         var payloadLength = Int(header[1] & 0x7F)
@@ -378,7 +370,7 @@ class PSNWebSocketService: NSObject, ObservableObject {
             }
         }
         
-        return WebSocketFrame(fin: fin, opcode: opcode, payload: payload)
+        return WebSocketFrame(opcode: opcode, payload: payload)
     }
     
     private func receiveBytes(connection: NWConnection, count: Int) async throws -> [UInt8] {
@@ -400,30 +392,29 @@ class PSNWebSocketService: NSObject, ObservableObject {
         switch frame.opcode {
         case 0x1: // Text frame
             if let text = String(data: Data(frame.payload), encoding: .utf8) {
-                print("[PSNWebSocket] Received text: \(text.prefix(200))...")
+                DebugLog.print("[PSNWebSocket] Received text: \(text.prefix(200))...")
                 await parseNotification(text)
             }
             
         case 0x2: // Binary frame
-            print("[PSNWebSocket] Received binary: \(frame.payload.count) bytes")
+            DebugLog.print("[PSNWebSocket] Received binary: \(frame.payload.count) bytes")
             if let text = String(data: Data(frame.payload), encoding: .utf8) {
                 await parseNotification(text)
             }
             
         case 0x8: // Close frame
-            print("[PSNWebSocket] Received close frame")
+            DebugLog.print("[PSNWebSocket] Received close frame")
             isConnected = false
-            onDisconnected?()
             
         case 0x9: // Ping frame
-            print("[PSNWebSocket] Received ping, sending pong")
+            DebugLog.print("[PSNWebSocket] Received ping, sending pong")
             await sendPong(payload: frame.payload)
             
         case 0xA: // Pong frame
-            print("[PSNWebSocket] Received pong")
+            DebugLog.print("[PSNWebSocket] Received pong")
             
         default:
-            print("[PSNWebSocket] Unknown opcode: \(frame.opcode)")
+            DebugLog.print("[PSNWebSocket] Unknown opcode: \(frame.opcode)")
         }
     }
     
@@ -439,7 +430,7 @@ class PSNWebSocketService: NSObject, ObservableObject {
         
         connection.send(content: Data(frame), completion: .contentProcessed { error in
             if let error = error {
-                print("[PSNWebSocket] Failed to send pong: \(error)")
+                DebugLog.print("[PSNWebSocket] Failed to send pong: \(error)")
             }
         })
     }
@@ -453,7 +444,7 @@ class PSNWebSocketService: NSObject, ObservableObject {
         
         // Check dataType for notification type
         if let dataType = json["dataType"] as? String {
-            print("[PSNWebSocket] Notification type: \(dataType)")
+            DebugLog.print("[PSNWebSocket] Notification type: \(dataType)")
             
             switch dataType {
             case "psn:sessionManager:sys:remotePlaySession:created":
@@ -474,7 +465,7 @@ class PSNWebSocketService: NSObject, ObservableObject {
                 }
                 
             default:
-                print("[PSNWebSocket] Unhandled notification: \(dataType)")
+                DebugLog.print("[PSNWebSocket] Unhandled notification: \(dataType)")
             }
         }
     }
@@ -490,28 +481,11 @@ class PSNWebSocketService: NSObject, ObservableObject {
         }
         return nil
     }
-    
-    /// Send ping to keep connection alive
-    func sendPing() async {
-        guard let connection = connection else { return }
-        
-        // Build ping frame (0x89 = fin + ping opcode)
-        let frame: [UInt8] = [0x89, 0x00]
-        
-        connection.send(content: Data(frame), completion: .contentProcessed { error in
-            if let error = error {
-                print("[PSNWebSocket] Ping failed: \(error)")
-            } else {
-                print("[PSNWebSocket] Ping sent")
-            }
-        })
-    }
 }
 
 // MARK: - WebSocket Frame
 
 private struct WebSocketFrame {
-    let fin: Bool
     let opcode: UInt8
     let payload: [UInt8]
 }

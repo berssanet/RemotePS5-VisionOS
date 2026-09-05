@@ -33,22 +33,12 @@ final class SafeBuffer {
     @discardableResult
     func copyFrom(_ source: UnsafeRawPointer, count: Int) -> Bool {
         guard count <= capacity else {
-            print("[SafeBuffer] ❌ Data size \(count) exceeds capacity \(capacity)")
+            DebugLog.print("[SafeBuffer] ❌ Data size \(count) exceeds capacity \(capacity)")
             return false
         }
         memcpy(pointer, source, count)
         size = count
         return true
-    }
-    
-    /// Get data as Swift Data (creates a copy for safety)
-    func asData() -> Data {
-        return Data(bytes: pointer, count: size)
-    }
-    
-    /// Get a non-copying view (only safe if buffer won't be reused during access)
-    func asDataView() -> Data {
-        return Data(bytesNoCopy: pointer, count: size, deallocator: .none)
     }
 }
 
@@ -90,11 +80,11 @@ final class SafeBufferPool {
         self.buffers = bufferArray
         self.available = [Bool](repeating: true, count: poolSize)
         
-        print("[SafeBufferPool] ✅ Initialized with \(poolSize) buffers × \(bufferCapacity / 1024)KB each")
+        DebugLog.print("[SafeBufferPool] ✅ Initialized with \(poolSize) buffers × \(bufferCapacity / 1024)KB each")
     }
     
     deinit {
-        print("[SafeBufferPool] Deallocated (acquired: \(acquireCount), released: \(releaseCount), failures: \(failureCount))")
+        DebugLog.print("[SafeBufferPool] Deallocated (acquired: \(acquireCount), released: \(releaseCount), failures: \(failureCount))")
     }
     
     // MARK: - Buffer Management
@@ -115,7 +105,7 @@ final class SafeBufferPool {
         
         failureCount += 1
         if failureCount % 10 == 1 {
-            print("[SafeBufferPool] ⚠️ Pool exhausted! Consider increasing pool size (failures: \(failureCount))")
+            DebugLog.print("[SafeBufferPool] ⚠️ Pool exhausted! Consider increasing pool size (failures: \(failureCount))")
         }
         return nil
     }
@@ -127,12 +117,12 @@ final class SafeBufferPool {
         defer { lock.unlock() }
         
         guard buffer.index < available.count else {
-            print("[SafeBufferPool] ❌ Invalid buffer index: \(buffer.index)")
+            DebugLog.print("[SafeBufferPool] ❌ Invalid buffer index: \(buffer.index)")
             return
         }
         
         if available[buffer.index] {
-            print("[SafeBufferPool] ⚠️ Double release of buffer \(buffer.index)")
+            DebugLog.print("[SafeBufferPool] ⚠️ Double release of buffer \(buffer.index)")
             return
         }
         
@@ -180,6 +170,6 @@ final class SafeBufferPool {
     /// Log statistics periodically
     func logStats() {
         let util = utilization * 100
-        print("[SafeBufferPool] 📊 Utilization: \(String(format: "%.1f", util))%, Available: \(availableCount)/\(buffers.count)")
+        DebugLog.print("[SafeBufferPool] 📊 Utilization: \(String(format: "%.1f", util))%, Available: \(availableCount)/\(buffers.count)")
     }
 }

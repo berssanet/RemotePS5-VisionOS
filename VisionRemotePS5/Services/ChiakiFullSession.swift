@@ -8,6 +8,7 @@
 
 import Foundation
 import CoreVideo
+import os  // Phase 5.10: os_unfair_lock for the cross-thread shutdown flag
 
 // MARK: - Chiaki Event Types (from chiaki session.h)
 
@@ -31,9 +32,6 @@ enum ChiakiEventType: Int32 {
 }
 
 // MARK: - Session Callbacks
-
-/// Called when a video frame is received from the PS5
-typealias VideoFrameHandler = (Data) -> Void
 
 /// Zero-Copy: Called with raw pointer + size (avoids memory copy)
 typealias VideoFramePointerHandler = (UnsafeRawPointer, Int) -> Void
@@ -67,6 +65,26 @@ enum SessionState: Equatable {
     }
 }
 
+enum PSNStartError: LocalizedError, Equatable {
+    case sessionBusy
+    case invalidIdentity
+    case consoleDidNotJoin
+    case requestFailed(code: UInt32)
+
+    var errorDescription: String? {
+        switch self {
+        case .sessionBusy:
+            return "A Remote Play session is already running."
+        case .invalidIdentity:
+            return "The PSN console identifier or Account ID has an invalid length."
+        case .consoleDidNotJoin:
+            return "PSN accepted the connection request, but the PS5 did not join the session. Turn on the PS5, confirm it is connected to PSN with this account, and close other Remote Play sessions. If this also fails in the official app from another network, check the console's internet and rest-mode settings."
+        case .requestFailed(let code):
+            return "PSN connection setup failed (Chiaki error \(code)). Check the connection-stage messages in the log."
+        }
+    }
+}
+
 // MARK: - ChiakiFullSession
 
 /// Swift wrapper for the chiaki-ng full streaming session
@@ -80,18 +98,27 @@ final class ChiakiFullSession: ObservableObject {
     /// Note: fileprivate(set) allows internal callbacks to update state
     @Published fileprivate(set) var state: SessionState = .idle
     
-    /// Flag to prevent callback access during shutdown
-    /// This is checked by C callbacks before accessing Swift objects
-    fileprivate var isShuttingDown: Bool = false
-    
-    /// Serial queue for thread-safe callback processing
-    private let callbackQueue = DispatchQueue(label: "com.visionremote.chiaki.callbacks", qos: .userInteractive)
+    /// Flag to prevent callback access during shutdown.
+    /// Phase 5.10: lock-protected so C callback threads and the Swift main
+    /// thread observe a coherent value without the deadlock-prone
+    /// callbackQueue.sync barrier the previous design used.
+    fileprivate var isShuttingDown: Bool {
+        get {
+            shutdownLock.lock(); defer { shutdownLock.unlock() }
+            return _isShuttingDown
+        }
+        set {
+            shutdownLock.lock(); defer { shutdownLock.unlock() }
+            _isShuttingDown = newValue
+        }
+    }
+    private var _isShuttingDown: Bool = false
+    private let shutdownLock = NSLock()
     
     /// Legacy isActive property for compatibility
     var isActive: Bool { state.isActive && !isShuttingDown }
     
     // Callbacks
-    var onVideoFrame: VideoFrameHandler?
     /// Zero-Copy callback: receives raw pointer without memory copy
     var onVideoFramePointer: VideoFramePointerHandler?
     var onAudioSamples: AudioSamplesHandler?
@@ -101,7 +128,7 @@ final class ChiakiFullSession: ObservableObject {
     // MARK: - Initialization
     
     private init() {
-        print("[ChiakiFullSession] Initialized")
+        DebugLog.info("ChiakiFullSession", "Initialized")
     }
     
     // MARK: - Public API
@@ -131,7 +158,7 @@ final class ChiakiFullSession: ObservableObject {
         }
         
         guard canStart else {
-            print("[ChiakiFullSession] ❌ Session already active (state: \(state))")
+            DebugLog.print("[ChiakiFullSession] ❌ Session already active (state: \(state))")
             return false
         }
         
@@ -139,14 +166,14 @@ final class ChiakiFullSession: ObservableObject {
         
         // Validate input sizes
         guard registKey.count == 16, rpKey.count == 16 else {
-            print("[ChiakiFullSession] ❌ Invalid key sizes: registKey=\(registKey.count), rpKey=\(rpKey.count)")
+            DebugLog.print("[ChiakiFullSession] ❌ Invalid key sizes: registKey=\(registKey.count), rpKey=\(rpKey.count)")
             return false
         }
         
-        print("[ChiakiFullSession] Starting session to \(host)")
-        print("[ChiakiFullSession]   Resolution: \(width)x\(height)@\(fps)fps")
-        print("[ChiakiFullSession]   Bitrate: \(bitrate) bps")
-        print("[ChiakiFullSession]   PS5: \(isPS5)")
+        DebugLog.print("[ChiakiFullSession] Starting session to \(host)")
+        DebugLog.print("[ChiakiFullSession]   Resolution: \(width)x\(height)@\(fps)fps")
+        DebugLog.print("[ChiakiFullSession]   Bitrate: \(bitrate) bps")
+        DebugLog.print("[ChiakiFullSession]   PS5: \(isPS5)")
         
         // Register rumble callback
         chiaki_set_rumble_callback_wrapper(rumbleCallback)
@@ -178,10 +205,10 @@ final class ChiakiFullSession: ObservableObject {
         
         if result == CHIAKI_ERR_SUCCESS {
             state = .connected
-            print("[ChiakiFullSession] ✅ Session started successfully")
+            DebugLog.info("ChiakiFullSession", "✅ Session started successfully")
             return true
         } else {
-            print("[ChiakiFullSession] ❌ Session start failed with error: \(result)")
+            DebugLog.print("[ChiakiFullSession] ❌ Session start failed with error: \(result)")
             return false
         }
     }
@@ -189,21 +216,27 @@ final class ChiakiFullSession: ObservableObject {
     /// Stop the current session
     func stop() {
         guard isActive else {
-            print("[ChiakiFullSession] No active session to stop")
+            DebugLog.info("ChiakiFullSession", "No active session to stop")
             return
         }
         
-        print("[ChiakiFullSession] Stopping session...")
-        
+        DebugLog.info("ChiakiFullSession", "Stopping session...")
+        if chiaki_fullsession_is_active_wrapper(), !chiaki_fullsession_is_started_wrapper() {
+            // A PSN start is still in its holepunch phase: only a cancel is legal here.
+            cancelPSN()
+            return
+        }
+
         // CRITICAL: Set shutdown flag BEFORE stopping to prevent callback crashes
         // C callbacks will check this flag and bail out immediately
         isShuttingDown = true
-        
-        // Small delay to ensure any in-flight callbacks complete
-        callbackQueue.sync {
-            // Barrier to ensure all pending callback work completes
-        }
-        
+
+        // Phase 5.10: replaced the `callbackQueue.sync { }` barrier (which
+        // could deadlock when invoked from main while a callback was waiting
+        // on main) with a brief drain window. The lock-protected flag
+        // guarantees in-flight callbacks see the new value.
+        Thread.sleep(forTimeInterval: 0.01)
+
         let result = chiaki_fullsession_stop_wrapper()
         
         state = .idle
@@ -212,12 +245,153 @@ final class ChiakiFullSession: ObservableObject {
         isShuttingDown = false
         
         if result == CHIAKI_ERR_SUCCESS {
-            print("[ChiakiFullSession] ✅ Session stopped")
+            DebugLog.info("ChiakiFullSession", "✅ Session stopped")
         } else {
-            print("[ChiakiFullSession] ⚠️ Session stop returned: \(result)")
+            DebugLog.print("[ChiakiFullSession] ⚠️ Session stop returned: \(result)")
         }
     }
     
+    // MARK: - PSN (holepunch) session — no PIN, no IP
+
+    /// Registered-host payload captured from CHIAKI_EVENT_REGIST (PSN auto-registration).
+    struct PSNRegisteredHost {
+        let rpKey: Data          // 16 bytes (morning)
+        let registKey: String    // hex of the raw regist key bytes, zero padding stripped
+        let serverMAC: [UInt8]   // 6 bytes
+        let nickname: String
+        let consoleIP: String    // address selected by the holepunch (the LAN IP when local)
+    }
+
+    /// Start a session through PSN. Blocking for several seconds (push WebSocket,
+    /// notifications, holepunch): call from a background thread. With `autoRegist` the
+    /// library stops right after `.regist`; read the keys with `copyRegisteredHost()`
+    /// and then call `teardown()`.
+    func startPSN(
+        token: String,
+        consoleDUID: Data,      // 32 bytes (PSN device duid, hex decoded)
+        isPS5: Bool,
+        psnAccountID: Data,     // 8 bytes
+        autoRegist: Bool,
+        width: UInt32 = 1920,
+        height: UInt32 = 1080,
+        fps: UInt32 = 60,
+        bitrate: UInt32 = 15_000
+    ) throws {
+        switch state {
+        case .idle, .quit:
+            break
+        default:
+            DebugLog.print("[ChiakiFullSession] ❌ Session already active (state: \(state))")
+            throw PSNStartError.sessionBusy
+        }
+        guard consoleDUID.count == 32, psnAccountID.count == 8 else {
+            DebugLog.print("[ChiakiFullSession] ❌ PSN start: duid=\(consoleDUID.count) bytes, accountId=\(psnAccountID.count) bytes")
+            throw PSNStartError.invalidIdentity
+        }
+        publishState(.connecting)
+        DebugLog.print("[ChiakiFullSession] Starting PSN session (autoRegist=\(autoRegist), ps5=\(isPS5))")
+        Self.installCABundle()
+        chiaki_set_rumble_callback_wrapper(rumbleCallback)
+        let result = token.withCString { tokenPtr in
+            consoleDUID.withUnsafeBytes { duidPtr in
+                psnAccountID.withUnsafeBytes { idPtr in
+                    chiaki_fullsession_start_psn_wrapper(
+                        tokenPtr,
+                        duidPtr.baseAddress?.assumingMemoryBound(to: UInt8.self),
+                        isPS5,
+                        idPtr.baseAddress?.assumingMemoryBound(to: UInt8.self),
+                        autoRegist,
+                        width, height, fps, bitrate,
+                        videoCallback, audioCallback, eventCallback,
+                        nil
+                    )
+                }
+            }
+        }
+        if result == CHIAKI_ERR_SUCCESS {
+            // Stay `.connecting` (active); the event callback owns `.streaming` / `.quit`.
+            DebugLog.info("ChiakiFullSession", "✅ PSN session started")
+            return
+        }
+        publishState(.quit(reason: "PSN session failed (\(result.rawValue))"))
+        DebugLog.print("[ChiakiFullSession] ❌ PSN session start failed: \(result)")
+        if result == CHIAKI_ERR_HOST_DOWN {
+            throw PSNStartError.consoleDidNotJoin
+        }
+        throw PSNStartError.requestFailed(code: result.rawValue)
+    }
+
+    /// Abort a PSN start that is still in its blocking holepunch phase.
+    func cancelPSN() {
+        chiaki_fullsession_cancel_psn_wrapper()
+    }
+
+    /// `state` is observed on main; the blocking wrappers run off-main.
+    private func publishState(_ newState: SessionState) {
+        if Thread.isMainThread {
+            state = newState
+        } else {
+            DispatchQueue.main.async { self.state = newState }
+        }
+    }
+
+    /// Keys + console address captured at `.regist` (PSN auto-registration).
+    func copyRegisteredHost() -> PSNRegisteredHost? {
+        var rpKey = [UInt8](repeating: 0, count: 16)
+        var registKey = [UInt8](repeating: 0, count: 16)
+        var mac = [UInt8](repeating: 0, count: 6)
+        var nickname = [CChar](repeating: 0, count: 64)
+        var ip = [CChar](repeating: 0, count: 64)
+        let ok = chiaki_fullsession_copy_registered_host_wrapper(
+            &rpKey, &registKey, &mac, &nickname, nickname.count, &ip, ip.count)
+        guard ok else { return nil }
+        // Same convention as ChiakiBridgeService: the regist key is raw bytes up to the first zero.
+        let keyBytes = registKey.prefix { $0 != 0 }
+        return PSNRegisteredHost(
+            rpKey: Data(rpKey),
+            registKey: keyBytes.map { String(format: "%02x", $0) }.joined(),
+            serverMAC: mac,
+            nickname: String(cString: nickname),
+            consoleIP: String(cString: ip)
+        )
+    }
+
+    /// Stop + free the library session regardless of the Swift state (a session that
+    /// already emitted `.quit` is not `isActive`, but the C side still holds it).
+    func teardown() {
+        guard chiaki_fullsession_is_active_wrapper() else {
+            publishState(.idle)
+            return
+        }
+        guard chiaki_fullsession_is_started_wrapper() else {
+            // Holepunch phase still running: cancel it; the start wrapper frees itself.
+            cancelPSN()
+            return
+        }
+        isShuttingDown = true
+        Thread.sleep(forTimeInterval: 0.01)
+        let result = chiaki_fullsession_stop_wrapper()
+        publishState(.idle)
+        isShuttingDown = false
+        DebugLog.info("ChiakiFullSession", "Teardown returned \(result)")
+    }
+
+    /// The library's curl (mbedTLS) has no system trust store: hand it the bundled cacert.pem.
+    private static func installCABundle() {
+        guard let path = Bundle.main.path(forResource: "cacert", ofType: "pem") else {
+            DebugLog.print("[ChiakiFullSession] ❌ cacert.pem missing from the app bundle; PSN TLS will fail")
+            return
+        }
+        path.withCString { chiaki_set_ca_bundle_path_wrapper($0) }
+    }
+
+    /// Client DUID in PSN format, generated by the library ("0000000700410080" + 32 hex).
+    static func makeClientDUID() -> String? {
+        var buffer = [CChar](repeating: 0, count: 64)
+        guard chiaki_generate_client_duid_wrapper(&buffer, buffer.count) else { return nil }
+        return String(cString: buffer)
+    }
+
     /// Update controller state
     func setControllerState(
         buttons: UInt32,
@@ -233,11 +407,6 @@ final class ChiakiFullSession: ObservableObject {
             rightX, rightY,
             l2, r2
         )
-    }
-    
-    /// Check if session is active via C API
-    func checkIfActive() -> Bool {
-        return chiaki_fullsession_is_active_wrapper()
     }
 }
 
@@ -256,11 +425,6 @@ struct SafeBufferView {
         }
         return Data(bytes: baseAddress, count: count)
     }
-    
-    /// Check if buffer is valid for reading
-    var isValid: Bool {
-        return count > 0 && count < 50_000_000
-    }
 }
 
 /// Video frame callback from C
@@ -278,18 +442,15 @@ private let videoCallback: ChiakiWrapperVideoCallback = { buf, bufSize, user in
     
     // GUARD 3: Validate buffer pointer
     guard let buf = buf else {
-        print("[ChiakiCallback] ⚠️ Video buffer is nil!")
+        DebugLog.warning("ChiakiCallback", "⚠️ Video buffer is nil!")
         return
     }
     
     // GUARD 4: Validate buffer size (reasonable range for video frames)
     guard bufSize > 0, bufSize < 10_000_000 else {
-        print("[ChiakiCallback] ⚠️ Invalid buffer size: \(bufSize)")
+        DebugLog.print("[ChiakiCallback] ⚠️ Invalid buffer size: \(bufSize)")
         return
     }
-    
-    // Create type-safe buffer view
-    let safeBuffer = SafeBufferView(baseAddress: buf, count: bufSize)
     
     // Debug logging (rate-limited)
     #if DEBUG
@@ -301,13 +462,6 @@ private let videoCallback: ChiakiWrapperVideoCallback = { buf, bufSize, user in
     if let pointerHandler = ChiakiFullSession.shared.onVideoFramePointer {
         pointerHandler(buf, bufSize)
         return
-    }
-    
-    // FALLBACK: Legacy path with Data copy (for compatibility)
-    if let frameHandler = ChiakiFullSession.shared.onVideoFrame {
-        let data = safeBuffer.toData()
-        guard !data.isEmpty else { return }
-        frameHandler(data)
     }
 }
 

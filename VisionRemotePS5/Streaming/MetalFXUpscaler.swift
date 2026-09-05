@@ -18,56 +18,26 @@ import CoreVideo
 /// NOTE: Only .spatial is available on visionOS
 enum UpscalingMode {
     case spatial   // MetalFX Spatial Scaler (visionOS supported)
-    case temporal  // Not available on visionOS
 }
 
 /// HDR configuration for the upscaler
 struct MetalFXHDRConfig {
-    /// HDR precision mode
-    enum HDRPrecision: String {
-        case standard   // bgra10_xr - Good for most HDR content (2.0 EDR headroom)
-        case high       // rgba16Float - Maximum precision for extreme HDR (8.0+ EDR headroom)
-    }
-    
     /// Enable HDR processing with extended range formats
     var hdrEnabled: Bool = false
-    
-    /// HDR precision level (affects format choice)
-    var precision: HDRPrecision = .standard
-    
-    /// Maximum EDR headroom for HDR content (1.0 = SDR, 2.0+ = HDR)
-    /// Vision Pro Micro-OLED typically supports 2.0-4.0 EDR
-    var maxEDRHeadroom: Float = 2.0
     
     /// Pixel format for SDR mode
     static let sdrFormat: MTLPixelFormat = .bgra8Unorm
     
-    /// Pixel format for standard HDR (Apple Extended Range - supports values > 1.0)
+    /// Pixel format for HDR (Apple Extended Range - supports values > 1.0)
     static let hdrFormat: MTLPixelFormat = .bgra10_xr
     
-    /// Pixel format for high-precision HDR (full 16-bit float for PQ/HLG)
-    static let hdrHighPrecisionFormat: MTLPixelFormat = .rgba16Float
-    
-    /// Get the appropriate format based on HDR state and precision
+    /// Get the appropriate format based on HDR state
     var colorFormat: MTLPixelFormat {
-        guard hdrEnabled else { return Self.sdrFormat }
-        switch precision {
-        case .standard: return Self.hdrFormat
-        case .high: return Self.hdrHighPrecisionFormat
-        }
+        return hdrEnabled ? Self.hdrFormat : Self.sdrFormat
     }
     
     var outputFormat: MTLPixelFormat {
         return colorFormat
-    }
-    
-    /// Description for logging
-    var description: String {
-        if !hdrEnabled { return "SDR (bgra8Unorm)" }
-        switch precision {
-        case .standard: return "HDR (bgra10_xr, EDR: \(maxEDRHeadroom))"
-        case .high: return "HDR High (rgba16Float, EDR: \(maxEDRHeadroom))"
-        }
     }
 }
 
@@ -75,15 +45,14 @@ struct MetalFXHDRConfig {
 
 /// Color metadata extracted from CVPixelBuffer for HDR color management.
 /// These values describe how to interpret the pixel data.
-struct HDRColorMetadata: Sendable {
+/// `@unchecked` because CFString is immutable and thread-safe but is not
+/// statically marked Sendable by the CoreFoundation overlay.
+struct HDRColorMetadata: @unchecked Sendable {
     /// Color primaries (e.g., BT.709, BT.2020, Display P3)
     let colorPrimaries: CFString?
     
     /// Transfer function (e.g., sRGB, PQ, HLG)
     let transferFunction: CFString?
-    
-    /// YCbCr matrix (for YUV content)
-    let ycbcrMatrix: CFString?
     
     /// Whether content is HDR (PQ or HLG transfer function)
     var isHDR: Bool {
@@ -104,28 +73,8 @@ struct HDRColorMetadata: Sendable {
         return CFEqual(tf, kCVImageBufferTransferFunction_ITU_R_2100_HLG)
     }
     
-    /// Whether content uses wide color gamut (BT.2020 or Display P3)
-    var isWideGamut: Bool {
-        guard let cp = colorPrimaries else { return false }
-        return CFEqual(cp, kCVImageBufferColorPrimaries_ITU_R_2020) ||
-               CFEqual(cp, kCVImageBufferColorPrimaries_P3_D65)
-    }
-    
-    /// Whether content uses BT.2020 color primaries
-    var isBT2020: Bool {
-        guard let cp = colorPrimaries else { return false }
-        return CFEqual(cp, kCVImageBufferColorPrimaries_ITU_R_2020)
-    }
-    
     /// Create empty metadata
-    static let unknown = HDRColorMetadata(colorPrimaries: nil, transferFunction: nil, ycbcrMatrix: nil)
-    
-    /// Create BT.2020 + PQ (standard HDR10)
-    static let hdr10 = HDRColorMetadata(
-        colorPrimaries: kCVImageBufferColorPrimaries_ITU_R_2020,
-        transferFunction: kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ,
-        ycbcrMatrix: kCVImageBufferYCbCrMatrix_ITU_R_2020
-    )
+    static let unknown = HDRColorMetadata(colorPrimaries: nil, transferFunction: nil)
     
     /// Suggested EDR headroom based on transfer function
     /// PQ: Can represent up to 10,000 nits, but typical content is 1,000-4,000 nits
@@ -134,26 +83,6 @@ struct HDRColorMetadata: Sendable {
         if isPQ { return 4.0 }  // 4x SDR white for typical HDR10 content
         if isHLG { return 2.0 } // 2x SDR white for HLG
         return 1.0 // SDR
-    }
-    
-    /// Get CGColorSpace for this content (visionOS 2.0+)
-    @available(visionOS 2.0, *)
-    var cgColorSpace: CGColorSpace? {
-        if isPQ && isBT2020 {
-            // BT.2020 + PQ = HDR10
-            return CGColorSpace(name: CGColorSpace.itur_2100_PQ)
-        } else if isHLG && isBT2020 {
-            // BT.2020 + HLG
-            return CGColorSpace(name: CGColorSpace.itur_2100_HLG)
-        } else if isBT2020 {
-            // BT.2020 without HDR transfer function
-            return CGColorSpace(name: CGColorSpace.itur_2020)
-        } else if let cp = colorPrimaries, CFEqual(cp, kCVImageBufferColorPrimaries_P3_D65) {
-            // Display P3
-            return CGColorSpace(name: CGColorSpace.displayP3)
-        }
-        // Default: sRGB
-        return CGColorSpace(name: CGColorSpace.sRGB)
     }
     
     /// Debug description
@@ -196,34 +125,15 @@ final class MetalFXUpscaler {
     
     // MARK: - HDR Configuration
     
-    /// HDR configuration (can be changed at runtime)
-    private(set) var hdrConfig: MetalFXHDRConfig
-    
-    /// Current pixel format based on HDR state
-    var currentPixelFormat: MTLPixelFormat {
-        return hdrConfig.colorFormat
-    }
+    /// HDR configuration (fixed at initialization)
+    let hdrConfig: MetalFXHDRConfig
     
     // MARK: - State
     
     private var frameCount: UInt64 = 0
     
-    /// Triple buffer pool for non-blocking GPU sync
-    private var tripleBuffer: TripleBufferPool?
-    
-    // MARK: - MTLEvent Synchronization
-    
-    /// Shared event for GPU-GPU synchronization (avoids CPU waits)
-    private var syncEvent: MTLSharedEvent?
-    
-    /// Event counter for frame synchronization
-    private var eventCounter: UInt64 = 0
-    
     /// Last extracted color metadata
     private(set) var lastColorMetadata: HDRColorMetadata = .unknown
-    
-    /// Callback invoked when upscaling completes (non-blocking)
-    var onUpscaleComplete: ((MTLTexture) -> Void)?
     
     // MARK: - Initialization
     
@@ -284,16 +194,6 @@ final class MetalFXUpscaler {
         }
         self.mode = .spatial
         
-        // Create triple buffer pool with matching format
-        self.tripleBuffer = TripleBufferPool(
-            device: device,
-            width: Self.outputWidth,
-            height: Self.outputHeight,
-            pixelFormat: hdrConfig.outputFormat
-        )
-        
-        // Create MTLSharedEvent for GPU-GPU synchronization
-        self.syncEvent = device.makeSharedEvent()
         let hdrStatus = hdrEnabled ? "HDR (bgra10_xr)" : "SDR (bgra8Unorm)"
         DebugLog.info("MetalFXUpscaler", "✅ Initialized (SPATIAL mode, \(Self.inputWidth)x\(Self.inputHeight) → \(Self.outputWidth)x\(Self.outputHeight), \(hdrStatus))")
     }
@@ -328,18 +228,6 @@ final class MetalFXUpscaler {
         return true
     }
     
-    // MARK: - Mode Control
-    
-    /// Switch upscaling mode
-    /// NOTE: On visionOS, only .spatial is supported
-    func setMode(_ newMode: UpscalingMode) {
-        if newMode == .temporal {
-            DebugLog.warning("MetalFXUpscaler", "Temporal mode not available on visionOS, using Spatial")
-        }
-        // Always use spatial on visionOS
-        mode = .spatial
-    }
-    
     // MARK: - Upscaling
     
     /// Extract color metadata from CVPixelBuffer
@@ -350,25 +238,18 @@ final class MetalFXUpscaler {
         
         var colorPrimaries: CFString?
         var transferFunction: CFString?
-        var ycbcrMatrix: CFString?
         
         if let attachments = attachments as? [CFString: Any] {
-            // CFString values - use direct access and cast
-            if let cp = attachments[kCVImageBufferColorPrimariesKey] {
-                colorPrimaries = (cp as! CFString)
-            }
-            if let tf = attachments[kCVImageBufferTransferFunctionKey] {
-                transferFunction = (tf as! CFString)
-            }
-            if let mat = attachments[kCVImageBufferYCbCrMatrixKey] {
-                ycbcrMatrix = (mat as! CFString)
-            }
+            // Conditional casts (via String bridging): attachment values come
+            // from the network stream's decoder output — never trust them to
+            // be CFString.
+            colorPrimaries = (attachments[kCVImageBufferColorPrimariesKey] as? String).map { $0 as CFString }
+            transferFunction = (attachments[kCVImageBufferTransferFunctionKey] as? String).map { $0 as CFString }
         }
         
         let metadata = HDRColorMetadata(
             colorPrimaries: colorPrimaries,
-            transferFunction: transferFunction,
-            ycbcrMatrix: ycbcrMatrix
+            transferFunction: transferFunction
         )
         
         // Log first detection of HDR content
@@ -442,104 +323,6 @@ final class MetalFXUpscaler {
         return outputTexture
     }
     
-    /// Upscale with MTLEvent synchronization (non-blocking, GPU-GPU sync)
-    /// Returns the output texture and event counter for downstream synchronization
-    func upscaleAsync(_ pixelBuffer: CVPixelBuffer) -> (texture: MTLTexture, eventValue: UInt64)? {
-        guard let spatialScaler = spatialScaler,
-              let textureCache = textureCache,
-              let outputTexture = self.outputTexture,
-              let syncEvent = self.syncEvent else {
-            return nil
-        }
-        
-        frameCount += 1
-        eventCounter += 1
-        
-        // Extract color metadata
-        _ = extractColorMetadata(from: pixelBuffer)
-        
-        let width = CVPixelBufferGetWidth(pixelBuffer)
-        let height = CVPixelBufferGetHeight(pixelBuffer)
-        
-        // Create input texture
-        var cvTexture: CVMetalTexture?
-        let status = CVMetalTextureCacheCreateTextureFromImage(
-            nil, textureCache, pixelBuffer, nil,
-            hdrConfig.colorFormat, width, height, 0, &cvTexture
-        )
-        
-        guard status == kCVReturnSuccess, let cvTexture = cvTexture,
-              let inputTexture = CVMetalTextureGetTexture(cvTexture) else {
-            return nil
-        }
-        
-        guard let commandBuffer = commandQueue.makeCommandBuffer() else {
-            return nil
-        }
-        
-        // Encode upscaling
-        spatialScaler.colorTexture = inputTexture
-        spatialScaler.outputTexture = outputTexture
-        spatialScaler.encode(commandBuffer: commandBuffer)
-        
-        // Signal event when GPU work completes (no CPU wait needed)
-        let currentEventValue = eventCounter
-        commandBuffer.encodeSignalEvent(syncEvent, value: currentEventValue)
-        
-        commandBuffer.commit()
-        // NO waitUntilCompleted() - caller uses MTLEvent to sync
-        
-        return (outputTexture, currentEventValue)
-    }
-    
-    /// Get the shared event for downstream GPU synchronization
-    var sharedEvent: MTLSharedEvent? {
-        return syncEvent
-    }
-    
-    // MARK: - Scene Cut (no-op for Spatial Scaler)
-    
-    /// Signal a scene cut - no effect for Spatial Scaler (no temporal history)
-    func signalSceneCut() {
-        // Spatial Scaler has no temporal history, nothing to reset
-    }
-    
-    // MARK: - HDR Control
-    
-    /// Enable or disable HDR mode
-    /// Note: Requires reinitializing textures and scaler for format change
-    func setHDREnabled(_ enabled: Bool) {
-        guard enabled != hdrConfig.hdrEnabled else { return }
-        
-        hdrConfig.hdrEnabled = enabled
-        
-        // Reinitialize scaler with new format
-        if !initializeSpatialScaler() {
-            DebugLog.error("MetalFXUpscaler", "Failed to reinitialize scaler for HDR change")
-        }
-        
-        // Recreate output texture with new format
-        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: hdrConfig.outputFormat,
-            width: Self.outputWidth,
-            height: Self.outputHeight,
-            mipmapped: false
-        )
-        descriptor.usage = [.shaderRead, .shaderWrite, .renderTarget]
-        descriptor.storageMode = .private
-        
-        if let newOutput = device.makeTexture(descriptor: descriptor) {
-            outputTexture = newOutput
-            let formatName = enabled ? "bgra10_xr (HDR)" : "bgra8Unorm (SDR)"
-            DebugLog.info("MetalFXUpscaler", "✅ HDR mode changed, format: \(formatName)")
-        }
-    }
-    
-    /// Check if HDR is currently enabled
-    var isHDREnabled: Bool {
-        return hdrConfig.hdrEnabled
-    }
-    
     // MARK: - Utilities
     
     private func formatName(_ format: OSType) -> String {
@@ -552,12 +335,6 @@ final class MetalFXUpscaler {
             return "YUV420 (Full Range)"
         default:
             return "Unknown(\(format))"
-        }
-    }
-    
-    func flush() {
-        if let cache = textureCache {
-            CVMetalTextureCacheFlush(cache, 0)
         }
     }
 }

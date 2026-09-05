@@ -2,40 +2,8 @@
 //  StreamingView.swift
 //  VisionRemotePS5
 //
-//  v10.5: Launcher view that opens 3 separate movable windows:
-//  1. MenuBarWindow - Top bar with controls
-//  2. StreamingVideoWindow - Video display (hidden in VR)
-//  3. ControllerWindow - Gamepad controls
-//
 
 import SwiftUI
-
-struct StreamingView: View {
-    @EnvironmentObject var appState: AppState
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.openWindow) private var openWindow
-    @Environment(\.dismissWindow) private var dismissWindow
-    
-    let console: Console
-    
-    var body: some View {
-        // This view just launches the windows and closes itself
-        Color.clear
-            .frame(width: 1, height: 1)
-            .task {
-                // Store selected console
-                appState.selectedConsole = console
-                
-                // Open all 3 windows
-                openWindow(id: "StreamingWindow", value: console)
-                openWindow(id: "MenuBarWindow")
-                openWindow(id: "ControllerWindow")
-                
-                // Close this launcher window
-                dismiss()
-            }
-    }
-}
 
 // MARK: - Streaming View Model (shared)
 
@@ -43,15 +11,13 @@ struct StreamingView: View {
 class StreamingViewModel: ObservableObject {
     @Published var isConnected = false
     @Published var statusMessage = "Ready"
-    @Published var showControls = true
     
-    func startStreaming(console: Console) async {
+    func startStreaming(console: Console, auth: PSNAuthService) async {
         isConnected = false
         statusMessage = "Connecting..."
         
         // Build configuration from Console
-        guard let rpKey = console.rpKey,
-              let registKey = console.registKey else {
+        guard console.psnDeviceID != nil || (console.rpKey != nil && console.registKey != nil) else {
             statusMessage = "Error: Missing registration keys"
             return
         }
@@ -59,10 +25,10 @@ class StreamingViewModel: ObservableObject {
         let psnAccountId = console.psnAccountId ?? Data(repeating: 0, count: 8)
         let isPS5 = console.type == .ps5 || console.type == .ps5Digital
         
-        let config = StreamingConfiguration(
+        var config = StreamingConfiguration(
             host: console.ipAddress,
-            rpKey: rpKey,
-            registKey: registKey,
+            rpKey: console.rpKey ?? Data(),
+            registKey: console.registKey ?? "",
             psnAccountID: psnAccountId,
             isPS5: isPS5,
             width: 1920,
@@ -72,6 +38,15 @@ class StreamingViewModel: ObservableObject {
         )
         
         do {
+            if let deviceID = console.psnDeviceID {
+                let token = try await auth.getAccessToken()
+                guard let account = auth.userProfile.flatMap({ Data(base64Encoded: $0.accountId) }),
+                      account == console.psnAccountId else {
+                    throw PSNRemotePlayCoordinator.CoordinatorError.missingAccountId
+                }
+                config.psnConnection = PSNStreamingConnection(token: token, deviceID: deviceID)
+            }
+            try Task.checkCancellation()
             statusMessage = "Starting stream..."
             StreamingService.shared.delegate = self
             try await StreamingService.shared.startStreaming(configuration: config)
@@ -96,17 +71,6 @@ class StreamingViewModel: ObservableObject {
     func sendButtonRelease(_ button: ControllerButton) {
         StreamingService.shared.releaseButton(button)
     }
-    
-    func sendJoystickInput(left: CGPoint, right: CGPoint) {
-        StreamingService.shared.setLeftStick(
-            x: Int16(left.x * 32767),
-            y: Int16(left.y * 32767)
-        )
-        StreamingService.shared.setRightStick(
-            x: Int16(right.x * 32767),
-            y: Int16(right.y * 32767)
-        )
-    }
 }
 
 // MARK: - Streaming Service Delegate
@@ -117,8 +81,6 @@ extension StreamingViewModel: StreamingServiceDelegate {
             switch state {
             case .connecting:
                 statusMessage = "Connecting..."
-            case .requestingSession:
-                statusMessage = "Requesting session..."
             case .negotiating:
                 statusMessage = "Negotiating stream..."
             case .streaming:
@@ -128,7 +90,9 @@ extension StreamingViewModel: StreamingServiceDelegate {
                 statusMessage = "Error: \(msg)"
                 isConnected = false
             case .stopped:
-                statusMessage = "Stopped"
+                if !statusMessage.hasPrefix("Error:") {
+                    statusMessage = "Stopped"
+                }
                 isConnected = false
             case .idle:
                 statusMessage = "Ready"

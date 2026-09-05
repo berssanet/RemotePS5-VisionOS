@@ -29,8 +29,9 @@ struct MenuBarWindow: View {
             Spacer()
             
             // v10.6: Controller mode selector (icon-only)
+            // v12.5: only HoloPad is selectable (ControllerMode.selectable)
             Menu {
-                ForEach(AppState.ControllerMode.allCases, id: \.self) { mode in
+                ForEach(AppState.ControllerMode.selectable, id: \.self) { mode in
                     Button(action: {
                         appState.controllerMode = mode
                     }) {
@@ -111,11 +112,17 @@ struct MenuBarWindow: View {
     private func enterVRMode() {
         // Prevent opening another immersive space if one is already active
         guard !appState.isImmersiveActive else {
-            print("[MenuBar] ⚠️ ImmersiveSpace already active, skipping")
+            DebugLog.print("[MenuBar] ⚠️ ImmersiveSpace already active, skipping")
             return
         }
         
         Task {
+            // v12.6: only one immersive space at a time — close the windowed
+            // HoloPad companion space before opening full VR.
+            if appState.isHoloPadSpaceActive {
+                await dismissImmersiveSpace()
+                appState.isHoloPadSpaceActive = false
+            }
             let result = await openImmersiveSpace(id: "StreamingSpace")
             if case .opened = result {
                 appState.isImmersiveActive = true
@@ -164,7 +171,7 @@ struct MenuBarWindow: View {
             dismissWindow(id: "ControllerWindow")
             dismissWindow(id: "MenuBarWindow")
             
-            print("[MenuBarWindow] Session ended, returned to console selection")
+            DebugLog.print("[MenuBarWindow] Session ended, returned to console selection")
         }
     }
 }

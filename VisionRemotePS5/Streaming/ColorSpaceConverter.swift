@@ -21,7 +21,6 @@ enum ColorPrimaries: Int {
 enum TransferFunction {
     case sdr        // Standard gamma 2.2
     case pq         // ST.2084 (HDR10)
-    case hlg        // Hybrid Log-Gamma (rarely used by PS5)
 }
 
 /// Metal-based color space converter for HDR video processing.
@@ -97,17 +96,6 @@ final class ColorSpaceConverter {
         // Normalize from 10000 nits reference to EDR range
         // Vision Pro supports ~1600 nits, so we scale accordingly
         return linear * 10.0;  // Returns 0-10 for EDR (10 = 1000 nits)
-    }
-    
-    // sRGB EOTF (gamma expansion for SDR)
-    float3 srgbEOTF(float3 srgb) {
-        float3 linear;
-        for (int i = 0; i < 3; i++) {
-            linear[i] = srgb[i] <= 0.04045 
-                ? srgb[i] / 12.92 
-                : pow((srgb[i] + 0.055) / 1.055, 2.4);
-        }
-        return linear;
     }
     
     // ============================================================
@@ -242,15 +230,15 @@ final class ColorSpaceConverter {
     // MARK: - Initialization
     
     init?() {
-        print("[ColorSpaceConverter] 🚀 Starting initialization...")
+        DebugLog.print("[ColorSpaceConverter] 🚀 Starting initialization...")
         
         guard let device = MTLCreateSystemDefaultDevice() else {
-            print("[ColorSpaceConverter] ❌ No Metal device available")
+            DebugLog.print("[ColorSpaceConverter] ❌ No Metal device available")
             return nil
         }
         
         guard let commandQueue = device.makeCommandQueue() else {
-            print("[ColorSpaceConverter] ❌ Failed to create command queue")
+            DebugLog.print("[ColorSpaceConverter] ❌ Failed to create command queue")
             return nil
         }
         
@@ -261,7 +249,7 @@ final class ColorSpaceConverter {
         var cache: CVMetalTextureCache?
         let status = CVMetalTextureCacheCreate(nil, nil, device, nil, &cache)
         guard status == kCVReturnSuccess, let textureCache = cache else {
-            print("[ColorSpaceConverter] ❌ Failed to create texture cache: \(status)")
+            DebugLog.print("[ColorSpaceConverter] ❌ Failed to create texture cache: \(status)")
             return nil
         }
         self.textureCache = textureCache
@@ -271,8 +259,8 @@ final class ColorSpaceConverter {
             return nil
         }
         
-        print("[ColorSpaceConverter] ✅ Initialized")
-        print("[ColorSpaceConverter]   Supported: BT.709 (SDR), BT.2020 + PQ (HDR10)")
+        DebugLog.print("[ColorSpaceConverter] ✅ Initialized")
+        DebugLog.print("[ColorSpaceConverter]   Supported: BT.709 (SDR), BT.2020 + PQ (HDR10)")
     }
     
     private func compileShaders() -> Bool {
@@ -281,17 +269,17 @@ final class ColorSpaceConverter {
             
             guard let yuv420Func = library.makeFunction(name: "yuv420ToRGB"),
                   let passthroughFunc = library.makeFunction(name: "bgraPassthrough") else {
-                print("[ColorSpaceConverter] ❌ Failed to find shader functions")
+                DebugLog.print("[ColorSpaceConverter] ❌ Failed to find shader functions")
                 return false
             }
             
             yuv420ToRGBPipeline = try device.makeComputePipelineState(function: yuv420Func)
             bgraPassthroughPipeline = try device.makeComputePipelineState(function: passthroughFunc)
             
-            print("[ColorSpaceConverter] ✅ Shaders compiled")
+            DebugLog.print("[ColorSpaceConverter] ✅ Shaders compiled")
             return true
         } catch {
-            print("[ColorSpaceConverter] ❌ Shader compilation failed: \(error)")
+            DebugLog.print("[ColorSpaceConverter] ❌ Shader compilation failed: \(error)")
             return false
         }
     }
@@ -313,14 +301,14 @@ final class ColorSpaceConverter {
         descriptor.storageMode = .private
         
         guard let texture = device.makeTexture(descriptor: descriptor) else {
-            print("[ColorSpaceConverter] ❌ Failed to create output texture")
+            DebugLog.print("[ColorSpaceConverter] ❌ Failed to create output texture")
             return nil
         }
         
         outputTexture = texture
         outputWidth = width
         outputHeight = height
-        print("[ColorSpaceConverter] ✅ Created output texture: \(width)x\(height) (RGBA16Float)")
+        DebugLog.print("[ColorSpaceConverter] ✅ Created output texture: \(width)x\(height) (RGBA16Float)")
         
         return texture
     }
@@ -329,7 +317,7 @@ final class ColorSpaceConverter {
     
     /// Convert CVPixelBuffer (P010 or BGRA) to linear RGB MTLTexture
     func convert(_ pixelBuffer: CVPixelBuffer) -> MTLTexture? {
-        guard let textureCache = textureCache else { return nil }
+        guard textureCache != nil else { return nil }
         
         frameCount += 1
         
@@ -345,9 +333,9 @@ final class ColorSpaceConverter {
         // Log first frame details
         if frameCount == 1 {
             let formatName = formatDescription(format)
-            print("[ColorSpaceConverter] 📹 First frame: \(width)x\(height), format=\(formatName)")
-            print("[ColorSpaceConverter]   Color primaries: \(colorPrimaries == .bt2020 ? "BT.2020" : "BT.709")")
-            print("[ColorSpaceConverter]   Transfer: \(transferFunction == .pq ? "PQ (HDR10)" : "SDR")")
+            DebugLog.print("[ColorSpaceConverter] 📹 First frame: \(width)x\(height), format=\(formatName)")
+            DebugLog.print("[ColorSpaceConverter]   Color primaries: \(colorPrimaries == .bt2020 ? "BT.2020" : "BT.709")")
+            DebugLog.print("[ColorSpaceConverter]   Transfer: \(transferFunction == .pq ? "PQ (HDR10)" : "SDR")")
         }
         
         // Route to appropriate converter based on pixel format
@@ -363,7 +351,7 @@ final class ColorSpaceConverter {
             
         default:
             if frameCount <= 5 {
-                print("[ColorSpaceConverter] ⚠️ Unsupported format: \(format)")
+                DebugLog.print("[ColorSpaceConverter] ⚠️ Unsupported format: \(format)")
             }
             return nil
         }
@@ -392,7 +380,7 @@ final class ColorSpaceConverter {
         guard status == kCVReturnSuccess, let yTexture = yTexture,
               let yMtl = CVMetalTextureGetTexture(yTexture) else {
             if frameCount <= 5 {
-                print("[ColorSpaceConverter] ❌ Failed to create Y texture: \(status)")
+                DebugLog.print("[ColorSpaceConverter] ❌ Failed to create Y texture: \(status)")
             }
             return nil
         }
@@ -406,7 +394,7 @@ final class ColorSpaceConverter {
         guard status == kCVReturnSuccess, let cbcrTexture = cbcrTexture,
               let cbcrMtl = CVMetalTextureGetTexture(cbcrTexture) else {
             if frameCount <= 5 {
-                print("[ColorSpaceConverter] ❌ Failed to create CbCr texture: \(status)")
+                DebugLog.print("[ColorSpaceConverter] ❌ Failed to create CbCr texture: \(status)")
             }
             return nil
         }
@@ -446,7 +434,7 @@ final class ColorSpaceConverter {
         commandBuffer.waitUntilCompleted()
         
         if frameCount % 60 == 0 {
-            print("[ColorSpaceConverter] 📊 Frame \(frameCount) converted (P010→RGBA16F)")
+            DebugLog.print("[ColorSpaceConverter] 📊 Frame \(frameCount) converted (P010→RGBA16F)")
         }
         
         return outputTexture
@@ -493,7 +481,7 @@ final class ColorSpaceConverter {
         commandBuffer.waitUntilCompleted()
         
         if frameCount % 60 == 0 {
-            print("[ColorSpaceConverter] 📊 Frame \(frameCount) passthrough (BGRA→RGBA16F)")
+            DebugLog.print("[ColorSpaceConverter] 📊 Frame \(frameCount) passthrough (BGRA→RGBA16F)")
         }
         
         return outputTexture
@@ -513,12 +501,6 @@ final class ColorSpaceConverter {
             return "NV12 8-bit (Video Range)"
         default:
             return "Unknown(\(format))"
-        }
-    }
-    
-    func flush() {
-        if let cache = textureCache {
-            CVMetalTextureCacheFlush(cache, 0)
         }
     }
 }

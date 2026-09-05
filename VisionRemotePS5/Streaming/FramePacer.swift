@@ -113,7 +113,7 @@ final class FramePacer: NSObject {
         lock.unlock()
         
         #if DEBUG
-        print("[FramePacer] ⏹️ Stopped")
+        DebugLog.print("[FramePacer] ⏹️ Stopped")
         printStats()
         #endif
     }
@@ -222,11 +222,11 @@ final class FramePacer: NSObject {
     private func printStats() {
         guard stats.totalFrames > 0 else { return }
         
-        print("[FramePacer] 📊 Session Stats:")
-        print("[FramePacer]   Total frames: \(stats.totalFrames)")
-        print("[FramePacer]   Dropped frames: \(stats.droppedFrames)")
-        print("[FramePacer]   Avg frame time: \(String(format: "%.2f", stats.averageFrameTime))ms")
-        print("[FramePacer]   Variance: \(String(format: "%.2f", stats.variance))ms")
+        DebugLog.print("[FramePacer] 📊 Session Stats:")
+        DebugLog.print("[FramePacer]   Total frames: \(stats.totalFrames)")
+        DebugLog.print("[FramePacer]   Dropped frames: \(stats.droppedFrames)")
+        DebugLog.print("[FramePacer]   Avg frame time: \(String(format: "%.2f", stats.averageFrameTime))ms")
+        DebugLog.print("[FramePacer]   Variance: \(String(format: "%.2f", stats.variance))ms")
     }
     #endif
 }

@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject var appState: AppState
+    @Environment(\.dismiss) private var dismiss
     @AppStorage("enableHaptics") private var enableHaptics = true
     @AppStorage("enableSpatialAudio") private var enableSpatialAudio = true
     @AppStorage("showLatencyIndicator") private var showLatencyIndicator = true
@@ -100,13 +101,20 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("Settings")
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                }
+            }
         }
     }
     
     private func saveAccountId() {
         if !manualAccountId.isEmpty {
             UserDefaults.standard.set(manualAccountId, forKey: "psn_account_id")
-            print("[Settings] ✅ Saved Account ID: \(manualAccountId)")
+            DebugLog.print("[Settings] ✅ Saved Account ID: \(manualAccountId)")
         }
     }
     

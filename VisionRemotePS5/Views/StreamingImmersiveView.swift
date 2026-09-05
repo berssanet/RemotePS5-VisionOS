@@ -3,13 +3,14 @@
 //  VisionRemotePS5
 //
 //  Immersive view for streaming in VR space
-//  Uses same coordinator pattern as RealityKitVideoView to avoid duplicate entities
+//  Uses a texture coordinator that mutates RealityKit entities in place to avoid duplicate entities
 //
 
 import SwiftUI
 import RealityKit
 import CoreVideo
 import Metal
+import QuartzCore  // Phase 5.11: monotonic clock (CACurrentMediaTime), avoids NTP-induced judder
 
 // MARK: - Immersive Texture Coordinator
 
@@ -30,11 +31,14 @@ final class ImmersiveTextureCoordinator {
     // v11.2: Atomic update tracking to prevent white flashes
     private var updateInProgress = false
     private var lastUpdateTime: CFAbsoluteTime = 0
-    private var frameCounter: UInt64 = 0
     private var sessionId: UInt64 = 0  // Track VR sessions to detect re-entry
     
     private(set) var videoEntity: ModelEntity?
-    private(set) var hasValidTexture = false
+
+    /// Spatial 3D mode reuses this resource on the displaced screen — the
+    /// backing LowLevelTexture updates in place, so every material
+    /// referencing it shows new frames automatically.
+    var currentTextureResource: TextureResource? { textureResource }
     
     private init() {}
     
@@ -69,7 +73,8 @@ final class ImmersiveTextureCoordinator {
         let newSize = (sourceTexture.width, sourceTexture.height)
         
         // v11.2: Timeout protection - if update stuck for >100ms, force reset
-        let now = CFAbsoluteTimeGetCurrent()
+        // Phase 5.11: monotonic clock so NTP adjustments don't trigger spurious resets
+        let now = CACurrentMediaTime()
         if updateInProgress && (now - lastUpdateTime) > 0.1 {
             DebugLog.warning("ImmersiveCoordinator", "Update timeout, forcing reset")
             updateInProgress = false
@@ -114,8 +119,6 @@ final class ImmersiveTextureCoordinator {
             textureSize = (sourceTexture.width, sourceTexture.height)
             isInitialized = true
             isInitializing = false
-            hasValidTexture = true
-            frameCounter = 0
             
             DebugLog.info("ImmersiveCoordinator", "✅ Texture: \(sourceTexture.width)x\(sourceTexture.height)")
             
@@ -147,8 +150,7 @@ final class ImmersiveTextureCoordinator {
               !updateInProgress else { return }
         
         updateInProgress = true
-        lastUpdateTime = CFAbsoluteTimeGetCurrent()
-        frameCounter += 1
+        lastUpdateTime = CACurrentMediaTime()  // Phase 5.11: monotonic clock
         
         guard let commandBuffer = queue.makeCommandBuffer() else {
             updateInProgress = false
@@ -202,8 +204,6 @@ final class ImmersiveTextureCoordinator {
         textureSize = (0, 0)
         isInitialized = false
         isInitializing = false
-        hasValidTexture = false
-        frameCounter = 0
         
         // v11.2: Also clear entity to force recreation on next VR entry
         if let entity = videoEntity {
@@ -234,13 +234,13 @@ struct StreamingImmersiveView: View {
     // v10.6: Virtual steering wheel hand tracking
     @StateObject private var steeringService = VirtualSteeringWheelService()
     @State private var steeringInputTimer: Timer?
-    
-    // v11.x: Wheel position in immersive space (relative to screen at [0, 1.8, -4.0])
-    @State private var wheelPosition: SIMD3<Float> = [0, 0.9, -1.2]  // Below screen center, ~1.2m away
+
+    // v12.2: HoloPad gesture controller
+    @StateObject private var gestureService = HandGestureControllerService()
+    @State private var gestureInputTimer: Timer?
     
     // v11.x: Button bitmask for wheel panel buttons (wired into 120Hz input loop)
     @State private var pressedButtons: UInt32 = 0
-    
     
     var body: some View {
         ZStack {
@@ -248,12 +248,21 @@ struct StreamingImmersiveView: View {
             if upscalingPipeline.isEnabled,
                let texture4K = upscalingPipeline.upscaledTexture {
                 if #available(visionOS 2.0, *) {
-                    Immersive4KSurface(
-                        texture: texture4K,
-                        frameId: upscalingPipeline.textureFrameId,
-                        showWheel: appState.controllerMode == .virtualWheel,
-                        steeringValue: steeringService.steeringValue
-                    )
+                    // v12.1: depth-displaced spatial screen vs flat cinema screen
+                    if appState.spatial3DEnabled {
+                        Spatial3DSurface(
+                            texture: texture4K,
+                            frameId: upscalingPipeline.textureFrameId,
+                            showWheel: appState.controllerMode == .virtualWheel
+                        )
+                    } else {
+                        Immersive4KSurface(
+                            texture: texture4K,
+                            frameId: upscalingPipeline.textureFrameId,
+                            showWheel: appState.controllerMode == .virtualWheel,
+                            steeringValue: steeringService.steeringValue
+                        )
+                    }
                 } else if let frame = currentFrame {
                     StreamingSurface(pixelBuffer: frame)
                 }
@@ -287,14 +296,29 @@ struct StreamingImmersiveView: View {
                     Attachment(id: "controlPanel") {
                         FloatingControlPanel(
                             isUpscalingEnabled: upscalingPipeline.isEnabled,
+                            isSpatial3DEnabled: appState.spatial3DEnabled,
+                            showHoloPadProfile: appState.controllerMode == .handGesture,
+                            isCyborgProfile: gestureService.inputProfile == .cyborgPaddles,
                             onExitVR: { Task { await exitImmersive() } },
-                            onToggleUpscaling: { upscalingPipeline.isEnabled.toggle() }
+                            onToggleUpscaling: { upscalingPipeline.isEnabled.toggle() },
+                            onToggleSpatial3D: { appState.spatial3DEnabled.toggle() },
+                            onToggleHoloPadProfile: {
+                                gestureService.inputProfile =
+                                    gestureService.inputProfile == .thumbTaps ? .cyborgPaddles : .thumbTaps
+                            }
                         )
                     }
                 }
                 .transition(.opacity)
             }
             
+            // v12.2: HoloPad holographic feedback (fingertip orbs + ghost sticks)
+            if appState.controllerMode == .handGesture {
+                if #available(visionOS 2.0, *) {
+                    HoloPadFeedbackView(service: gestureService)
+                }
+            }
+
             // v11.x: Wheel button panel + HUD (rendered as RealityView attachment)
             if appState.controllerMode == .virtualWheel {
                 RealityView { content, attachments in
@@ -371,26 +395,43 @@ struct StreamingImmersiveView: View {
             toggleControls()
         }
         .onReceive(NotificationCenter.default.publisher(for: .videoFrameReceived)) { notification in
-            guard let object = notification.object else { return }
+            // CVPixelBuffer is a CF type: conditional-cast via CFTypeID check
+            // is overkill here, but never force-cast a notification payload.
+            guard let object = notification.object, CFGetTypeID(object as CFTypeRef) == CVPixelBufferGetTypeID() else { return }
             let frame = object as! CVPixelBuffer
             currentFrame = frame
-            
+
             if upscalingPipeline.isEnabled {
                 // v10.0: Update EDR headroom from monitored scene value
                 // On visionOS, we estimate based on device thermal state
                 // TODO: Implement thermal state monitoring via ProcessInfo
                 upscalingPipeline.updateEDRHeadroom(from: currentEDRHeadroom)
-                
-                let result = upscalingPipeline.processFrame(frame)
-                if result == nil && upscalingPipeline.textureFrameId < 5 {
-                    print("[StreamingImmersiveView] ⚠️ processFrame returned nil")
-                }
-                
+
+                // v12.1: the frame was ALREADY upscaled by StreamingViewModel
+                // before this notification was posted (same actor, ordered) —
+                // do NOT call processFrame again here. The previous duplicate
+                // call doubled the MetalFX GPU cost for every frame in VR.
+
                 // v10.5.1: Direct update to ImmersiveTextureCoordinator
                 // RealityView.update doesn't trigger reliably, so we update directly
                 if #available(visionOS 2.0, *) {
                     if let upscaledTexture = upscalingPipeline.upscaledTexture {
                         ImmersiveTextureCoordinator.shared.updateTexture(from: upscaledTexture)
+                        if appState.spatial3DEnabled,
+                           let resource = ImmersiveTextureCoordinator.shared.currentTextureResource {
+                            SpatialScreenCoordinator.shared.adoptVideoTexture(resource)
+                        }
+                    }
+
+                    // v12.1: feed the Neural Engine depth estimator (drop-frame:
+                    // returns nil instantly while an inference is in flight, so
+                    // this never queues up work behind the video path).
+                    if appState.spatial3DEnabled {
+                        Task {
+                            if let depthFrame = await DepthEstimationService.shared.estimate(from: frame) {
+                                SpatialScreenCoordinator.shared.updateDepth(depthFrame)
+                            }
+                        }
                     }
                 }
             }
@@ -399,21 +440,24 @@ struct StreamingImmersiveView: View {
             upscalingPipeline.initialize()
             
             // v10.6: Start hand tracking if virtual wheel mode
-            print("[StreamingImmersive] 🎮 Controller mode: \(appState.controllerMode)")
+            DebugLog.print("[StreamingImmersive] 🎮 Controller mode: \(appState.controllerMode)")
             let isSteeringMode = appState.controllerMode == .virtualWheel
             if isSteeringMode {
-                print("[StreamingImmersive] 🎯 Virtual Wheel mode ACTIVE - starting hand tracking...")
+                DebugLog.print("[StreamingImmersive] 🎯 Virtual Wheel mode ACTIVE - starting hand tracking...")
                 Task {
                     do {
                         try await steeringService.startTracking()
-                        print("[StreamingImmersive] ✅ Hand tracking started successfully")
+                        DebugLog.print("[StreamingImmersive] ✅ Hand tracking started successfully")
                     } catch {
-                        print("[StreamingImmersive] ❌ Hand tracking failed: \(error)")
+                        DebugLog.print("[StreamingImmersive] ❌ Hand tracking failed: \(error)")
                     }
                 }
                 // Start input loop at 120Hz for lower latency
                 steeringInputTimer = Timer.scheduledTimer(withTimeInterval: 1.0/120.0, repeats: true) { _ in
-                    Task { @MainActor in
+                    // Timer is scheduled on the main run loop, so it always
+                    // fires on the main thread — assumeIsolated avoids a
+                    // 120Hz Task allocation (Phase 5.20 hot-path pattern).
+                    MainActor.assumeIsolated {
                         guard steeringService.isTracking else { return }
                         
                         // Get steering and trigger values
@@ -433,22 +477,65 @@ struct StreamingImmersiveView: View {
                         )
                     }
                 }
-                print("[StreamingImmersive] ⏱️ Input timer started at 120Hz (~8ms latency)")
+                DebugLog.print("[StreamingImmersive] ⏱️ Input timer started at 120Hz (~8ms latency)")
+            } else if appState.controllerMode == .handGesture {
+                // v12.2: HoloPad — full gesture controller
+                DebugLog.print("[StreamingImmersive] 🖐️ HoloPad mode ACTIVE - starting hand tracking...")
+                Task {
+                    do {
+                        try await gestureService.startTracking()
+                    } catch {
+                        DebugLog.print("[StreamingImmersive] ❌ HoloPad hand tracking failed: \(error)")
+                    }
+                }
+                gestureInputTimer = Timer.scheduledTimer(withTimeInterval: 1.0/120.0, repeats: true) { _ in
+                    // Main-runloop timer fires on the main thread (5.20 pattern).
+                    MainActor.assumeIsolated {
+                        // While a hand is untracked, keep sending NEUTRAL state:
+                        // the console latches the last state received, so going
+                        // silent mid-press would leave a button stuck down.
+                        guard gestureService.isTracking else {
+                            ChiakiFullSession.shared.setControllerState(
+                                buttons: 0, leftX: 0, leftY: 0, rightX: 0, rightY: 0, l2: 0, r2: 0
+                            )
+                            return
+                        }
+                        ChiakiFullSession.shared.setControllerState(
+                            buttons: gestureService.buttonsBitmask,
+                            leftX: Int16(gestureService.leftStick.x * 32767),
+                            leftY: Int16(gestureService.leftStick.y * 32767),
+                            rightX: Int16(gestureService.rightStick.x * 32767),
+                            rightY: Int16(gestureService.rightStick.y * 32767),
+                            l2: UInt8(gestureService.leftTrigger * 255),
+                            r2: UInt8(gestureService.rightTrigger * 255)
+                        )
+                    }
+                }
+                DebugLog.print("[StreamingImmersive] ⏱️ HoloPad input timer started at 120Hz")
             } else {
-                print("[StreamingImmersive] ℹ️ Not in steering wheel mode, skipping hand tracking")
+                DebugLog.print("[StreamingImmersive] ℹ️ Standard controller mode, skipping hand tracking")
             }
         }
         .onDisappear {
             controlHideTimer?.invalidate()
             controlHideTimer = nil
-            // Reset immersive coordinator
+            // Reset immersive coordinators
             if #available(visionOS 2.0, *) {
                 ImmersiveTextureCoordinator.shared.reset()
+                SpatialScreenCoordinator.shared.reset()
+                Task { await DepthEstimationService.shared.resetRange() }
             }
             // v10.6: Stop hand tracking and input timer
             steeringInputTimer?.invalidate()
             steeringInputTimer = nil
             steeringService.stopTracking()
+            // v12.2: Stop HoloPad
+            gestureInputTimer?.invalidate()
+            gestureInputTimer = nil
+            gestureService.stopTracking()
+            if #available(visionOS 2.0, *) {
+                HoloPadFeedbackCoordinator.shared.reset()
+            }
         }
     }
     
@@ -470,23 +557,6 @@ struct StreamingImmersiveView: View {
     private func exitImmersive() async {
         await dismissImmersiveSpace()
     }
-    
-    // v10.6: Send steering wheel input to PS5
-    private func sendSteeringInput() {
-        guard steeringService.isTracking else { return }
-        
-        // Steering goes to left stick X
-        let steering = CGFloat(steeringService.steeringValue)
-        
-        // Triggers: R2 (throttle) - L2 (brake) = right stick Y
-        let throttleBrake = CGFloat(steeringService.rightTrigger - steeringService.leftTrigger)
-        
-        appState.streamingViewModel.sendJoystickInput(
-            left: CGPoint(x: steering, y: 0),
-            right: CGPoint(x: 0, y: throttleBrake)
-        )
-    }
-    
 }
 
 // MARK: - Immersive 4K Surface (using coordinator - original without GPU)
@@ -523,7 +593,7 @@ struct Immersive4KSurface: View {
             
             if entity.parent == nil {
                 content.add(entity)
-                print("[Immersive4KSurface] ✅ Entity added to scene")
+                DebugLog.print("[Immersive4KSurface] ✅ Entity added to scene")
             }
             
             // Initial texture update
@@ -532,7 +602,7 @@ struct Immersive4KSurface: View {
             // v11.x: Load 3D wheel into SAME scene as video surface
             if showWheel {
                 do {
-                    print("[Immersive4KSurface] 🎡 Loading MercedesF1Wheel...")
+                    DebugLog.print("[Immersive4KSurface] 🎡 Loading MercedesF1Wheel...")
                     let wheelEntity = try await Entity(named: "MercedesF1Wheel")
                     
                     wheelEntity.position = wheelPos
@@ -549,9 +619,9 @@ struct Immersive4KSurface: View {
                     wheelEntity.orientation = cockpitTilt * faceToUser
                     
                     content.add(wheelEntity)
-                    print("[Immersive4KSurface] ✅ Wheel added — pos:\(wheelPos) scale:\(wheelScale)")
+                    DebugLog.print("[Immersive4KSurface] ✅ Wheel added — pos:\(wheelPos) scale:\(wheelScale)")
                 } catch {
-                    print("[Immersive4KSurface] ❌ Failed to load wheel: \(error)")
+                    DebugLog.print("[Immersive4KSurface] ❌ Failed to load wheel: \(error)")
                 }
             }
             
@@ -560,7 +630,7 @@ struct Immersive4KSurface: View {
             coordinator.updateTexture(from: texture)
             
             if frameId == 1 || frameId % 120 == 0 {
-                print("[Immersive4KSurface] 📊 Frame \(frameId), texture: \(texture.width)x\(texture.height)")
+                DebugLog.print("[Immersive4KSurface] 📊 Frame \(frameId), texture: \(texture.width)x\(texture.height)")
             }
             
             // v11.x: Update wheel steering rotation
@@ -637,7 +707,7 @@ struct StreamingSurface: View {
         let cgImage = context.makeImage() else { return nil }
         
         do {
-            return try TextureResource.generate(from: cgImage, options: .init(semantic: .color))
+            return try TextureResource(image: cgImage, options: .init(semantic: .color))
         } catch {
             return nil
         }
@@ -649,9 +719,14 @@ struct StreamingSurface: View {
 /// Floating control panel with visionOS glass material design
 struct FloatingControlPanel: View {
     let isUpscalingEnabled: Bool
+    let isSpatial3DEnabled: Bool
+    var showHoloPadProfile: Bool = false
+    var isCyborgProfile: Bool = false
     let onExitVR: () -> Void
     let onToggleUpscaling: () -> Void
-    
+    let onToggleSpatial3D: () -> Void
+    var onToggleHoloPadProfile: () -> Void = {}
+
     var body: some View {
         HStack(spacing: 24) {
             // Resolution indicator/toggle
@@ -673,7 +748,55 @@ struct FloatingControlPanel: View {
             .buttonStyle(.plain)
             .background(isUpscalingEnabled ? Color.blue.opacity(0.3) : Color.clear)
             .clipShape(RoundedRectangle(cornerRadius: 12))
-            
+
+            Divider()
+                .frame(height: 40)
+
+            // v12.1: Spatial 3D (AI depth) toggle
+            Button(action: onToggleSpatial3D) {
+                HStack(spacing: 8) {
+                    Image(systemName: isSpatial3DEnabled ? "view.3d" : "view.2d")
+                        .font(.title2)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(isSpatial3DEnabled ? "3D" : "2D")
+                            .font(.headline)
+                        Text(isSpatial3DEnabled ? "AI Depth (Neural Engine)" : "Flat Screen")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+            }
+            .buttonStyle(.plain)
+            .background(isSpatial3DEnabled ? Color.purple.opacity(0.3) : Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+
+            // v12.4: HoloPad input profile (Thumb Taps ↔ Cyborg Paddles)
+            if showHoloPadProfile {
+                Divider()
+                    .frame(height: 40)
+
+                Button(action: onToggleHoloPadProfile) {
+                    HStack(spacing: 8) {
+                        Image(systemName: isCyborgProfile ? "keyboard.fill" : "hand.tap")
+                            .font(.title2)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(isCyborgProfile ? "Paddles" : "Taps")
+                                .font(.headline)
+                            Text(isCyborgProfile ? "Cyborg: press fingers down" : "Thumb-to-finger taps")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                }
+                .buttonStyle(.plain)
+                .background(isCyborgProfile ? Color.orange.opacity(0.3) : Color.clear)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+            }
+
             Divider()
                 .frame(height: 40)
             

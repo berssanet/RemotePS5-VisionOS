@@ -14,6 +14,7 @@
 #define CHIAKI_LIB_ENABLE_OPUS 1
 
 #include "ChiakiCore.h"
+#include "PSNConnectionDiagnostics.h"
 #include <stddef.h> // for offsetof
 
 // Public headers from Chiaki.xcframework
@@ -26,9 +27,40 @@
 #include <chiaki/remote/holepunch.h>
 #include <chiaki/rpcrypt.h>
 
+#include <curl/curl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+// ===========================================
+//  curl CA bundle (PSN holepunch over HTTPS/WSS)
+// ===========================================
+// libchiaki_full.a's curl uses mbedTLS with no CA store, so peer verification fails
+// on visionOS. remote/holepunch.c is rebuilt (scripts/rebuild_holepunch_module.sh) with
+// curl_easy_init redirected here, and Swift points this at the bundled cacert.pem.
+static char g_ca_bundle_path[1024] = {0};
+
+CHIAKI_EXPORT void chiaki_set_ca_bundle_path_wrapper(const char *path) {
+  if (!path) {
+    g_ca_bundle_path[0] = '\0';
+    return;
+  }
+  strncpy(g_ca_bundle_path, path, sizeof(g_ca_bundle_path) - 1);
+  g_ca_bundle_path[sizeof(g_ca_bundle_path) - 1] = '\0';
+  fprintf(stderr, "[ChiakiCore] curl CA bundle: %s\n", g_ca_bundle_path);
+}
+
+CHIAKI_EXPORT CURL *chiaki_visionos_curl_easy_init(void) {
+  CURL *handle = curl_easy_init();
+  if (handle && g_ca_bundle_path[0] != '\0') {
+    CURLcode rc = curl_easy_setopt(handle, CURLOPT_CAINFO, g_ca_bundle_path);
+    if (rc != CURLE_OK)
+      fprintf(stderr, "[ChiakiCore] CURLOPT_CAINFO failed: %d\n", (int)rc);
+  } else if (handle) {
+    fprintf(stderr, "[ChiakiCore] WARNING: no CA bundle set; PSN TLS will fail\n");
+  }
+  return handle;
+}
 
 // Helper to disable warnings for stubs
 #pragma clang diagnostic push
@@ -55,40 +87,13 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_socket_set_nonblock(chiaki_socket_t sock,
   return CHIAKI_ERR_SUCCESS;
 }
 
-CHIAKI_EXPORT chiaki_socket_t *
-chiaki_get_holepunch_sock(ChiakiHolepunchSession session,
-                          ChiakiHolepunchPortType type) {
-  return NULL;
-}
-
-CHIAKI_EXPORT uint16_t chiaki_get_ps_ctrl_port(ChiakiHolepunchSession session) {
-  return 0;
-}
-
-CHIAKI_EXPORT void chiaki_get_ps_selected_addr(ChiakiHolepunchSession session,
-                                               char *ps_ip) {
-  if (ps_ip)
-    ps_ip[0] = '\0';
-}
-
-CHIAKI_EXPORT ChiakiHolepunchRegistInfo
-chiaki_get_regist_info(ChiakiHolepunchSession session) {
-  ChiakiHolepunchRegistInfo info = {0};
-  return info;
-}
-
-CHIAKI_EXPORT void
-chiaki_holepunch_session_fini(ChiakiHolepunchSession session) {}
-
-CHIAKI_EXPORT ChiakiErrorCode chiaki_holepunch_session_punch_hole(
-    ChiakiHolepunchSession session, ChiakiHolepunchPortType port_type) {
-  return CHIAKI_ERR_UNKNOWN;
-}
-
-CHIAKI_EXPORT ChiakiErrorCode
-holepunch_session_create_offer(ChiakiHolepunchSession session) {
-  return CHIAKI_ERR_UNKNOWN;
-}
+// The former holepunch stubs (chiaki_get_holepunch_sock, chiaki_get_ps_ctrl_port,
+// chiaki_get_ps_selected_addr, chiaki_get_regist_info, chiaki_holepunch_session_fini,
+// chiaki_holepunch_session_punch_hole, holepunch_session_create_offer) were removed on
+// 2026-09-05: libchiaki_full.a ships the real remote/holepunch.c.o, which could not be
+// linked before because json-c / miniupnpc / zlib symbols were unresolved. The app now links
+// Frameworks/json-c/libjson-c.a + libz and provides miniupnpc_stub.c, so the archive member
+// links and re-defining these here would be a duplicate-symbol error.
 
 // ===========================================
 //  Registration Wrappers
@@ -131,9 +136,12 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_decrypt_regist_response_wrapper(
   memcpy(rpcrypt.bright, bright_key, 16);
   memcpy(rpcrypt.ambassador, ambassador_key, 16);
 
-  uint8_t *decrypted = malloc(data_size);
+  // +1 so the buffer is always NUL-terminated: the parser below relies on
+  // strstr/strchr/strlen, which must never scan past the allocation.
+  uint8_t *decrypted = malloc(data_size + 1);
   if (!decrypted)
     return CHIAKI_ERR_MEMORY;
+  decrypted[data_size] = '\0';
 
   ChiakiErrorCode err =
       chiaki_rpcrypt_decrypt(&rpcrypt, 0, encrypted_data, decrypted, data_size);
@@ -300,10 +308,20 @@ typedef struct visionos_chiaki_session_t {
   ChiakiWrapperEventCallback event_callback;
   ChiakiWrapperRumbleCallback rumble_callback;
   void *callback_user; // User data passed from Swift
+  // PSN (holepunch) session state — filled by chiaki_fullsession_start_psn_wrapper
+  ChiakiHolepunchSession holepunch_session; // owned by ChiakiSession after init
+  char console_ip[64];                      // chiaki_get_ps_selected_addr result
+  ChiakiRegisteredHost registered_host;     // copy of CHIAKI_EVENT_REGIST payload
+  bool has_registered_host;
+  bool session_started; // chiaki_session_start succeeded: stop/join/fini are legal
 } VisionOSChiakiSession;
 
 // Global session instance (wrapper struct, not raw ChiakiSession)
 static VisionOSChiakiSession *g_active_session = NULL;
+
+// Shared tail of both start wrappers (defined below chiaki_fullsession_start_wrapper).
+static ChiakiErrorCode
+fullsession_start_with_connect_info(ChiakiConnectInfo *connect_info);
 
 // Video sample callback for ChiakiSession
 // Following Android pattern: receives wrapper struct as user parameter
@@ -425,6 +443,19 @@ static void session_event_cb(ChiakiEvent *event, void *user) {
                                wrapper->callback_user);
     }
     break;
+  case CHIAKI_EVENT_REGIST:
+    // PSN auto-registration finished: keep the keys so Swift can persist the console.
+    if (wrapper) {
+      memcpy(&wrapper->registered_host, &event->host, sizeof(ChiakiRegisteredHost));
+      wrapper->has_registered_host = true;
+    }
+    fprintf(stderr, "[ChiakiSession] ✅ REGIST via PSN: %s\n",
+            event->host.server_nickname);
+    break;
+  case CHIAKI_EVENT_HOLEPUNCH:
+    reason = event->data_holepunch.finished ? "data-finished" : "data-punching";
+    fprintf(stderr, "[ChiakiSession] Holepunch: %s\n", reason);
+    break;
   default:
     fprintf(stderr, "[ChiakiSession] Event type=%d\n", event->type);
     break;
@@ -437,7 +468,7 @@ static void session_event_cb(ChiakiEvent *event, void *user) {
 
 // Custom log callback
 static void chiaki_log_cb(ChiakiLogLevel level, const char *msg, void *user) {
-  const char *level_str = "???";
+  const char *level_str;
   switch (level) {
   case CHIAKI_LOG_DEBUG:
     level_str = "DBG";
@@ -454,8 +485,34 @@ static void chiaki_log_cb(ChiakiLogLevel level, const char *msg, void *user) {
   case CHIAKI_LOG_ERROR:
     level_str = "ERR";
     break;
+  default:
+    level_str = "???";
+    break;
   }
   fprintf(stderr, "[Chiaki/%s] %s\n", level_str, msg);
+}
+
+static void psn_report_progress(VisionOSChiakiSession *wrapper, const char *stage) {
+  fprintf(stderr, "[ChiakiPSN] stage=%s\n", stage);
+  if (wrapper && wrapper->event_callback)
+    wrapper->event_callback(CHIAKI_EVENT_HOLEPUNCH, stage, wrapper->callback_user);
+}
+
+static void chiaki_psn_log_cb(ChiakiLogLevel level, const char *msg, void *user) {
+  if (!msg)
+    return;
+  if (level == CHIAKI_LOG_VERBOSE) {
+    if (chiaki_psn_command_was_accepted(msg))
+      psn_report_progress(user, "psn-awaiting-console");
+    return;
+  }
+  if (level == CHIAKI_LOG_DEBUG)
+    return;
+  if (strcmp(msg, "holepunch_session_create_offer: IPV6 NOT supported by your PlayStation console. Skipping IPV6 connection") == 0) {
+    chiaki_log_cb(level, "Preparing IPv4 candidates; IPv6 is disabled in this Chiaki build", user);
+    return;
+  }
+  chiaki_log_cb(level, msg, user);
 }
 
 // Set rumble callback (call this before starting session)
@@ -517,7 +574,9 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_fullsession_start_wrapper(
           (void *)video_cb, (void *)audio_cb);
 
   // Initialize log inside wrapper
-  chiaki_log_init(&g_active_session->log, CHIAKI_LOG_ALL, chiaki_log_cb, NULL);
+  chiaki_log_init(&g_active_session->log,
+                  CHIAKI_LOG_ERROR | CHIAKI_LOG_WARNING | CHIAKI_LOG_INFO,
+                  chiaki_log_cb, NULL);
 
   // Test if log callback works
   CHIAKI_LOGI(&g_active_session->log, "TEST: Log callback is working!");
@@ -556,9 +615,17 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_fullsession_start_wrapper(
            CHIAKI_PSN_ACCOUNT_ID_SIZE);
   }
 
+  return fullsession_start_with_connect_info(&connect_info);
+}
+
+// Shared tail: init the library session with the given connect info, install the
+// callbacks at the library's ABI offsets (dual-path, see skills/chiaki-abi-shim),
+// wire the OPUS decoder sink, then start the session thread.
+static ChiakiErrorCode
+fullsession_start_with_connect_info(ChiakiConnectInfo *connect_info) {
   // Initialize session (as MEMBER of wrapper, like Android)
   ChiakiErrorCode err = chiaki_session_init(
-      g_active_session->session, &connect_info, &g_active_session->log);
+      g_active_session->session, connect_info, &g_active_session->log);
   if (err != CHIAKI_ERR_SUCCESS) {
     fprintf(stderr, "[ChiakiSession] Init failed: %d\n", err);
     free(g_active_session->session);
@@ -597,6 +664,26 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_fullsession_start_wrapper(
   // here too)
   chiaki_session_set_video_sample_cb(g_active_session->session,
                                      session_video_sample_cb, g_active_session);
+
+// ABI FIX (2026-07-04): the EVENT callback suffers the SAME +944 skew as the
+// video/audio callbacks (header 592 -> library 1536, user 600 -> 1544; delta
+// identical to video 608->1552 and audio 624->1568). Without this manual
+// write the library never fires events: the session streams video but Swift
+// never sees CHIAKI_EVENT_CONNECTED, so StreamingService stays in
+// "negotiating" and ALL controller input is discarded ("Not streaming,
+// ignoring input" on device). Dual-path per skills/chiaki-abi-shim: manual
+// write at the library offset + the existing header-side setter above.
+#define LIBRARY_EVENT_CB_OFFSET 1536
+#define LIBRARY_EVENT_CB_USER_OFFSET 1544
+
+  *((ChiakiEventCallback *)(session_bytes + LIBRARY_EVENT_CB_OFFSET)) =
+      session_event_cb;
+  *((void **)(session_bytes + LIBRARY_EVENT_CB_USER_OFFSET)) =
+      g_active_session;
+  fprintf(stderr,
+          "[ChiakiCore] DEBUG ABI: event_cb manually written at library "
+          "offset %d (header offset %zu)\n",
+          LIBRARY_EVENT_CB_OFFSET, offsetof(ChiakiSession, event_cb));
 
   fprintf(stderr, "[ChiakiCore] Set callbacks with wrapper=%p as user_data\n",
           (void *)g_active_session);
@@ -664,7 +751,7 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_fullsession_start_wrapper(
   fprintf(stderr,
           "[ChiakiCore] DEBUG: About to call chiaki_session_start...\n");
   fprintf(stderr, "[ChiakiCore] DEBUG: connect_info.host=%s, ps5=%d\n",
-          connect_info.host, connect_info.ps5);
+          connect_info->host, connect_info->ps5);
   fprintf(stderr, "[ChiakiCore] DEBUG: session ptr=%p, log ptr=%p\n",
           (void *)g_active_session->session, (void *)&g_active_session->log);
   err = chiaki_session_start(g_active_session->session);
@@ -679,8 +766,195 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_fullsession_start_wrapper(
     return err;
   }
 
-  fprintf(stderr, "[ChiakiSession] ✅ Session started for %s\n", host);
+  g_active_session->session_started = true;
+  fprintf(stderr, "[ChiakiSession] ✅ Session started for %s\n",
+          connect_info->host);
   return CHIAKI_ERR_SUCCESS;
+}
+
+// ===========================================
+//  PSN (holepunch) session — the official-app flow: no PIN, no IP.
+// ===========================================
+
+// Allocates the wrapper + library session exactly like chiaki_fullsession_start_wrapper.
+static ChiakiErrorCode fullsession_alloc(ChiakiWrapperVideoCallback video_cb,
+                                         ChiakiWrapperAudioCallback audio_cb,
+                                         ChiakiWrapperEventCallback event_cb,
+                                         void *user_data) {
+  if (g_active_session) {
+    fprintf(stderr, "[ChiakiSession] Session already active\n");
+    return CHIAKI_ERR_UNKNOWN;
+  }
+  g_active_session = calloc(1, sizeof(VisionOSChiakiSession));
+  if (!g_active_session)
+    return CHIAKI_ERR_MEMORY;
+  g_active_session->session = malloc(CHIAKI_SESSION_LIBRARY_SIZE);
+  if (!g_active_session->session) {
+    free(g_active_session);
+    g_active_session = NULL;
+    return CHIAKI_ERR_MEMORY;
+  }
+  memset(g_active_session->session, 0, CHIAKI_SESSION_LIBRARY_SIZE);
+  g_active_session->video_callback = video_cb;
+  g_active_session->audio_callback = audio_cb;
+  g_active_session->event_callback = event_cb;
+  g_active_session->callback_user = user_data;
+  chiaki_log_init(&g_active_session->log,
+                  CHIAKI_LOG_ERROR | CHIAKI_LOG_WARNING | CHIAKI_LOG_INFO | CHIAKI_LOG_VERBOSE,
+                  chiaki_psn_log_cb, g_active_session);
+  return CHIAKI_ERR_SUCCESS;
+}
+
+static void fullsession_free_unstarted(void) {
+  if (!g_active_session)
+    return;
+  free(g_active_session->session);
+  free(g_active_session);
+  g_active_session = NULL;
+}
+
+// Mirrors chiaki-ng StreamSession::ConnectPsnConnection (gui/src/streamsession.cpp):
+// upnp discover (non-fatal) -> session create (push WebSocket) -> ctrl offer ->
+// session start (remotePlay command; wakes the console through PSN) -> punch ctrl hole.
+// Then session.c registers the console over RUDP (no PIN) and, with auto_regist, stops
+// after emitting CHIAKI_EVENT_REGIST; otherwise it continues straight into streaming.
+CHIAKI_EXPORT ChiakiErrorCode chiaki_fullsession_start_psn_wrapper(
+    const char *psn_oauth2_token, const uint8_t *console_duid, bool is_ps5,
+    const uint8_t *psn_account_id, bool auto_regist, uint32_t width,
+    uint32_t height, uint32_t fps, uint32_t bitrate,
+    ChiakiWrapperVideoCallback video_cb, ChiakiWrapperAudioCallback audio_cb,
+    ChiakiWrapperEventCallback event_cb, void *user_data) {
+  if (!psn_oauth2_token || !console_duid || !psn_account_id)
+    return CHIAKI_ERR_INVALID_DATA;
+  ChiakiErrorCode err = fullsession_alloc(video_cb, audio_cb, event_cb, user_data);
+  if (err != CHIAKI_ERR_SUCCESS)
+    return err;
+
+  ChiakiHolepunchSession hp =
+      chiaki_holepunch_session_init(psn_oauth2_token, &g_active_session->log);
+  if (!hp) {
+    fprintf(stderr, "[ChiakiPSN] holepunch_session_init failed\n");
+    fullsession_free_unstarted();
+    return CHIAKI_ERR_MEMORY;
+  }
+  // Visible to chiaki_fullsession_cancel_psn_wrapper while the blocking phase runs.
+  g_active_session->holepunch_session = hp;
+  ChiakiHolepunchConsoleType console_type =
+      is_ps5 ? CHIAKI_HOLEPUNCH_CONSOLE_TYPE_PS5 : CHIAKI_HOLEPUNCH_CONSOLE_TYPE_PS4;
+
+  err = chiaki_holepunch_upnp_discover(hp); // NOT_FOUND is fine (miniupnpc_stub.c)
+  if (err != CHIAKI_ERR_SUCCESS)
+    fprintf(stderr, "[ChiakiPSN] upnp discover: %s (continuing)\n", chiaki_error_string(err));
+
+  psn_report_progress(g_active_session, "psn-creating-session");
+  err = chiaki_holepunch_session_create(hp);
+  if (err != CHIAKI_ERR_SUCCESS) {
+    fprintf(stderr, "[ChiakiPSN] session_create failed: %s\n", chiaki_error_string(err));
+    goto fail_holepunch;
+  }
+  fprintf(stderr, "[ChiakiPSN] >> Created PSN session\n");
+  psn_report_progress(g_active_session, "psn-preparing-network");
+  err = holepunch_session_create_offer(hp);
+  if (err != CHIAKI_ERR_SUCCESS) {
+    fprintf(stderr, "[ChiakiPSN] create_offer failed: %s\n", chiaki_error_string(err));
+    goto fail_holepunch;
+  }
+  psn_report_progress(g_active_session, "psn-sending-command");
+  err = chiaki_holepunch_session_start(hp, console_duid, console_type);
+  if (err != CHIAKI_ERR_SUCCESS) {
+    fprintf(stderr, "[ChiakiPSN] session_start failed: %s\n", chiaki_error_string(err));
+    goto fail_holepunch;
+  }
+  fprintf(stderr, "[ChiakiPSN] >> Started PSN session (console notified)\n");
+  psn_report_progress(g_active_session, "psn-punching-control");
+  err = chiaki_holepunch_session_punch_hole(hp, CHIAKI_HOLEPUNCH_PORT_TYPE_CTRL);
+  if (err != CHIAKI_ERR_SUCCESS) {
+    fprintf(stderr, "[ChiakiPSN] punch_hole(CTRL) failed: %s\n", chiaki_error_string(err));
+    goto fail_holepunch;
+  }
+  chiaki_get_ps_selected_addr(hp, g_active_session->console_ip);
+  fprintf(stderr, "[ChiakiPSN] >> Punched ctrl hole; console addr %s port %u\n",
+          g_active_session->console_ip, (unsigned)chiaki_get_ps_ctrl_port(hp));
+  g_active_session->holepunch_session = hp;
+
+  ChiakiConnectInfo connect_info = {0};
+  connect_info.ps5 = is_ps5;
+  connect_info.host = ""; // unused for PSN sessions (session.c resolves via holepunch)
+  connect_info.video_profile.width = width;
+  connect_info.video_profile.height = height;
+  connect_info.video_profile.max_fps = fps;
+  connect_info.video_profile.bitrate = bitrate;
+  connect_info.video_profile.codec = is_ps5 ? CHIAKI_CODEC_H265 : CHIAKI_CODEC_H264;
+  connect_info.video_profile_auto_downgrade = true;
+  connect_info.enable_keyboard = false;
+  connect_info.enable_dualsense = is_ps5;
+  connect_info.audio_video_disabled = CHIAKI_NONE_DISABLED;
+  connect_info.packet_loss_max = 0.05;
+  connect_info.auto_regist = auto_regist;
+  connect_info.holepunch_session = hp;
+  connect_info.rudp_sock = NULL; // session.c creates the RUDP from the ctrl sock
+  memcpy(connect_info.psn_account_id, psn_account_id, CHIAKI_PSN_ACCOUNT_ID_SIZE);
+  psn_report_progress(g_active_session, "psn-registering");
+  // From here the ChiakiSession owns hp (chiaki_session_fini finalizes it).
+  return fullsession_start_with_connect_info(&connect_info);
+
+fail_holepunch:
+  chiaki_holepunch_session_fini(hp);
+  free(hp); // chiaki_holepunch_session_fini releases members only (upstream quirk)
+  fullsession_free_unstarted();
+  return err;
+}
+
+// Abort an in-flight PSN start (websocket / notifications / holepunch). The blocking
+// holepunch calls return CHIAKI_ERR_CANCELED and chiaki_fullsession_start_psn_wrapper
+// cleans up through fail_holepunch. No-op once the library session has started.
+CHIAKI_EXPORT void chiaki_fullsession_cancel_psn_wrapper(void) {
+  if (!g_active_session || !g_active_session->holepunch_session ||
+      g_active_session->session_started)
+    return;
+  fprintf(stderr, "[ChiakiPSN] Cancelling in-flight PSN connection\n");
+  chiaki_holepunch_main_thread_cancel(g_active_session->holepunch_session, true);
+}
+
+CHIAKI_EXPORT bool chiaki_fullsession_is_started_wrapper(void) {
+  return g_active_session != NULL && g_active_session->session_started;
+}
+
+CHIAKI_EXPORT bool chiaki_fullsession_copy_registered_host_wrapper(
+    uint8_t *out_rp_key, uint8_t *out_regist_key, uint8_t *out_server_mac,
+    char *out_nickname, size_t nickname_size, char *out_console_ip,
+    size_t console_ip_size) {
+  if (!g_active_session || !g_active_session->has_registered_host)
+    return false;
+  const ChiakiRegisteredHost *h = &g_active_session->registered_host;
+  if (out_rp_key)
+    memcpy(out_rp_key, h->rp_key, sizeof(h->rp_key));
+  if (out_regist_key)
+    memcpy(out_regist_key, h->rp_regist_key, sizeof(h->rp_regist_key));
+  if (out_server_mac)
+    memcpy(out_server_mac, h->server_mac, sizeof(h->server_mac));
+  if (out_nickname && nickname_size > 0) {
+    size_t n = strnlen(h->server_nickname, sizeof(h->server_nickname));
+    if (n >= nickname_size)
+      n = nickname_size - 1;
+    memcpy(out_nickname, h->server_nickname, n);
+    out_nickname[n] = '\0';
+  }
+  if (out_console_ip && console_ip_size > 0) {
+    size_t n = strnlen(g_active_session->console_ip, sizeof(g_active_session->console_ip));
+    if (n >= console_ip_size)
+      n = console_ip_size - 1;
+    memcpy(out_console_ip, g_active_session->console_ip, n);
+    out_console_ip[n] = '\0';
+  }
+  return true;
+}
+
+CHIAKI_EXPORT bool chiaki_generate_client_duid_wrapper(char *out, size_t out_size) {
+  if (!out || out_size < CHIAKI_DUID_STR_SIZE)
+    return false;
+  size_t size = out_size;
+  return chiaki_holepunch_generate_client_device_uid(out, &size) == CHIAKI_ERR_SUCCESS;
 }
 
 // Stop the active session
@@ -690,6 +964,12 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_fullsession_stop_wrapper(void) {
   }
 
   fprintf(stderr, "[ChiakiSession] Stopping session...\n");
+  if (!g_active_session->session_started) {
+    // Still inside chiaki_fullsession_start_psn_wrapper (or it failed and freed
+    // everything): chiaki_session_stop/join/fini on a zeroed ChiakiSession would abort.
+    fprintf(stderr, "[ChiakiSession] Session not started yet; use cancel\n");
+    return CHIAKI_ERR_UNINITIALIZED;
+  }
 
   ChiakiErrorCode err = chiaki_session_stop(g_active_session->session);
   if (err != CHIAKI_ERR_SUCCESS) {
@@ -702,7 +982,11 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_fullsession_stop_wrapper(void) {
     fprintf(stderr, "[ChiakiSession] Join error: %d\n", err);
   }
 
-  chiaki_session_fini(g_active_session->session);
+  chiaki_session_fini(g_active_session->session); // also finalizes holepunch_session
+  if (g_active_session->holepunch_session) {
+    free(g_active_session->holepunch_session); // fini releases members only (upstream quirk)
+    g_active_session->holepunch_session = NULL;
+  }
   chiaki_opus_decoder_fini(
       &g_active_session->opus_decoder); // Cleanup OPUS decoder
   free(g_active_session->session);      // Free the session first
@@ -721,7 +1005,10 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_fullsession_set_controller_wrapper(
     return CHIAKI_ERR_UNINITIALIZED;
   }
 
-  ChiakiControllerState state = {0};
+  // set_idle, NOT {0}: touch ids use -1 = up; a zeroed struct registers a
+  // PHANTOM touchpad touch at (0,0) on every input packet.
+  ChiakiControllerState state;
+  chiaki_controller_state_set_idle(&state);
   state.buttons = buttons;
   state.left_x = left_x;
   state.left_y = left_y;

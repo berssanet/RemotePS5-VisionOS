@@ -205,6 +205,7 @@ struct PSNConnectionView: View {
     // MARK: - Actions
     
     private func loadDevices() async {
+        sessionManager.authService = authService
         do {
             _ = try await sessionManager.listDevices()
         } catch {
@@ -224,10 +225,10 @@ struct PSNConnectionView: View {
             let startResponse = try await sessionManager.startSession(session, device: device)
             
             // Step 3: Establish holepunch connection
-            let connection = try await holepunchService.connect(sessionInfo: startResponse)
+            _ = try await holepunchService.connect(sessionInfo: startResponse)
             
             // Step 4: Connection successful!
-            print("[PSNConnection] ✅ Connected to \(device.name ?? "PlayStation")")
+            DebugLog.print("[PSNConnection] ✅ Connected to \(device.name ?? "PlayStation")")
             
             isConnecting = false
             dismiss()

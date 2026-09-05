@@ -19,6 +19,9 @@ struct ControllerWindow: View {
             case .virtualWheel:
                 // Virtual wheel requires VR mode for hand tracking
                 VirtualWheelPlaceholderView()
+            case .handGesture:
+                // HoloPad requires VR mode for hand tracking
+                HoloPadPlaceholderView()
             }
         }
         .padding(.horizontal, 16)
@@ -42,6 +45,28 @@ struct VirtualWheelPlaceholderView: View {
                 .foregroundColor(.white)
             
             Text("Enter VR mode to use hand tracking")
+                .font(.caption)
+                .foregroundColor(.white.opacity(0.7))
+                .multilineTextAlignment(.center)
+        }
+        .padding(20)
+    }
+}
+
+// MARK: - HoloPad Placeholder (for windowed mode)
+
+struct HoloPadPlaceholderView: View {
+    var body: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "hand.point.up.braille")
+                .font(.system(size: 48))
+                .foregroundColor(.cyan)
+
+            Text("HoloPad")
+                .font(.headline)
+                .foregroundColor(.white)
+
+            Text("Enter VR mode to play with finger gestures — taps on your own fingertips are the buttons, pinch-drag is the stick")
                 .font(.caption)
                 .foregroundColor(.white.opacity(0.7))
                 .multilineTextAlignment(.center)

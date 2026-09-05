@@ -20,15 +20,11 @@ final class LowLatencyAudioPlayer {
     private var leftSourceNode: AVAudioSourceNode?
     private var rightSourceNode: AVAudioSourceNode?
     private var environmentNode: AVAudioEnvironmentNode?
-    private var audioFormat: AVAudioFormat?
     private var monoFormat: AVAudioFormat?
     
     /// Ring buffers for L/R channels (v10.0: separate buffers)
     private let leftRingBuffer: AudioRingBuffer
     private let rightRingBuffer: AudioRingBuffer
-    
-    /// Legacy stereo ring buffer (for interleaved input)
-    private let stereoRingBuffer: AudioRingBuffer
     
     /// Temporary buffers for vDSP conversion (reused to avoid allocations)
     private var int16Buffer: UnsafeMutablePointer<Int16>?
@@ -91,36 +87,6 @@ final class LowLatencyAudioPlayer {
     /// Last logged target to avoid spamming logs
     private var lastLoggedTarget: Int = 0
     
-    // MARK: - v10.2 Audio/Video Sync Controller
-    
-    /// A/V Sync controller for PTS-based synchronization
-    private var syncController: AudioVideoSyncController?
-    
-    /// Enable PTS-based sync (vs legacy closed-loop)
-    var ptsSyncEnabled: Bool = false
-    
-    /// Drift threshold before correction (ms)
-    var driftThresholdMs: Double = 20.0 {
-        didSet {
-            syncController?.driftCorrector.driftThresholdMs = driftThresholdMs
-        }
-    }
-    
-    /// Emergency drop threshold (ms)
-    var maxBufferBeforeDropMs: Double = 100.0 {
-        didSet {
-            syncController?.driftCorrector.maxBufferMs = maxBufferBeforeDropMs
-        }
-    }
-    
-    /// Samples to skip on next render (for emergency drop)
-    private var pendingSkipSamples: Int = 0
-    
-    /// Crossfade buffer for smooth sample manipulation
-    private var crossfadeLeftBuffer: UnsafeMutablePointer<Int16>?
-    private var crossfadeRightBuffer: UnsafeMutablePointer<Int16>?
-    private var crossfadeSize: Int = 0
-    
     init(sampleRate: Int, channels: Int) {
         self.sampleRate = sampleRate
         self.channels = channels
@@ -129,29 +95,15 @@ final class LowLatencyAudioPlayer {
         let bufferCapacity = sampleRate * 5
         self.leftRingBuffer = AudioRingBuffer(capacity: bufferCapacity)
         self.rightRingBuffer = AudioRingBuffer(capacity: bufferCapacity)
-        self.stereoRingBuffer = AudioRingBuffer(capacity: bufferCapacity * 2)
     }
     
     deinit {
         stop()
         int16Buffer?.deallocate()
         floatBuffer?.deallocate()
-        crossfadeLeftBuffer?.deallocate()
-        crossfadeRightBuffer?.deallocate()
-    }
-    
-    // MARK: - v10.2 Sync Controller Setup
-    
-    /// Set the A/V sync controller for PTS-based synchronization
-    func setSyncController(_ controller: AudioVideoSyncController) {
-        self.syncController = controller
-        self.ptsSyncEnabled = true
-        DebugLog.info("LowLatencyAudio", "🔗 A/V Sync Controller connected (threshold: \(driftThresholdMs)ms)")
-    }
-    
-    /// Update audio PTS when receiving packet (call from enqueue)
-    func updateAudioPTS(_ pts: Double) {
-        syncController?.onAudioPacketReceived(pts: pts)
+        // Phase 5.16: release the pre-allocated deinterleave scratch buffers.
+        deinterleaveLeftScratch?.deallocate()
+        deinterleaveRightScratch?.deallocate()
     }
     
     func start() {
@@ -201,11 +153,6 @@ final class LowLatencyAudioPlayer {
         DebugLog.info("LowLatencyAudio", "🎯 Initial A/V Sync target: \(String(format: "%.0f", adjustedMs))ms (\(targetSamples) samples)")
     }
     
-    /// Get current target latency in milliseconds
-    var currentTargetLatencyMs: Double {
-        return Double(targetSamples) / Double(sampleRate) * 1000
-    }
-    
     func stop() {
         guard isRunning else { return }
         
@@ -215,41 +162,58 @@ final class LowLatencyAudioPlayer {
         rightSourceNode = nil
         leftRingBuffer.reset()
         rightRingBuffer.reset()
-        stereoRingBuffer.reset()
         isRunning = false
-        pendingSkipSamples = 0
         
-        let stats = syncController?.driftCorrector.stats
         #if DEBUG
-        print("[LowLatencyAudio] Stopped (underruns: \(underrunCount), drift adjustments: \(driftAdjustments))")
-        if let stats = stats {
-            print("[LowLatencyAudio]   Sync stats: corrections=\(stats.correctionCount), skipped=\(stats.samplesSkipped), dup=\(stats.samplesDuplicated), drops=\(stats.emergencyDrops)")
-        }
+        DebugLog.print("[LowLatencyAudio] Stopped (underruns: \(underrunCount), drift adjustments: \(driftAdjustments))")
         #endif
     }
     
+    /// Phase 5.16: Pre-allocated deinterleave scratch buffers (re-used across
+    /// every audio packet so the producer-side hot path performs zero heap
+    /// allocations). Capacity is grown on demand and never shrunk.
+    private var deinterleaveLeftScratch: UnsafeMutableBufferPointer<Int16>?
+    private var deinterleaveRightScratch: UnsafeMutableBufferPointer<Int16>?
+    private var deinterleaveScratchCapacity: Int = 0
+
+    private func ensureDeinterleaveScratch(forFrameCount frameCount: Int) {
+        guard frameCount > deinterleaveScratchCapacity else { return }
+        deinterleaveLeftScratch?.deallocate()
+        deinterleaveRightScratch?.deallocate()
+        deinterleaveLeftScratch = UnsafeMutableBufferPointer<Int16>.allocate(capacity: frameCount)
+        deinterleaveRightScratch = UnsafeMutableBufferPointer<Int16>.allocate(capacity: frameCount)
+        deinterleaveScratchCapacity = frameCount
+    }
+
     /// Enqueue PCM samples from chiaki callback (producer side)
     /// Input: Interleaved stereo Int16 samples
     func enqueueSamples(_ data: Data, sampleCount: Int) {
-        // v10.0: Deinterleave stereo into separate L/R buffers
+        // Phase 5.16: deinterleave stereo into pre-allocated L/R scratch
+        // buffers, then push to ring buffers. Previously allocated two new
+        // [Int16] arrays + two Data copies per audio packet (~100/sec).
+        let frameCount = sampleCount / channels
+        guard frameCount > 0 else { return }
+        ensureDeinterleaveScratch(forFrameCount: frameCount)
+
+        guard let leftScratch = deinterleaveLeftScratch,
+              let rightScratch = deinterleaveRightScratch else { return }
+
         data.withUnsafeBytes { (ptr: UnsafeRawBufferPointer) in
             guard let int16Ptr = ptr.baseAddress?.assumingMemoryBound(to: Int16.self) else { return }
-            
-            let frameCount = sampleCount / channels
-            
-            // Temporary buffers for deinterleaving
-            var leftSamples = [Int16](repeating: 0, count: frameCount)
-            var rightSamples = [Int16](repeating: 0, count: frameCount)
-            
+
             // Deinterleave: LRLRLR → L L L, R R R
             for i in 0..<frameCount {
-                leftSamples[i] = int16Ptr[i * 2]
-                rightSamples[i] = int16Ptr[i * 2 + 1]
+                leftScratch[i] = int16Ptr[i * 2]
+                rightScratch[i] = int16Ptr[i * 2 + 1]
             }
-            
-            // Write to separate ring buffers
-            leftSamples.withUnsafeBytes { leftRingBuffer.write(Data($0)) }
-            rightSamples.withUnsafeBytes { rightRingBuffer.write(Data($0)) }
+
+            let bytePerChannel = frameCount * MemoryLayout<Int16>.size
+            leftRingBuffer.write(Data(bytesNoCopy: UnsafeMutableRawPointer(leftScratch.baseAddress!),
+                                      count: bytePerChannel,
+                                      deallocator: .none))
+            rightRingBuffer.write(Data(bytesNoCopy: UnsafeMutableRawPointer(rightScratch.baseAddress!),
+                                       count: bytePerChannel,
+                                       deallocator: .none))
         }
         
         // Log periodically
@@ -258,7 +222,7 @@ final class LowLatencyAudioPlayer {
         if totalSamplesProcessed % UInt64(sampleRate * 2) < UInt64(sampleCount) {
             let leftMs = Double(leftRingBuffer.availableSamples) / Double(sampleRate) * 1000
             let ratePercent = (playbackRate - 1.0) * 100
-            print("[LowLatencyAudio] Buffer L: \(String(format: "%.1f", leftMs))ms, Rate: \(String(format: "%+.2f", ratePercent))%")
+            DebugLog.print("[LowLatencyAudio] Buffer L: \(String(format: "%.1f", leftMs))ms, Rate: \(String(format: "%+.2f", ratePercent))%")
         }
         #endif
     }
@@ -267,17 +231,25 @@ final class LowLatencyAudioPlayer {
     
     private func configureAudioSession() throws {
         let session = AVAudioSession.sharedInstance()
-        
+
+        // Phase 5.15: switch from .playAndRecord/.voiceChat to .playback/.moviePlayback.
+        //   - `.voiceChat` enables AEC + AGC, which crushes the dynamic range of
+        //     game audio (transients clipped, music sounds compressed).
+        //   - `.playAndRecord` would force microphone-permission prompt on
+        //     first launch even though no voice chat is implemented.
+        //   - `.allowBluetoothHFP` is a deprecated low-quality mono codec and
+        //     is irrelevant on visionOS where Bluetooth audio routes via A2DP.
         try session.setCategory(
-            .playAndRecord,
-            mode: .voiceChat,
-            options: [.defaultToSpeaker, .allowBluetoothHFP, .mixWithOthers]
+            .playback,
+            mode: .moviePlayback,
+            options: [.mixWithOthers]
         )
-        
+
         try session.setPreferredSampleRate(Double(sampleRate))
         try session.setPreferredIOBufferDuration(0.005)  // 5ms
+
         try session.setActive(true)
-        
+
         let actualBuffer = session.ioBufferDuration * 1000
         DebugLog.info("LowLatencyAudio", "IO Buffer: \(String(format: "%.1f", actualBuffer))ms")
     }
@@ -399,25 +371,6 @@ final class LowLatencyAudioPlayer {
         let ringBuffer = isLeft ? leftRingBuffer : rightRingBuffer
         var samplesNeeded = Int(frameCount)
         
-        // v10.2: Handle pending skip samples (emergency drop or catch-up)
-        if isLeft && pendingSkipSamples > 0 {
-            // Skip samples from buffer (discard without playing)
-            let skipCount = min(pendingSkipSamples, ringBuffer.availableSamples - samplesNeeded)
-            if skipCount > 0 {
-                // Read and discard samples
-                ensureConversionBuffers(size: skipCount)
-                if let discardBuf = int16Buffer {
-                    _ = ringBuffer.read(discardBuf, count: skipCount)
-                    pendingSkipSamples -= skipCount
-                    
-                    // Apply crossfade at boundary to avoid click
-                    if samplesNeeded > 0 {
-                        // Next read will get the remaining samples with fade-in
-                    }
-                }
-            }
-        }
-        
         // Apply drift compensation via rate
         if isLeft {
             driftAccumulator += (playbackRate - 1.0) * Float(samplesNeeded)
@@ -475,47 +428,12 @@ final class LowLatencyAudioPlayer {
         return noErr
     }
     
-    /// v10.2: Update playback rate using sync controller or PID controller
+    /// Update playback rate using the PID controller on buffer level vs target
     private func updateDriftCompensation() {
         // Calculate buffer level
         let availableSamples = (leftRingBuffer.availableSamples + rightRingBuffer.availableSamples) / 2
-        let bufferMs = Double(availableSamples) / Double(sampleRate) * 1000
         
-        // v10.2: Use sync controller if available
-        if ptsSyncEnabled, let syncController = syncController {
-            let strategy = syncController.getCorrectionStrategy(audioBufferMs: bufferMs)
-            
-            switch strategy {
-            case .none:
-                playbackRate = 1.0
-                
-            case .rateAdjust:
-                playbackRate = syncController.getPlaybackRateAdjustment()
-                
-            case .skipSamples:
-                // Calculate samples to skip
-                let skipSamples = syncController.driftCorrector.calculateSampleAdjustment()
-                pendingSkipSamples = skipSamples
-                playbackRate = 1.0
-                DebugLog.info("LowLatencyAudio", "⏩ Skip \(skipSamples) samples (\(String(format: "%.0f", Double(skipSamples) / Double(sampleRate) * 1000))ms)")
-                
-            case .duplicateSamples:
-                // Slow down via rate (duplicate is harder in pull model)
-                playbackRate = 0.995
-                
-            case .emergencyDrop:
-                // Calculate and schedule drop
-                let dropSamples = syncController.getEmergencyDropSamples(currentBufferSamples: availableSamples)
-                pendingSkipSamples = dropSamples
-                playbackRate = 1.0
-            }
-            
-            // Log status periodically
-            syncController.driftCorrector.logStatus(bufferMs: bufferMs)
-            return
-        }
-        
-        // Legacy: PID controller fallback
+        // PID controller: buffer level error relative to target
         let error = Float(availableSamples - targetSamples) / Float(max(targetSamples, 1))
         
         pidIntegral += error

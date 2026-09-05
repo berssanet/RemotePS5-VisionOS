@@ -4,7 +4,9 @@
 
 set -e
 
-PROJECT_DIR="/Users/berssanette/Desktop/Projetos/VisionRemotePS5"
+# Derive PROJECT_DIR from the script's own location so this works on any machine / CI.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 CHIAKI_BUILD="$PROJECT_DIR/chiaki-ng/build-visionos-xcframework"
 XCFRAMEWORK_DIR="$PROJECT_DIR/VisionRemotePS5/Frameworks/Chiaki.xcframework/xros-arm64"
 OPUS_LIB="$PROJECT_DIR/opus-build/output/libopus.a"
