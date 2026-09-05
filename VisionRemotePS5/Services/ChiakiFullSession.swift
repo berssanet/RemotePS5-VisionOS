@@ -96,7 +96,20 @@ final class ChiakiFullSession: ObservableObject {
     
     /// Current session state (observable)
     /// Note: fileprivate(set) allows internal callbacks to update state
-    @Published fileprivate(set) var state: SessionState = .idle
+    @Published fileprivate(set) var state: SessionState = .idle {
+        didSet {
+            shutdownLock.lock()
+            _stateIsActive = state.isActive
+            shutdownLock.unlock()
+        }
+    }
+    /// Mirror of `state.isActive` for off-main readers (input thread, chiaki callbacks).
+    private var _stateIsActive: Bool = false
+    /// Lock-protected read of the mirrored flag; safe from any thread.
+    fileprivate var stateIsActive: Bool {
+        shutdownLock.lock(); defer { shutdownLock.unlock() }
+        return _stateIsActive
+    }
     
     /// Flag to prevent callback access during shutdown.
     /// Phase 5.10: lock-protected so C callback threads and the Swift main
@@ -114,9 +127,14 @@ final class ChiakiFullSession: ObservableObject {
     }
     private var _isShuttingDown: Bool = false
     private let shutdownLock = NSLock()
+    /// Held across every Swift-originated C call that reads or frees g_active_session.
+    /// The 120 Hz input thread try-locks it (a tick is skipped rather than parked behind
+    /// a teardown); stop()/teardown() hold it across chiaki_fullsession_stop_wrapper so
+    /// the session can never be freed while a controller call is in flight.
+    private let controllerCallLock = OSAllocatedUnfairLock()
     
     /// Legacy isActive property for compatibility
-    var isActive: Bool { state.isActive && !isShuttingDown }
+    var isActive: Bool { stateIsActive && !isShuttingDown }
     
     // Callbacks
     /// Zero-Copy callback: receives raw pointer without memory copy
@@ -237,7 +255,7 @@ final class ChiakiFullSession: ObservableObject {
         // guarantees in-flight callbacks see the new value.
         Thread.sleep(forTimeInterval: 0.01)
 
-        let result = chiaki_fullsession_stop_wrapper()
+        let result = controllerCallLock.withLock { chiaki_fullsession_stop_wrapper() }
         
         state = .idle
         
@@ -370,7 +388,7 @@ final class ChiakiFullSession: ObservableObject {
         }
         isShuttingDown = true
         Thread.sleep(forTimeInterval: 0.01)
-        let result = chiaki_fullsession_stop_wrapper()
+        let result = controllerCallLock.withLock { chiaki_fullsession_stop_wrapper() }
         publishState(.idle)
         isShuttingDown = false
         DebugLog.info("ChiakiFullSession", "Teardown returned \(result)")
@@ -399,7 +417,12 @@ final class ChiakiFullSession: ObservableObject {
         rightX: Int16, rightY: Int16,
         l2: UInt8, r2: UInt8
     ) {
-        guard isActive else { return }
+        // Never park the 120 Hz thread behind a teardown: skip the tick instead.
+        guard controllerCallLock.lockIfAvailable() else { return }
+        defer { controllerCallLock.unlock() }
+        // The C side is the truth for "started": a PSN start still in its holepunch
+        // phase holds a zeroed ChiakiSession whose mutexes are not initialized yet.
+        guard isActive, chiaki_fullsession_is_started_wrapper() else { return }
         
         _ = chiaki_fullsession_set_controller_wrapper(
             buttons,
@@ -436,7 +459,7 @@ private let videoCallback: ChiakiWrapperVideoCallback = { buf, bufSize, user in
     }
     
     // GUARD 2: Validate session state
-    guard ChiakiFullSession.shared.state.isActive else {
+    guard ChiakiFullSession.shared.stateIsActive else {
         return
     }
     
@@ -474,7 +497,7 @@ private let audioCallback: ChiakiWrapperAudioCallback = { buf, samplesCount, use
     }
     
     // GUARD 2: Validate session is active
-    guard ChiakiFullSession.shared.state.isActive else {
+    guard ChiakiFullSession.shared.stateIsActive else {
         return
     }
     
@@ -550,7 +573,7 @@ private let rumbleCallback: ChiakiWrapperRumbleCallback = { left, right, user in
         return
     }
     
-    guard ChiakiFullSession.shared.state.isActive else {
+    guard ChiakiFullSession.shared.stateIsActive else {
         return
     }
     

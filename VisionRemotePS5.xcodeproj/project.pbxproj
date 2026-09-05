@@ -16,6 +16,7 @@
 		APP009 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = RES001 /* Assets.xcassets */; };
 		APP011 /* PSNAuthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC010 /* PSNAuthService.swift */; };
 		APP015 /* GameControllerManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC014 /* GameControllerManager.swift */; };
+		APP071 /* HighFrequencyInputController.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC100 /* HighFrequencyInputController.swift */; };
 		APP016 /* RegistrationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC015 /* RegistrationService.swift */; };
 		APP010 /* ConsoleDiscoveryService.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC009 /* ConsoleDiscoveryService.swift */; };
 		APP017 /* ChiakiCrypto.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC016 /* ChiakiCrypto.swift */; };
@@ -105,6 +106,7 @@
 		SRC008 /* Console.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Console.swift; sourceTree = "<group>"; };
 		SRC010 /* PSNAuthService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PSNAuthService.swift; sourceTree = "<group>"; };
 		SRC014 /* GameControllerManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameControllerManager.swift; sourceTree = "<group>"; };
+		SRC100 /* HighFrequencyInputController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HighFrequencyInputController.swift; sourceTree = "<group>"; };
 		SRC015 /* RegistrationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RegistrationService.swift; sourceTree = "<group>"; };
 		SRC009 /* ConsoleDiscoveryService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConsoleDiscoveryService.swift; sourceTree = "<group>"; };
 		SRC016 /* ChiakiCrypto.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChiakiCrypto.swift; sourceTree = "<group>"; };
@@ -256,6 +258,7 @@
 			isa = PBXGroup;
 			children = (
 				SRC014 /* GameControllerManager.swift */,
+				SRC100 /* HighFrequencyInputController.swift */,
 			);
 			path = Controllers;
 			sourceTree = "<group>";
@@ -391,6 +394,7 @@
 				LANCONN001 /* LocalConsoleConnectionService.swift in Sources */,
 				LANVIEW001 /* LocalConsoleConnectionView.swift in Sources */,
 				APP015 /* GameControllerManager.swift in Sources */,
+				APP071 /* HighFrequencyInputController.swift in Sources */,
 				EF5C41952F0645B0007A7B67 /* PSNSessionManager.swift in Sources */,
 				EF5C419B2F0645E0007A7B67 /* PSNWebSocketService.swift in Sources */,
 				APP016 /* RegistrationService.swift in Sources */,
