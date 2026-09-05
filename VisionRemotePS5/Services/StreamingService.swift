@@ -93,13 +93,6 @@ final class StreamingService: ObservableObject {
     /// drifted (controller input enabled before chiaki acknowledged the session).
     var isStreaming: Bool { state == .streaming }
     
-    // Debug counters
-    private var videoFrameCount: Int = 0
-    
-    // v10.1: Buffer exhaustion tracking for anti-smearing recovery
-    private var lastBufferExhaustionTime: CFTimeInterval?
-    private var bufferExhaustionCount: Int = 0
-    
     weak var delegate: StreamingServiceDelegate?
     
     private var configuration: StreamingConfiguration?
@@ -109,14 +102,6 @@ final class StreamingService: ObservableObject {
 
     // Video decoder
     private var videoDecoder: StreamVideoDecoder?
-    
-    // Safe buffer pool for video frames (fixes zero-copy race condition)
-    // VTDecompressionSession is async - we can't pass network buffer pointers directly
-    // v8.0: Use 4MB buffers to handle extreme 4K HDR I-frames without drops
-    private lazy var videoBufferPool = SafeBufferPool(
-        poolSize: 12,           // 12 buffers = ~200ms at 60fps
-        bufferCapacity: SafeBufferPool.defaultBufferCapacity  // 4MB per buffer
-    )
     
     // Audio player
     private var audioPlayer: LowLatencyAudioPlayer?
@@ -128,14 +113,6 @@ final class StreamingService: ObservableObject {
     private var controllerManager: GameControllerManager?
     /// Read on the 120 Hz input thread: true only while the console has acked the session.
     private let inputGate = OSAllocatedUnfairLock(initialState: false)
-    /// Latest decoded frame waiting for the main hop. One slot: if main falls behind,
-    /// older frames are released here instead of piling up in main's queue and
-    /// starving VideoToolbox's pool (which back-pressures the takion thread).
-    private let pendingFrame = OSAllocatedUnfairLock<(CVPixelBuffer, UInt64)?>(uncheckedState: nil)
-    
-    // Frame pacer for smooth 60fps on 90Hz display
-    private var framePacer: FramePacer?
-
     // MARK: - Initialization
     
     private init() {
@@ -275,7 +252,6 @@ final class StreamingService: ObservableObject {
         }
         
         // Setup callbacks
-        setupChiakiCallbacks()
         
         // Initialize video decoder (HEVC for PS5)
         videoDecoder = StreamVideoDecoder(width: config.width, height: config.height, isHEVC: config.isPS5)
@@ -285,9 +261,8 @@ final class StreamingService: ObservableObject {
         // v10.0: Stereo Emitter Array with closed-loop A/V sync
         audioPlayer = LowLatencyAudioPlayer(sampleRate: 48000, channels: 2)
         
-        // v10.0: Set initial A/V sync target (will be dynamically updated by video callback)
-        // Closed-loop sync: audio chases MEASURED video latency, not fixed estimate
-        audioPlayer?.setTargetLatency(milliseconds: 40.0)  // Initial estimate
+        // Small fixed audio buffer; presentation diagnostics measure the local video path separately.
+        audioPlayer?.setTargetLatency(milliseconds: 40.0)  // 40 ms jitter budget
         audioPlayer?.start()
         
         // Initialize controller manager for haptic feedback
@@ -317,11 +292,11 @@ final class StreamingService: ObservableObject {
                 )
             }
             
-            // Initialize frame pacer for smooth 60fps on 90Hz display
-            self.framePacer = FramePacer()
-            self.framePacer?.start()
+
         }
         
+        setupChiakiCallbacks()
+
         if let psnConnection = config.psnConnection {
             try await startPSNStreaming(connection: psnConnection, config: config)
             return
@@ -412,118 +387,24 @@ final class StreamingService: ObservableObject {
 
     /// Setup callbacks from ChiakiFullSession
     private func setupChiakiCallbacks() {
-        // SAFE VIDEO PATH: Copy network buffer to safe pool before async decoding
-        // This fixes the race condition where VTDecompressionSession reads data
-        // after the network thread has overwritten the buffer.
-        ChiakiFullSession.shared.onVideoFramePointer = { [weak self] pointer, size in
-            guard let self = self else { return }
-            
-            // v10.0: Record frame receive timestamp for closed-loop A/V sync
-            // v10.1: Use monotonic clock to prevent sync drift from NTP adjustments
-            let frameReceiveTime = CACurrentMediaTime()
-            
-            // CRITICAL: Acquire a safe buffer and copy the network data immediately
-            // This must happen synchronously before returning from the callback!
-            guard let safeBuffer = self.videoBufferPool.acquireAndCopy(from: pointer, count: size) else {
-                // v10.1: Buffer pool exhaustion recovery (Anti-Smearing)
-                // When pool is exhausted, dropped frames corrupt the video until next keyframe.
-                // We implement debounced logging and mark decoder for format reset on next IDR.
-                
-                // Debounce: Only log once per second to avoid log spam
-                let now = CACurrentMediaTime()
-                if self.lastBufferExhaustionTime == nil || (now - self.lastBufferExhaustionTime!) > 1.0 {
-                    self.lastBufferExhaustionTime = now
-                    self.bufferExhaustionCount += 1
-                    DebugLog.print("[StreamingService] ⚠️ Buffer pool exhausted! Frames dropped: \(self.bufferExhaustionCount)")
-                    
-                    // Mark decoder for recovery - will wait for next IDR frame
-                    // This clears format description to prevent smearing from corrupted reference frames
-                    self.videoDecoder?.markForRecovery()
-                }
-                return
-            }
-            
-            // decodeFromSafeBuffer() is synchronous and copies every NAL into its own
-            // CMBlockBuffer before VideoToolbox sees it, so the pool slot is free the
-            // moment it returns. The completion may run zero, one or N times per frame
-            // (no session yet, decode error, multi-slice frame): it must not own the slot.
-            defer { self.videoBufferPool.release(safeBuffer) }
-            
-            guard let decoder = self.videoDecoder else { return }
-            
-            // Track frame count for logging
-            self.videoFrameCount += 1
-            let frameNum = self.videoFrameCount
-            if frameNum % 60 == 1 {
-                DebugLog.print("[StreamingService] 📹 Video frame #\(frameNum) received (safe copy), size: \(size) bytes")
-                self.videoBufferPool.logStats()
-            }
-            
-            // Now decode from the SAFE buffer (released by the defer above)
-            decoder.decodeFromSafeBuffer(safeBuffer) { [weak self] pixelBuffer, timestamp in
-                guard let self = self, let pb = pixelBuffer else { return }
-                
-                // v10.0: Calculate measured video latency (closed-loop A/V sync)
-                // This is the actual time from frame receive to decode completion
-                // v10.1: Monotonic clock for accurate latency measurement
-                let decodeCompleteTime = CACurrentMediaTime()
-                let decodeLatencyMs = (decodeCompleteTime - frameReceiveTime) * 1000
-                
-                // Estimate total video pipeline latency:
-                // decode (measured) + upscale (~5-10ms) + display (dynamic based on refresh rate)
-                let estimatedUpscaleMs = 8.0
-                // v10.1: Dynamic display frame duration based on actual refresh rate
-                // Vision Pro = 90Hz (~11.1ms), fallback to 60Hz (~16.7ms) if unknown
-                #if os(visionOS)
-                // visionOS runs at 90Hz
-                let displayRefreshRate: Double = 90.0
-                let estimatedDisplayMs = 1000.0 / displayRefreshRate
-                #else
-                let displayRefreshRate: Double = Double(UIScreen.main.maximumFramesPerSecond)
-                let estimatedDisplayMs = displayRefreshRate > 0 ? (1000.0 / displayRefreshRate) : 16.7
-                #endif
-                let totalVideoLatencyMs = decodeLatencyMs + estimatedUpscaleMs + estimatedDisplayMs
-                
-                // Update audio target to chase measured video latency
-                if let player = self.audioPlayer {
-                    player.updateDynamicTarget(measuredLatencyMs: totalVideoLatencyMs)
-                }
-                
-                if frameNum % 60 == 1 {
-                    DebugLog.print("[StreamingService] ✅ Frame #\(frameNum) decoded safely")
-                    DebugLog.print("[StreamingService] 🎯 v10.0 Closed-loop sync: decode=\(String(format: "%.1f", decodeLatencyMs))ms, total=\(String(format: "%.0f", totalVideoLatencyMs))ms")
-                }
-                
-                // Latest-frame slot: only one main hop is ever in flight. A frame
-                // main has not consumed yet is replaced (and released) here.
-                let hopNeeded = self.pendingFrame.withLockUnchecked { slot -> Bool in
-                    let wasEmpty = slot == nil
-                    slot = (pb, timestamp)
-                    return wasEmpty
-                }
-                guard hopNeeded else { return }
-                DispatchQueue.main.async { [weak self] in
-                    guard let self = self else { return }
-                    let latest = self.pendingFrame.withLockUnchecked { slot -> (CVPixelBuffer, UInt64)? in
-                        defer { slot = nil }
-                        return slot
-                    }
-                    guard let (frame, frameTimestamp) = latest else { return }
-                    self.delegate?.streamingService(self, didReceiveVideoFrame: frame, timestamp: frameTimestamp)
-                }
-            }
+        // Capture session-owned decoder, never read actor state from the network thread.
+        let decoder = videoDecoder
+        ChiakiFullSession.shared.onVideoFramePointer = { pointer, size, lost, recovered in
+            decoder?.submit(pointer: pointer, size: size, framesLost: lost, recovered: recovered) { buffer, timestamp in
+                VideoDelivery.shared.submit(buffer, timestamp: timestamp)
+            } ?? false
         }
 
-        ChiakiFullSession.shared.onAudioSamples = { [weak self] (data: Data, sampleCount: Int) in
-            guard let self = self else { return }
+        let sessionAudioPlayer = audioPlayer
+        ChiakiFullSession.shared.onAudioSamples = { (data: Data, sampleCount: Int) in
             
             // Feed PCM samples to low-latency audio player (enqueue to ring buffer)
-            if let player = self.audioPlayer {
+            if let player = sessionAudioPlayer {
                 player.enqueueSamples(data, sampleCount: sampleCount)
             }
             
             // Notify delegate
-            self.delegate?.streamingService(self, didReceiveAudioData: data, sampleRate: 48000, channels: 2)
+
         }
         
         ChiakiFullSession.shared.onEvent = { [weak self] event, reason in
@@ -639,13 +520,16 @@ final class StreamingService: ObservableObject {
         ChiakiFullSession.shared.cancelPSN()
         
         videoDecoder?.stop()
-        audioPlayer?.stop()
-        framePacer?.stop()
-        framePacer = nil
 
         Task { @MainActor in
             _ = await startTask?.result
-            ChiakiFullSession.shared.teardown()
+            await Task.detached(priority: .userInitiated) {
+                ChiakiFullSession.shared.teardown()
+            }.value
+            // Native callbacks are joined before resetting producer-owned audio buffers.
+            self.audioPlayer?.stop()
+            self.audioPlayer = nil
+            self.videoDecoder = nil
             self.configuration = nil
             self.connectionStatusMessage = ""
             self.isStopping = false
@@ -747,201 +631,209 @@ struct ControllerState {
 
 // MARK: - Stream Video Decoder
 
-class StreamVideoDecoder {
+final class StreamVideoDecoder: @unchecked Sendable {
+    private let queue: DispatchQueue
+    // Bound CPU submissions only. An asynchronous VT output must never hold an
+    // admission slot: some streams need further input before producing output.
+    private let capacity = DispatchSemaphore(value: 12)
+    private struct Lifecycle {
+        var running = false
+        var generation: UInt64 = 0
+        var accepted: UInt64 = 0
+        var rejected: UInt64 = 0
+        var outputs: UInt64 = 0
+        var errors: UInt64 = 0
+        var sessions: UInt64 = 0
+        var repairedReferences: UInt64 = 0
+        var lastReport: Double = 0
+        var epoch: UInt64 = 0
+    }
+    private let lifecycle = OSAllocatedUnfairLock(initialState: Lifecycle())
     private var decompressionSession: VTDecompressionSession?
     private var formatDescription: CMVideoFormatDescription?
-    private let width: Int
-    private let height: Int
-    
-    // HEVC requires VPS, SPS, PPS
     private var vps: Data?
     private var sps: Data?
     private var pps: Data?
-    
-    // H.264 requires SPS, PPS only
-    private var isHEVC: Bool = true  // PS5 uses HEVC by default
-    
-    private var frameCount = 0
-    
-    /// v10.1: Mark decoder for recovery - will skip non-IDR frames until next keyframe
-    /// Call this when buffer pool is exhausted to prevent smearing from corrupted reference frames
-    func markForRecovery() {
-        // Clear format description to force wait for next VPS/SPS/PPS + IDR
-        formatDescription = nil
-        vps = nil
-        sps = nil
-        pps = nil
-        DebugLog.warning("VideoDecoder", "⚠️ Marked for recovery - waiting for next keyframe")
-    }
-    
-    init(width: Int, height: Int, isHEVC: Bool = true) {
-        self.width = width
-        self.height = height
+    private let isHEVC: Bool
+
+    init(width: Int, height: Int, isHEVC: Bool = true,
+         submissionQueue: DispatchQueue = DispatchQueue(label: "video.decode", qos: .userInteractive)) {
         self.isHEVC = isHEVC
+        self.queue = submissionQueue
     }
-    
-    func start() {
-        DebugLog.print("[VideoDecoder] Started for \(width)x\(height), codec: \(isHEVC ? "HEVC" : "H.264")")
+    var diagnostics: (accepted: UInt64, rejected: UInt64, outputs: UInt64, errors: UInt64, sessions: UInt64) {
+        lifecycle.withLock { ($0.accepted, $0.rejected, $0.outputs, $0.errors, $0.sessions) }
     }
-    
+
+    func start() { lifecycle.withLock { $0.running = true } }
     func stop() {
-        if let session = decompressionSession {
-            VTDecompressionSessionInvalidate(session)
-            decompressionSession = nil
-        }
+        lifecycle.withLock { $0.running = false; $0.generation &+= 1; $0.epoch &+= 1 }
+        queue.async { self.resetSession() }
+    }
+
+    private func resetSession() {
+        if let session = decompressionSession { VTDecompressionSessionInvalidate(session) }
+        decompressionSession = nil
         formatDescription = nil
-        vps = nil
-        sps = nil
-        pps = nil
-        DebugLog.info("VideoDecoder", "Stopped")
+        // Keep valid parameter sets: an IDR need not repeat VPS/SPS/PPS.
+        lifecycle.withLock { $0.epoch &+= 1 }
     }
-    
-    /// SAFE BUFFER DECODE: Accepts a SafeBuffer that owns its memory
-    /// This is the recommended method - it avoids race conditions because:
-    /// 1. The SafeBuffer contains a COPY of the network data
-    /// 2. The buffer won't be released until the completion handler is called
-    /// 3. VTDecompressionSession can safely read the data asynchronously
-    func decodeFromSafeBuffer(_ safeBuffer: SafeBuffer, completion: @escaping (CVPixelBuffer?, UInt64) -> Void) {
-        guard safeBuffer.size > 4 else {
-            completion(nil, 0)
-            return
+
+    private func recordDecodeError(_ status: OSStatus) {
+        let count = lifecycle.withLock { $0.errors &+= 1; return $0.errors }
+        if count <= 3 || count % 60 == 0 {
+            DebugLog.print("[VideoDecoder] Decode error=\(status), count=\(count)")
         }
-        
-        frameCount += 1
-        
-        // Create a Data view from the safe buffer
-        // This is safe because we own this memory and it won't be reclaimed
-        // until the caller releases the buffer (after completion is called)
-        let nalData = Data(bytesNoCopy: safeBuffer.pointer, 
-                           count: safeBuffer.size, 
-                           deallocator: .none)
-        
-        // Split concatenated NAL units
-        let nalUnits = splitNALUnits(nalData)
-        
-        if frameCount <= 5 {
-            DebugLog.print("[VideoDecoder] 🔍 Frame #\(frameCount) (safe buffer): \(safeBuffer.size) bytes, \(nalUnits.count) NAL(s)")
-        }
-        
-        for nalUnit in nalUnits {
-            processNALUnit(nalUnit, completion: completion)
-        }
-    }
-    
-    /// Split concatenated NAL units by finding start codes
-    private func splitNALUnits(_ data: Data) -> [Data] {
-        var nalUnits: [Data] = []
-        var startIndices: [Int] = []
-        
-        // Find all start code positions
-        var i = 0
-        while i < data.count - 3 {
-            // Check for 4-byte start code: 0x00 0x00 0x00 0x01
-            if data[i] == 0x00 && data[i+1] == 0x00 && data[i+2] == 0x00 && data[i+3] == 0x01 {
-                startIndices.append(i)
-                i += 4
+        // Lost references are repaired by Chiaki. Only a genuinely invalid VT
+        // session requires recreation; never flush a working reference pool on loss.
+        if status == kVTInvalidSessionErr {
+            let epoch = lifecycle.withLock { $0.epoch }
+            queue.async {
+                if self.lifecycle.withLock({ $0.epoch == epoch }) { self.resetSession() }
             }
-            // Check for 3-byte start code: 0x00 0x00 0x01
-            else if data[i] == 0x00 && data[i+1] == 0x00 && data[i+2] == 0x01 {
-                startIndices.append(i)
-                i += 3
-            } else {
+        }
+    }
+
+    /// True means accepted by the decoder pipeline. False ALWAYS means not queued.
+    /// Chiaki uses this result to decide which frames may be used as references.
+    func submit(pointer: UnsafeRawPointer, size: Int, framesLost: Int32, recovered: Bool,
+                completion: @escaping (CVPixelBuffer, UInt64) -> Void) -> Bool {
+        guard size > 4, size <= 10_000_000 else { return false }
+        let state = lifecycle.withLock { $0 }
+        guard state.running else { return false }
+        guard capacity.wait(timeout: .now()) == .success else {
+            let count = lifecycle.withLock { $0.rejected &+= 1; return $0.rejected }
+            if count <= 3 || count % 60 == 0 {
+                DebugLog.print("[VideoDecoder] Submission queue full; rejected=\(count)")
+            }
+            // Keep existing references so Chiaki can remap the next P frame to them.
+            return false
+        }
+        let data = Data(bytes: pointer, count: size)
+        let receivedAt = UInt64(CACurrentMediaTime() * 1_000_000)
+        lifecycle.withLock { $0.accepted &+= 1; if recovered { $0.repairedReferences &+= 1 } }
+        queue.async {
+            defer { self.capacity.signal() }
+            let current = self.lifecycle.withLock { $0 }
+            guard current.running, current.generation == state.generation else { return }
+            // recovered is a reference remap, NOT FEC. framesLost is metadata,
+            // not an instruction to erase VideoToolbox's surviving references.
+            let finished = ContinuationGate()
+            let finish: (CVPixelBuffer?) -> Void = { buffer in
+                guard finished.tryResume(), let buffer else { return }
+                self.lifecycle.withLock { $0.outputs &+= 1 }
+                completion(buffer, receivedAt)
+            }
+            self.decodeAccessUnit(data, receivedAt: receivedAt, generation: state.generation, finish: finish)
+            let report = self.lifecycle.withLock { value -> String? in
+                let now = CACurrentMediaTime()
+                guard now - value.lastReport >= 2 else { return nil }
+                value.lastReport = now
+                return "[VideoDecoder] accepted=\(value.accepted) outputs=\(value.outputs) rejected=\(value.rejected) errors=\(value.errors) sessions=\(value.sessions) referenceRepairs=\(value.repairedReferences)"
+            }
+            if let report { DebugLog.print(report) }
+        }
+        return true
+    }
+
+    /// Annex-B ranges, without allocating Data objects for every slice.
+    static func nalRanges(_ data: Data) -> [Range<Int>] {
+        data.withUnsafeBytes { raw in
+            let bytes = raw.bindMemory(to: UInt8.self)
+            var starts: [(Int, Int)] = []
+            var i = 0
+            while i + 2 < bytes.count {
+                if bytes[i] == 0 && bytes[i + 1] == 0 {
+                    if bytes[i + 2] == 1 { starts.append((i, i + 3)); i += 3; continue }
+                    if i + 3 < bytes.count && bytes[i + 2] == 0 && bytes[i + 3] == 1 {
+                        starts.append((i, i + 4)); i += 4; continue
+                    }
+                }
                 i += 1
             }
-        }
-        
-        // Extract NAL units
-        for (index, startPos) in startIndices.enumerated() {
-            let endPos = (index + 1 < startIndices.count) ? startIndices[index + 1] : data.count
-            let nalData = data.subdata(in: startPos..<endPos)
-            nalUnits.append(nalData)
-        }
-        
-        // If no start codes found, treat entire data as single NAL unit
-        if nalUnits.isEmpty {
-            nalUnits.append(data)
-        }
-        
-        return nalUnits
-    }
-    
-    /// Process a single NAL unit
-    private func processNALUnit(_ nalData: Data, completion: @escaping (CVPixelBuffer?, UInt64) -> Void) {
-        let (offset, nalHeader) = findNALStart(in: nalData)
-        guard offset >= 0 else { return }
-        
-        if isHEVC {
-            // HEVC NAL unit type: (header >> 1) & 0x3F
-            let nalType = (nalHeader >> 1) & 0x3F
-            
-            if nalType >= 32 && nalType <= 34 {
-                DebugLog.print("[VideoDecoder] 📦 HEVC NAL type \(nalType), size: \(nalData.count)")
+            return starts.enumerated().compactMap { index, start in
+                let end = index + 1 < starts.count ? starts[index + 1].0 : bytes.count
+                return start.1 < end ? start.1..<end : nil
             }
-            
-            switch nalType {
-            case 32: // VPS
-                vps = extractNALUnit(from: nalData, offset: offset)
-                DebugLog.print("[VideoDecoder] ✅ Stored VPS (\(vps?.count ?? 0) bytes)")
-                tryCreateHEVCSession()
-            case 33: // SPS
-                sps = extractNALUnit(from: nalData, offset: offset)
-                DebugLog.print("[VideoDecoder] ✅ Stored SPS (\(sps?.count ?? 0) bytes)")
-                tryCreateHEVCSession()
-            case 34: // PPS
-                pps = extractNALUnit(from: nalData, offset: offset)
-                DebugLog.print("[VideoDecoder] ✅ Stored PPS (\(pps?.count ?? 0) bytes)")
-                tryCreateHEVCSession()
-            case 19, 20, 21: // IDR frames
-                decodeFrame(nalData: nalData, offset: offset, completion: completion)
-            case 0, 1, 2, 3, 4, 5, 6, 7, 8, 9: // Non-IDR slices
-                decodeFrame(nalData: nalData, offset: offset, completion: completion)
-            default:
-                if frameCount <= 10 {
-                    DebugLog.print("[VideoDecoder] ❓ Unhandled HEVC NAL type \(nalType)")
+        }
+    }
+
+    private func decodeAccessUnit(_ data: Data, receivedAt: UInt64, generation: UInt64,
+                                  finish: @escaping (CVPixelBuffer?) -> Void) {
+        let ranges = Self.nalRanges(data)
+        guard !ranges.isEmpty else { recordDecodeError(kVTVideoDecoderBadDataErr); finish(nil); return }
+        var slices: [Range<Int>] = []
+        var changedParameters = false
+        for range in ranges {
+            let type = isHEVC ? (data[range.lowerBound] >> 1) & 0x3f : data[range.lowerBound] & 0x1f
+            if isHEVC && range.count < 2 { recordDecodeError(kVTVideoDecoderBadDataErr); finish(nil); return }
+            if (isHEVC && type == 32) {
+                let value = data.subdata(in: range)
+                changedParameters = changedParameters || (vps != nil && vps != value)
+                vps = value
+            } else if (isHEVC && type == 33) || (!isHEVC && type == 7) {
+                let value = data.subdata(in: range)
+                changedParameters = changedParameters || (sps != nil && sps != value)
+                sps = value
+            } else if (isHEVC && type == 34) || (!isHEVC && type == 8) {
+                let value = data.subdata(in: range)
+                changedParameters = changedParameters || (pps != nil && pps != value)
+                pps = value
+            } else if (isHEVC && type <= 31) || (!isHEVC && (type == 1 || type == 5)) {
+                slices.append(range)
+            }
+        }
+        if changedParameters { resetSession() }
+        guard !slices.isEmpty else { finish(nil); return }
+        if isHEVC { tryCreateHEVCSession() } else { tryCreateH264Session() }
+        guard let session = decompressionSession, let format = formatDescription else { finish(nil); return }
+        // One sample for the COMPLETE access unit, including every VCL slice.
+        let length = slices.reduce(0) { $0 + 4 + $1.count }
+        var block: CMBlockBuffer?
+        guard CMBlockBufferCreateWithMemoryBlock(allocator: kCFAllocatorDefault, memoryBlock: nil,
+            blockLength: length, blockAllocator: kCFAllocatorDefault, customBlockSource: nil,
+            offsetToData: 0, dataLength: length, flags: 0, blockBufferOut: &block) == kCMBlockBufferNoErr,
+            let block else { recordDecodeError(kVTVideoDecoderBadDataErr); finish(nil); return }
+        var offset = 0
+        let copied = data.withUnsafeBytes { raw -> Bool in
+            guard let base = raw.baseAddress else { return false }
+            for range in slices {
+                var size = UInt32(range.count).bigEndian
+                let prefixStatus = withUnsafeBytes(of: &size) {
+                    CMBlockBufferReplaceDataBytes(with: $0.baseAddress!, blockBuffer: block,
+                        offsetIntoDestination: offset, dataLength: 4)
                 }
+                guard prefixStatus == noErr,
+                      CMBlockBufferReplaceDataBytes(with: base.advanced(by: range.lowerBound), blockBuffer: block,
+                        offsetIntoDestination: offset + 4, dataLength: range.count) == noErr else { return false }
+                offset += 4 + range.count
             }
-        } else {
-            // H.264 NAL unit type: header & 0x1F
-            let nalType = nalHeader & 0x1F
-            
-            switch nalType {
-            case 7: // SPS
-                sps = extractNALUnit(from: nalData, offset: offset)
-                DebugLog.info("VideoDecoder", "✅ Stored H.264 SPS")
-                tryCreateH264Session()
-            case 8: // PPS
-                pps = extractNALUnit(from: nalData, offset: offset)
-                DebugLog.info("VideoDecoder", "✅ Stored H.264 PPS")
-                tryCreateH264Session()
-            case 1, 5: // Non-IDR or IDR slice
-                decodeFrame(nalData: nalData, offset: offset, completion: completion)
-            default:
-                break
-            }
+            return true
         }
-    }
-    
-    private func findNALStart(in data: Data) -> (offset: Int, header: UInt8) {
-        // Look for start code 0x00 0x00 0x00 0x01 or 0x00 0x00 0x01
-        guard data.count > 4 else { return (-1, 0) }
-        
-        if data[0] == 0x00 && data[1] == 0x00 {
-            if data[2] == 0x01 && data.count > 3 {
-                return (3, data[3])
-            } else if data[2] == 0x00 && data[3] == 0x01 && data.count > 4 {
-                return (4, data[4])
+        guard copied else { recordDecodeError(kVTVideoDecoderBadDataErr); finish(nil); return }
+        var size = length
+        var timing = CMSampleTimingInfo(duration: .invalid,
+            presentationTimeStamp: CMTime(value: Int64(receivedAt), timescale: 1_000_000), decodeTimeStamp: .invalid)
+        var sample: CMSampleBuffer?
+        guard CMSampleBufferCreateReady(allocator: kCFAllocatorDefault, dataBuffer: block,
+            formatDescription: format, sampleCount: 1, sampleTimingEntryCount: 1, sampleTimingArray: &timing,
+            sampleSizeEntryCount: 1, sampleSizeArray: &size, sampleBufferOut: &sample) == noErr,
+            let sample else { recordDecodeError(kVTVideoDecoderBadDataErr); finish(nil); return }
+        let epoch = lifecycle.withLock { $0.epoch }
+        var flags: VTDecodeInfoFlags = []
+        let status = VTDecompressionSessionDecodeFrame(session, sampleBuffer: sample,
+            flags: [._EnableAsynchronousDecompression], infoFlagsOut: &flags) { status, _, image, _, _ in
+                let current = self.lifecycle.withLock { $0 }
+                guard current.running, current.generation == generation, current.epoch == epoch else {
+                    finish(nil); return
+                }
+                if status != noErr { self.recordDecodeError(status) }
+                finish(status == noErr ? image : nil)
             }
-        }
-        return (-1, 0)
+        if status != noErr { recordDecodeError(status); finish(nil) }
+        else if flags.contains(.frameDropped) { finish(nil) }
     }
-    
-    private func extractNALUnit(from data: Data, offset: Int) -> Data {
-        // Return NAL unit without start code. `data` is a no-copy view of a pool
-        // slot that is released as soon as decodeFromSafeBuffer returns, so the
-        // stored parameter sets must own their bytes.
-        return Data(data.suffix(from: offset))
-    }
-    
+
     private func tryCreateHEVCSession() {
         guard let vps = vps, let sps = sps, let pps = pps else { return }
         guard decompressionSession == nil else { return }
@@ -1046,6 +938,7 @@ class StreamVideoDecoder {
         
         if decodeStatus == noErr, let session = session {
             self.decompressionSession = session
+            lifecycle.withLock { $0.sessions &+= 1 }
             // Configure for low-latency real-time decoding
             VTSessionSetProperty(session, key: kVTDecompressionPropertyKey_RealTime, value: kCFBooleanTrue)
             VTSessionSetProperty(session, key: kVTDecompressionPropertyKey_MaximizePowerEfficiency, value: kCFBooleanFalse)
@@ -1055,106 +948,6 @@ class StreamVideoDecoder {
         }
     }
     
-    private func decodeFrame(nalData: Data, offset: Int, completion: @escaping (CVPixelBuffer?, UInt64) -> Void) {
-        guard let session = decompressionSession, let formatDesc = formatDescription else { 
-            if frameCount % 60 == 1 {
-                DebugLog.warning("VideoDecoder", "⚠️ No session yet, waiting for parameter sets")
-            }
-            return 
-        }
-        
-        // Convert Annex-B to AVCC/HVCC format (replace start code with length prefix)
-        let nalUnit = nalData.suffix(from: offset)
-        
-        // Build AVCC format: 4-byte length prefix (big endian) + NAL unit data
-        var avccData = Data(capacity: 4 + nalUnit.count)
-        let length = UInt32(nalUnit.count).bigEndian
-        withUnsafeBytes(of: length) { avccData.append(contentsOf: $0) }
-        avccData.append(nalUnit)
-        
-        let dataLength = avccData.count
-        
-        // Create block buffer that copies the data (important for async decode)
-        var blockBuffer: CMBlockBuffer?
-        let allocStatus = CMBlockBufferCreateWithMemoryBlock(
-            allocator: kCFAllocatorDefault,
-            memoryBlock: nil,  // Let CMBlockBuffer allocate its own memory
-            blockLength: dataLength,
-            blockAllocator: kCFAllocatorDefault,
-            customBlockSource: nil,
-            offsetToData: 0,
-            dataLength: dataLength,
-            flags: 0,
-            blockBufferOut: &blockBuffer
-        )
-        
-        guard allocStatus == kCMBlockBufferNoErr, let block = blockBuffer else { 
-            if frameCount % 60 == 1 {
-                DebugLog.print("[VideoDecoder] ⚠️ Failed to create block buffer: \(allocStatus)")
-            }
-            return 
-        }
-        
-        // Copy data into the block buffer
-        let copyStatus = avccData.withUnsafeBytes { bytes -> OSStatus in
-            guard let ptr = bytes.baseAddress else { return -1 }
-            return CMBlockBufferReplaceDataBytes(
-                with: ptr,
-                blockBuffer: block,
-                offsetIntoDestination: 0,
-                dataLength: dataLength
-            )
-        }
-        
-        guard copyStatus == kCMBlockBufferNoErr else {
-            if frameCount % 60 == 1 {
-                DebugLog.print("[VideoDecoder] ⚠️ Failed to copy data to block buffer: \(copyStatus)")
-            }
-            return
-        }
-        
-        var sampleBuffer: CMSampleBuffer?
-        var sampleSize = dataLength
-        
-        let sampleStatus = CMSampleBufferCreateReady(
-            allocator: kCFAllocatorDefault,
-            dataBuffer: block,
-            formatDescription: formatDesc,
-            sampleCount: 1,
-            sampleTimingEntryCount: 0,
-            sampleTimingArray: nil,
-            sampleSizeEntryCount: 1,
-            sampleSizeArray: &sampleSize,
-            sampleBufferOut: &sampleBuffer
-        )
-        
-        guard sampleStatus == noErr, let sample = sampleBuffer else { 
-            if frameCount % 60 == 1 {
-                DebugLog.print("[VideoDecoder] ⚠️ Failed to create sample buffer: \(sampleStatus)")
-            }
-            return 
-        }
-        
-        var flagOut: VTDecodeInfoFlags = []
-        let decodeStatus = VTDecompressionSessionDecodeFrame(
-            session,
-            sampleBuffer: sample,
-            flags: [._EnableAsynchronousDecompression],
-            infoFlagsOut: &flagOut
-        ) { status, _, imageBuffer, presentationTimestamp, _ in
-            if status == noErr, let buffer = imageBuffer {
-                let seconds = CMTimeGetSeconds(presentationTimestamp)
-                let timestamp: UInt64 = seconds.isFinite ? UInt64(seconds * 1000000) : 0
-                completion(buffer, timestamp)
-            } else if status != noErr && self.frameCount % 60 == 1 {
-                DebugLog.print("[VideoDecoder] ⚠️ Decode error: \(status)")
-            }
-        }
-        
-        if decodeStatus != noErr && frameCount % 60 == 1 {
-            DebugLog.print("[VideoDecoder] ⚠️ DecodeFrame call failed: \(decodeStatus)")
-        }
-    }
 }
 // MARK: - Data Extension
 

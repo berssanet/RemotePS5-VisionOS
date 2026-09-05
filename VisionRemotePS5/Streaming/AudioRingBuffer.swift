@@ -1,227 +1,79 @@
 import Foundation
 
-// MARK: - Lock-Free SPSC Ring Buffer
-
-/// High-performance lock-free ring buffer for single producer/single consumer audio streaming.
-///
-/// Design principles:
-/// - **True lock-free**: Uses volatile-like access patterns optimized for SPSC
-/// - **SPSC optimized**: Single producer (audio callback) and single consumer (render thread)
-/// - **Minimal critical path**: No locks, only memory barriers at position updates
-/// - **Zero-copy memcpy**: Direct memory operations for minimal latency
-///
-/// Thread safety:
-/// - `write()`: Only called from producer thread (chiaki audio callback)
-/// - `read()`: Only called from consumer thread (AVAudioSourceNode render callback)
-/// - `availableSamples`: Safe to read from any thread
-/// - `reset()`: Only call when both threads are stopped
+/// Bounded PCM FIFO. Index changes and overwrite are protected by a short lock.
+/// The real-time consumer uses try-lock and emits silence rather than waiting.
 final class AudioRingBuffer: @unchecked Sendable {
-    
-    // MARK: - Properties
-    
-    /// Total capacity in samples
     let capacity: Int
-    
-    /// Raw audio buffer storage
+    private let alignment: Int
     private let buffer: UnsafeMutablePointer<Int16>
-    
-    // MARK: - Position Indices
-    
-    /// Read position (consumer-owned, read by producer)
-    /// Using UnsafeMutablePointer for atomic-like access patterns
-    private let readPosition: UnsafeMutablePointer<Int>
-    
-    /// Write position (producer-owned, read by consumer)
-    private let writePosition: UnsafeMutablePointer<Int>
-    
-    // MARK: - Statistics
-    
-    /// Number of samples currently available to read (thread-safe)
-    var availableSamples: Int {
-        // volatile-style reads with compiler barrier
-        let write = loadAcquire(writePosition)
-        let read = loadAcquire(readPosition)
-        
-        if write >= read {
-            return write - read
-        } else {
-            return capacity - read + write
-        }
-    }
-    
-    // MARK: - Initialization
-    
-    /// Initialize with capacity in number of samples (not bytes)
-    init(capacity: Int) {
+    private let lock = NSLock()
+    private var readPosition = 0
+    private var stored = 0
+    private var discarded = 0
+
+    init(capacity: Int, alignment: Int = 1) {
+        precondition(capacity > 0 && alignment > 0 && capacity % alignment == 0)
         self.capacity = capacity
-        
-        // Allocate audio buffer
-        self.buffer = UnsafeMutablePointer<Int16>.allocate(capacity: capacity)
+        self.alignment = alignment
+        buffer = .allocate(capacity: capacity)
         buffer.initialize(repeating: 0, count: capacity)
-        
-        // Allocate position storage
-        self.readPosition = UnsafeMutablePointer<Int>.allocate(capacity: 1)
-        self.writePosition = UnsafeMutablePointer<Int>.allocate(capacity: 1)
-        
-        readPosition.initialize(to: 0)
-        writePosition.initialize(to: 0)
     }
-    
-    deinit {
-        buffer.deallocate()
-        readPosition.deallocate()
-        writePosition.deallocate()
-    }
-    
-    // MARK: - Producer API (Audio Callback Thread)
-    
-    /// Write samples to the buffer.
-    /// **Thread safety**: Only call from producer thread.
-    /// - Parameters:
-    ///   - samples: Pointer to source samples
-    ///   - count: Number of samples to write
-    /// - Returns: Number of samples actually written
+    deinit { buffer.deallocate() }
+    var availableSamples: Int { lock.lock(); defer { lock.unlock() }; return stored }
+    var discardedSamples: Int { lock.lock(); defer { lock.unlock() }; return discarded }
+
     @discardableResult
-    @inline(__always)
     func write(_ samples: UnsafePointer<Int16>, count: Int) -> Int {
-        // Load current read position (acquire - see consumer's writes)
-        let readPos = loadAcquire(readPosition)
-        // Local load of our own position (no barrier needed - we own it)
-        let writePos = writePosition.pointee
-        
-        // Calculate available space
-        let available: Int
-        if writePos >= readPos {
-            available = capacity - (writePos - readPos) - 1
-        } else {
-            available = readPos - writePos - 1
-        }
-        
-        let toWrite = min(count, available)
-        guard toWrite > 0 else { return 0 }
-        
-        // Calculate wrap-around parts
-        let firstPart = min(toWrite, capacity - writePos)
-        let secondPart = toWrite - firstPart
-        
-        // Copy data - main work
-        memcpy(buffer.advanced(by: writePos), samples, firstPart * MemoryLayout<Int16>.stride)
-        
-        if secondPart > 0 {
-            memcpy(buffer, samples.advanced(by: firstPart), secondPart * MemoryLayout<Int16>.stride)
-        }
-        
-        // Update write position with release semantics
-        // Consumer will see all buffer writes before this position update
-        let newWritePos = (writePos + toWrite) % capacity
-        storeRelease(writePosition, value: newWritePos)
-        
-        return toWrite
+        guard count > 0 else { return 0 }
+        let aligned = count - count % alignment
+        let amount = min(aligned, capacity)
+        guard amount > 0 else { return 0 }
+        lock.lock(); defer { lock.unlock() }
+        let drop = max(0, stored + amount - capacity)
+        readPosition = (readPosition + drop) % capacity
+        stored -= drop
+        discarded += drop + aligned - amount
+        let position = (readPosition + stored) % capacity
+        let first = min(amount, capacity - position)
+        let newest = samples.advanced(by: aligned - amount)
+        memcpy(buffer.advanced(by: position), newest, first * 2)
+        if first < amount { memcpy(buffer, newest.advanced(by: first), (amount - first) * 2) }
+        stored += amount
+        return amount
     }
-    
-    /// Write from Data (convenience method)
     @discardableResult
-    @inline(__always)
     func write(_ data: Data) -> Int {
-        return data.withUnsafeBytes { rawBuffer in
-            guard let samples = rawBuffer.baseAddress?.assumingMemoryBound(to: Int16.self) else {
-                return 0
-            }
-            let sampleCount = rawBuffer.count / MemoryLayout<Int16>.stride
-            return write(samples, count: sampleCount)
+        data.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress else { return 0 }
+            return write(base.assumingMemoryBound(to: Int16.self), count: raw.count / 2)
         }
     }
-    
-    // MARK: - Consumer API (Render Thread)
-    
-    /// Read samples from the buffer.
-    /// **Thread safety**: Only call from consumer thread.
-    /// - Parameters:
-    ///   - destination: Pointer to destination buffer
-    ///   - count: Number of samples requested
-    /// - Returns: Number of samples actually read
+
+    /// Discard stale stereo frames as one operation when exceeding the latency ceiling.
     @discardableResult
-    @inline(__always)
-    func read(_ destination: UnsafeMutablePointer<Int16>, count: Int) -> Int {
-        // Load current write position (acquire - see producer's writes)
-        let writePos = loadAcquire(writePosition)
-        // Local load of our own position
-        let readPos = readPosition.pointee
-        
-        // Calculate available samples
-        let available: Int
-        if writePos >= readPos {
-            available = writePos - readPos
-        } else {
-            available = capacity - readPos + writePos
+    func read(_ destination: UnsafeMutablePointer<Int16>, count: Int,
+              maximumBuffered: Int = Int.max, targetBuffered: Int = 0) -> Int {
+        guard count > 0 else { return 0 }
+        memset(destination, 0, count * 2)
+        guard lock.try() else { return 0 }
+        defer { lock.unlock() }
+        if stored > maximumBuffered {
+            let keep = min(stored, max(count, targetBuffered))
+            let drop = (stored - keep) / alignment * alignment
+            readPosition = (readPosition + drop) % capacity
+            stored -= drop
+            discarded += drop
         }
-        
-        let toRead = min(count, available)
-        
-        if toRead == 0 {
-            // Fill with silence - critical for audio continuity
-            memset(destination, 0, count * MemoryLayout<Int16>.stride)
-            return 0
-        }
-        
-        // Calculate wrap-around parts
-        let firstPart = min(toRead, capacity - readPos)
-        let secondPart = toRead - firstPart
-        
-        // Copy data
-        memcpy(destination, buffer.advanced(by: readPos), firstPart * MemoryLayout<Int16>.stride)
-        
-        if secondPart > 0 {
-            memcpy(destination.advanced(by: firstPart), buffer, secondPart * MemoryLayout<Int16>.stride)
-        }
-        
-        // Fill remaining with silence if needed
-        if toRead < count {
-            memset(destination.advanced(by: toRead), 0, (count - toRead) * MemoryLayout<Int16>.stride)
-        }
-        
-        // Update read position with release semantics
-        let newReadPos = (readPos + toRead) % capacity
-        storeRelease(readPosition, value: newReadPos)
-        
-        return toRead
+        let amount = min(count - count % alignment, stored)
+        let first = min(amount, capacity - readPosition)
+        memcpy(destination, buffer.advanced(by: readPosition), first * 2)
+        if first < amount { memcpy(destination.advanced(by: first), buffer, (amount - first) * 2) }
+        readPosition = (readPosition + amount) % capacity
+        stored -= amount
+        return amount
     }
-    
-    // MARK: - Control
-    
-    /// Reset the buffer. **Only call when both threads are stopped.**
     func reset() {
-        readPosition.pointee = 0
-        writePosition.pointee = 0
-    }
-    
-    // MARK: - Private: Memory Ordering Primitives
-    
-    /// Load with acquire semantics - ensures subsequent reads see prior writes from other thread.
-    /// On ARM64 (Apple Silicon), this compiles to LDAR instruction.
-    @inline(__always)
-    private func loadAcquire(_ ptr: UnsafeMutablePointer<Int>) -> Int {
-        // Compiler barrier + atomic load
-        // Swift's pointer access is already sequentially consistent on Apple platforms,
-        // but we add explicit barrier for clarity and safety
-        let value = ptr.pointee
-        
-        // Acquire barrier: no loads/stores after this can be reordered before
-        // On ARM64, this is a dmb ishld (data memory barrier, inner shareable, load)
-        OSMemoryBarrier()
-        
-        return value
-    }
-    
-    /// Store with release semantics - ensures prior writes are visible before this store.
-    /// On ARM64 (Apple Silicon), this compiles to STLR instruction.
-    @inline(__always)
-    private func storeRelease(_ ptr: UnsafeMutablePointer<Int>, value: Int) {
-        // Release barrier: no loads/stores before this can be reordered after
-        // On ARM64, this is a dmb ish (data memory barrier, inner shareable)
-        OSMemoryBarrier()
-        
-        // Store the value
-        ptr.pointee = value
+        lock.lock(); defer { lock.unlock() }
+        readPosition = 0; stored = 0; discarded = 0
     }
 }

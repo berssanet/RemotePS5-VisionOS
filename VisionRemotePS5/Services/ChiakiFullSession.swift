@@ -34,7 +34,7 @@ enum ChiakiEventType: Int32 {
 // MARK: - Session Callbacks
 
 /// Zero-Copy: Called with raw pointer + size (avoids memory copy)
-typealias VideoFramePointerHandler = (UnsafeRawPointer, Int) -> Void
+typealias VideoFramePointerHandler = (UnsafeRawPointer, Int, Int32, Bool) -> Bool
 
 /// Called when audio samples are received
 typealias AudioSamplesHandler = (Data, Int) -> Void
@@ -424,12 +424,18 @@ final class ChiakiFullSession: ObservableObject {
         // phase holds a zeroed ChiakiSession whose mutexes are not initialized yet.
         guard isActive, chiaki_fullsession_is_started_wrapper() else { return }
         
-        _ = chiaki_fullsession_set_controller_wrapper(
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        let result = chiaki_fullsession_set_controller_wrapper(
             buttons,
             leftX, leftY,
             rightX, rightY,
             l2, r2
         )
+        let elapsed = (ProcessInfo.processInfo.systemUptime - startedAt) * 1000
+        if elapsed > 8.33 || result != CHIAKI_ERR_SUCCESS {
+            DebugLog.print("[Input] native update=\(String(format: "%.2f", elapsed))ms status=\(result.rawValue)")
+        }
+
     }
 }
 
@@ -452,40 +458,11 @@ struct SafeBufferView {
 
 /// Video frame callback from C
 /// ROBUST: Guards against null pointers, invalid sizes, and shutdown state
-private let videoCallback: ChiakiWrapperVideoCallback = { buf, bufSize, user in
-    // GUARD 1: Check if session is shutting down (prevents crash during cleanup)
-    guard !ChiakiFullSession.shared.isShuttingDown else {
-        return
-    }
-    
-    // GUARD 2: Validate session state
-    guard ChiakiFullSession.shared.stateIsActive else {
-        return
-    }
-    
-    // GUARD 3: Validate buffer pointer
-    guard let buf = buf else {
-        DebugLog.warning("ChiakiCallback", "⚠️ Video buffer is nil!")
-        return
-    }
-    
-    // GUARD 4: Validate buffer size (reasonable range for video frames)
-    guard bufSize > 0, bufSize < 10_000_000 else {
-        DebugLog.print("[ChiakiCallback] ⚠️ Invalid buffer size: \(bufSize)")
-        return
-    }
-    
-    // Debug logging (rate-limited)
-    #if DEBUG
-    // Only log every 60th frame to avoid console spam
-    #endif
-    
-    // ZERO-COPY PATH: Pass pointer directly without memory allocation
-    // The caller MUST use the data synchronously before this callback returns!
-    if let pointerHandler = ChiakiFullSession.shared.onVideoFramePointer {
-        pointerHandler(buf, bufSize)
-        return
-    }
+private let videoCallback: ChiakiWrapperVideoCallback = { buf, bufSize, lost, recovered, user in
+    guard !ChiakiFullSession.shared.isShuttingDown,
+          ChiakiFullSession.shared.stateIsActive,
+          let buf, bufSize > 0, bufSize <= 10_000_000 else { return false }
+    return ChiakiFullSession.shared.onVideoFramePointer?(buf, bufSize, lost, recovered) ?? false
 }
 
 /// Audio samples callback from C

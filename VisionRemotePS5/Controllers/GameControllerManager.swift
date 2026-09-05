@@ -66,34 +66,21 @@ class GameControllerManager: ObservableObject {
     private let inputShared = OSAllocatedUnfairLock(uncheckedState: InputShared())
     private let inputDiagnostics = OSAllocatedUnfairLock(initialState: InputDiagnostics())
     private let inputLoop = HighFrequencyInputController()
+    private let handlerQueue = DispatchQueue(label: "controller.events", qos: .userInteractive)
+    private let samplingLock = NSLock()
 
-    // CoreHaptics engine on the headset itself (Vision Pro reports no support)
-    private var hapticEngine: CHHapticEngine?
-    private var isHapticsSupported: Bool = false
-
-    // DualSense haptics: one engine and one endless player per adopted pad.
-    // CHHapticEngine exposes no running state, so it is tracked here: the engine
-    // stops behind our back on app suspension, audio interruption or a server error.
-    private enum ControllerEngineState { case stopped, starting, running }
-    private var controllerHapticEngine: CHHapticEngine?
-    private var controllerEngineState: ControllerEngineState = .stopped
-    private var controllerEngineRetryAt: TimeInterval = 0
-    private var rumblePlayer: CHHapticAdvancedPatternPlayer?
+    private let rumble = ControllerRumbleWorker()
 
     init() {
         setupNotifications()
         checkForConnectedControllers()
-        setupHapticEngine()
     }
 
     deinit {
-        // deinit may run on any thread; the loop and the engines are safe to stop there.
         nonisolated(unsafe) let loop = inputLoop
-        nonisolated(unsafe) let controllerEngine = controllerHapticEngine
-        nonisolated(unsafe) let engine = hapticEngine
+        let worker = rumble
         loop.stop()
-        controllerEngine?.stop(completionHandler: nil)
-        engine?.stop(completionHandler: nil)
+        worker.stop()
     }
 
     // MARK: - Lifecycle
@@ -114,7 +101,7 @@ class GameControllerManager: ObservableObject {
     /// belong to the system-owned GCController, so deinit alone cannot undo them.
     func tearDown() {
         stopPolling()
-        tearDownControllerHaptics()
+        rumble.stop()
         let gamepad = inputShared.withLockUnchecked { shared -> GCExtendedGamepad? in
             defer {
                 shared.gamepad = nil
@@ -132,6 +119,8 @@ class GameControllerManager: ObservableObject {
 
     /// Runs on the input thread: read the pad, log transitions, forward the snapshot.
     nonisolated private func inputTick() {
+        samplingLock.lock()
+        defer { samplingLock.unlock() }
         let shared = inputShared.withLockUnchecked { ($0.gamepad, $0.onInputReady) }
         guard let gamepad = shared.0 else { return }
         let input = Self.readGamepadState(gamepad)
@@ -261,25 +250,37 @@ class GameControllerManager: ObservableObject {
         guard let controller = notification.object as? GCController, controller === connectedController else { return }
         DebugLog.print("[Controller] ⛔️ Controller disconnected")
         connectedController = nil
-        inputShared.withLockUnchecked { $0.gamepad = nil }
+        let sendNeutral = inputShared.withLockUnchecked { shared -> ((ControllerInput) -> Void)? in
+            shared.gamepad = nil
+            return shared.onInputReady
+        }
+        if let gamepad = controller.extendedGamepad { restoreSystemGestures(gamepad) }
+        handlerQueue.async { [self] in
+            samplingLock.lock()
+            defer { samplingLock.unlock() }
+            sendNeutral?(ControllerInput())
+        }
         stopPolling()
-        tearDownControllerHaptics()
+        rumble.stop()
     }
 
     /// applicationSuspended stops the pad's engine; Apple says restart it on foreground return.
     @objc private func applicationWillEnterForeground(_ notification: Notification) {
-        guard controllerHapticEngine != nil, rumblePlayer == nil else { return }
-        restartControllerHaptics()
+        guard UserDefaults.standard.object(forKey: "enableHaptics") as? Bool != false else { return }
+        if let controller = connectedController { rumble.adopt(controller) }
     }
 
     private func setupController(_ controller: GCController) {
+        controller.handlerQueue = handlerQueue
         connectedController = controller
         DebugLog.print("[Controller] 🎮 Using \(controller.vendorName ?? "controller") (\(controller.productCategory)), extendedGamepad=\(controller.extendedGamepad != nil)")
         if let gamepad = controller.extendedGamepad {
             configureGamepad(gamepad)
         }
         inputShared.withLockUnchecked { $0.gamepad = controller.extendedGamepad }
-        prepareControllerHaptics(controller)
+        if UserDefaults.standard.object(forKey: "enableHaptics") as? Bool != false {
+            rumble.adopt(controller)
+        }
         startPolling()
     }
 
@@ -289,214 +290,126 @@ class GameControllerManager: ObservableObject {
         gamepad.buttonHome?.preferredSystemGestureState = .disabled
         gamepad.buttonOptions?.preferredSystemGestureState = .disabled
         gamepad.buttonMenu.preferredSystemGestureState = .disabled
-        #if DEBUG
-        // Fires on the handler queue independently of the input thread: proves delivery.
-        // Pressed-state edges only: the analog triggers change value on every report.
-        var lastPressed: [ObjectIdentifier: Bool] = [:]
-        gamepad.valueChangedHandler = { _, element in
-            guard let button = element as? GCControllerButtonInput else { return }
-            let pressed = button.isPressed
-            let key = ObjectIdentifier(button)
-            guard lastPressed[key] != pressed else { return }
-            lastPressed[key] = pressed
-            DebugLog.print("[Controller] 🔔 \(element.localizedName ?? "button") pressed=\(pressed)")
-        }
-        #endif
+        // Capture transitions immediately; 120 Hz polling remains for stick motion and heartbeat.
+        // Serialization with polling prevents a stale sampled release overtaking a new press.
+        gamepad.valueChangedHandler = { [weak self] _, _ in self?.inputTick() }
     }
 
     private func restoreSystemGestures(_ gamepad: GCExtendedGamepad) {
         gamepad.buttonHome?.preferredSystemGestureState = .enabled
         gamepad.buttonOptions?.preferredSystemGestureState = .enabled
         gamepad.buttonMenu.preferredSystemGestureState = .enabled
-        #if DEBUG
         gamepad.valueChangedHandler = nil
-        #endif
     }
 
-    // MARK: - Haptics
-
-    /// Rumble from the console (0-255 per motor).
     func triggerRumble(left: UInt8, right: UInt8) {
-        let leftIntensity = Float(left) / 255.0
-        let rightIntensity = Float(right) / 255.0
-        if let player = rumblePlayer {
-            sendRumble(to: player, leftIntensity: leftIntensity, rightIntensity: rightIntensity)
-            return
-        }
-        if controllerHapticEngine != nil {
-            // Engine stopped externally or still starting: re-arm and drop this packet.
-            restartControllerHaptics()
-            return
-        }
-        if isHapticsSupported {
-            triggerCoreHaptics(leftIntensity: leftIntensity, rightIntensity: rightIntensity)
-        }
+        rumble.submit(left: left, right: right)
     }
+}
 
-    /// Dynamic parameters on the endless player: no allocation per rumble packet.
-    private func sendRumble(to player: CHHapticAdvancedPatternPlayer, leftIntensity: Float, rightIntensity: Float) {
-        let intensity = max(leftIntensity, rightIntensity)
-        let sharpness = rightIntensity / max(leftIntensity + rightIntensity, 0.001)
-        do {
-            try player.sendParameters([
-                CHHapticDynamicParameter(parameterID: .hapticIntensityControl, value: intensity, relativeTime: 0),
-                CHHapticDynamicParameter(parameterID: .hapticSharpnessControl, value: sharpness, relativeTime: 0)
-            ], atTime: CHHapticTimeImmediate)
-        } catch {
-            DebugLog.print("[Haptics] Controller rumble error: \(error)")
-        }
+/// All XPC/engine/player calls run on this serial worker, never on main or input.
+/// A service failure disables rumble until reconnect/foreground, not per-packet retry.
+final class ControllerRumbleWorker: @unchecked Sendable {
+    private let queue = DispatchQueue(label: "controller.haptics", qos: .utility)
+    private struct State {
+        var generation: UInt64 = 0
+        var enabled = false
+        var pending: (UInt8, UInt8)?
+        var scheduled = false
     }
+    private let state = OSAllocatedUnfairLock(initialState: State())
+    private var engine: CHHapticEngine?
+    private var player: CHHapticAdvancedPatternPlayer?
 
-    /// createEngine and start talk to the haptics daemon over XPC: once per pad, never per packet.
-    private func prepareControllerHaptics(_ controller: GCController) {
-        tearDownControllerHaptics()
-        guard let haptics = controller.haptics,
-              let engine = haptics.createEngine(withLocality: .default) else { return }
-        engine.isAutoShutdownEnabled = false
-        let engineID = ObjectIdentifier(engine)
-        // Both handlers arrive off the main thread: touch state on the actor only,
-        // and only while this engine is still the adopted one.
-        engine.stoppedHandler = { [weak self] reason in
-            DebugLog.print("[Haptics] Controller engine stopped: \(reason.rawValue)")
-            Task { @MainActor [weak self] in
-                guard let self, self.isCurrentControllerEngine(engineID) else { return }
-                self.rumblePlayer = nil
-                self.controllerEngineState = .stopped
-                // A pad disconnect is followed by controllerDisconnected; suspension is
-                // re-armed on foreground return; anything else by the next rumble packet.
-            }
+    func adopt(_ controller: GCController) {
+        let generation = state.withLock { value -> UInt64 in
+            value.generation &+= 1
+            value.enabled = false
+            value.pending = nil
+            return value.generation
         }
-        engine.resetHandler = { [weak self] in
-            Task { @MainActor [weak self] in
-                guard let self, self.isCurrentControllerEngine(engineID) else { return }
-                self.controllerEngineState = .stopped
-                self.controllerEngineRetryAt = 0
-                self.restartControllerHaptics()
-            }
-        }
-        controllerHapticEngine = engine
-        restartControllerHaptics()
-    }
-
-    private func isCurrentControllerEngine(_ engineID: ObjectIdentifier) -> Bool {
-        controllerHapticEngine.map { ObjectIdentifier($0) == engineID } ?? false
-    }
-
-    /// Idempotent re-arm: one start in flight at a time, at most one attempt per second,
-    /// and only a fresh player when the engine is already running.
-    private func restartControllerHaptics() {
-        guard let engine = controllerHapticEngine, controllerEngineState != .starting else { return }
-        let now = ProcessInfo.processInfo.systemUptime
-        guard now >= controllerEngineRetryAt else { return }
-        controllerEngineRetryAt = now + 1
-        rumblePlayer = nil
-        if controllerEngineState == .running {
-            installRumblePlayer()
-            // A player that cannot start means the engine is not really running.
-            if rumblePlayer == nil { controllerEngineState = .stopped }
-            return
-        }
-        controllerEngineState = .starting
-        let engineID = ObjectIdentifier(engine)
-        engine.start { [weak self] error in
-            Task { @MainActor [weak self] in
-                guard let self, self.isCurrentControllerEngine(engineID) else { return }
-                if let error {
-                    self.controllerEngineState = .stopped
-                    DebugLog.print("[Haptics] Controller engine start failed: \(error)")
-                    return
+        queue.async { [self] in
+            guard state.withLock({ $0.generation == generation }) else { return }
+            releaseEngine()
+            guard let engine = controller.haptics?.createEngine(withLocality: .default) else { return }
+            self.engine = engine
+            engine.isAutoShutdownEnabled = false
+            engine.stoppedHandler = { [weak self] _ in self?.disable(generation: generation) }
+            engine.resetHandler = { [weak self] in self?.disable(generation: generation) }
+            do {
+                try engine.start()
+                let motor = CHHapticEvent(eventType: .hapticContinuous, parameters: [
+                    CHHapticEventParameter(parameterID: .hapticIntensity, value: 1),
+                    CHHapticEventParameter(parameterID: .hapticSharpness, value: 0)
+                ], relativeTime: 0, duration: TimeInterval(GCHapticDurationInfinite))
+                let muted = CHHapticDynamicParameter(parameterID: .hapticIntensityControl, value: 0, relativeTime: 0)
+                let pattern = try CHHapticPattern(events: [motor], parameters: [muted])
+                let player = try engine.makeAdvancedPlayer(with: pattern)
+                try player.start(atTime: CHHapticTimeImmediate)
+                self.player = player
+                let current = state.withLock { value -> Bool in
+                    guard value.generation == generation else { return false }
+                    value.enabled = true
+                    return true
                 }
-                self.controllerEngineState = .running
-                self.installRumblePlayer()
+                if !current { releaseEngine() }
+            } catch {
+                disable(generation: generation)
+                DebugLog.print("[Haptics] Disabled after service failure; video/input remain active: \(error)")
             }
         }
     }
 
-    /// Endless continuous event at full intensity, muted by an initial intensity control
-    /// of 0. Base sharpness is 0 because hapticSharpnessControl is additive (only the
-    /// intensity control multiplies), so the left/right ratio lands unchanged.
-    private func installRumblePlayer() {
-        guard let engine = controllerHapticEngine else { return }
-        let motor = CHHapticEvent(
-            eventType: .hapticContinuous,
-            parameters: [
-                CHHapticEventParameter(parameterID: .hapticIntensity, value: 1.0),
-                CHHapticEventParameter(parameterID: .hapticSharpness, value: 0.0)
-            ],
-            relativeTime: 0,
-            duration: TimeInterval(GCHapticDurationInfinite)
-        )
-        let muted = CHHapticDynamicParameter(parameterID: .hapticIntensityControl, value: 0, relativeTime: 0)
-        do {
-            let pattern = try CHHapticPattern(events: [motor], parameters: [muted])
-            let player = try engine.makeAdvancedPlayer(with: pattern)
-            try player.start(atTime: CHHapticTimeImmediate)
-            rumblePlayer = player
-            DebugLog.print("[Haptics] ✅ Controller rumble player ready")
-        } catch {
-            DebugLog.print("[Haptics] Controller player error: \(error)")
+    func submit(left: UInt8, right: UInt8) {
+        let schedule = state.withLock { value -> Bool in
+            guard value.enabled else { return false }
+            value.pending = (left, right)
+            guard !value.scheduled else { return false }
+            value.scheduled = true
+            return true
         }
-    }
-
-    private func tearDownControllerHaptics() {
-        rumblePlayer = nil
-        controllerEngineState = .stopped
-        controllerEngineRetryAt = 0
-        controllerHapticEngine?.stop(completionHandler: nil)
-        controllerHapticEngine = nil
-    }
-
-    private func setupHapticEngine() {
-        guard CHHapticEngine.capabilitiesForHardware().supportsHaptics else {
-            DebugLog.print("[Haptics] Device does not support CoreHaptics")
-            return
-        }
-
-        do {
-            hapticEngine = try CHHapticEngine()
-            hapticEngine?.stoppedHandler = { [weak self] reason in
-                DebugLog.print("[Haptics] Engine stopped: \(reason)")
-                Task { @MainActor [weak self] in self?.isHapticsSupported = false }
+        guard schedule else { return }
+        // One coalesced update per interval, even if the console sends a burst.
+        queue.asyncAfter(deadline: .now() + .milliseconds(16)) { [self] in
+            let work = state.withLock { value -> ((UInt8, UInt8)?, UInt64) in
+                defer { value.scheduled = false; value.pending = nil }
+                return (value.enabled ? value.pending : nil, value.generation)
             }
-            hapticEngine?.resetHandler = { [weak self] in
-                DebugLog.print("[Haptics] Engine reset, restarting...")
-                Task { @MainActor [weak self] in
-                    do {
-                        try self?.hapticEngine?.start()
-                        self?.isHapticsSupported = true
-                    } catch {
-                        DebugLog.print("[Haptics] Failed to restart: \(error)")
-                    }
-                }
+            guard let (left, right) = work.0, let player else { return }
+            let l = Float(left) / 255
+            let r = Float(right) / 255
+            do {
+                try player.sendParameters([
+                    CHHapticDynamicParameter(parameterID: .hapticIntensityControl, value: max(l, r), relativeTime: 0),
+                    CHHapticDynamicParameter(parameterID: .hapticSharpnessControl, value: r / max(l + r, 0.001), relativeTime: 0)
+                ], atTime: CHHapticTimeImmediate)
+            } catch {
+                disable(generation: work.1)
+                DebugLog.print("[Haptics] Disabled after rumble error: \(error)")
             }
-            try hapticEngine?.start()
-            isHapticsSupported = true
-            DebugLog.print("[Haptics] ✅ CoreHaptics engine initialized")
-        } catch {
-            DebugLog.print("[Haptics] ❌ Failed to create engine: \(error)")
         }
     }
-
-    private func triggerCoreHaptics(leftIntensity: Float, rightIntensity: Float) {
-        guard let engine = hapticEngine, isHapticsSupported else { return }
-        guard leftIntensity > 0 || rightIntensity > 0 else { return }
-
-        do {
-            let intensity = max(leftIntensity, rightIntensity)
-            let sharpness = rightIntensity / max(leftIntensity + rightIntensity, 0.001)
-            let event = CHHapticEvent(
-                eventType: .hapticTransient,
-                parameters: [
-                    CHHapticEventParameter(parameterID: .hapticIntensity, value: intensity),
-                    CHHapticEventParameter(parameterID: .hapticSharpness, value: sharpness)
-                ],
-                relativeTime: 0
-            )
-            let pattern = try CHHapticPattern(events: [event], parameters: [])
-            let player = try engine.makePlayer(with: pattern)
-            try player.start(atTime: CHHapticTimeImmediate)
-        } catch {
-            DebugLog.print("[Haptics] CoreHaptics error: \(error)")
+    private func disable(generation: UInt64) {
+        let current = state.withLock { value -> Bool in
+            guard value.generation == generation else { return false }
+            value.enabled = false; value.pending = nil
+            return true
         }
+        if current {
+            queue.async { [self] in
+                if state.withLock({ $0.generation == generation }) { releaseEngine() }
+            }
+        }
+    }
+    func stop() {
+        state.withLock { $0.generation &+= 1; $0.enabled = false; $0.pending = nil }
+        queue.async { [self] in releaseEngine() }
+    }
+    private func releaseEngine() {
+        player = nil
+        engine?.stoppedHandler = { _ in }
+        engine?.resetHandler = {}
+        engine?.stop(completionHandler: nil)
+        engine = nil
     }
 }
