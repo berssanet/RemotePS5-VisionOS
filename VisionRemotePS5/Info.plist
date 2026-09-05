@@ -35,10 +35,6 @@
 	<dict/>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Required to discover PlayStation consoles on your local network</string>
-	<key>NSBonjourServices</key>
-	<array>
-		<string>_psremoteplay._tcp</string>
-	</array>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>

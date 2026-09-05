@@ -15,8 +15,25 @@ struct PSNAuthConstants {
     static var clientSecret: String {
         return (Bundle.main.object(forInfoDictionaryKey: "PSNClientSecret") as? String) ?? ""
     }
-    static let tokenURL = "https://auth.api.sonyentertainmentnetwork.com/2.0/oauth/token"
     static let redirectURI = "https://remoteplay.dl.playstation.net/remoteplay/redirect"
+
+    /// Client device id bound to the OAuth token. holepunch.h: the token "must have been
+    /// initially created with a duid parameter" or the push WebSocket refuses it (403).
+    /// Generated once by the library in PSN format and persisted.
+    static var clientDUID: String {
+        let key = "psn_client_duid"
+        if let stored = UserDefaults.standard.string(forKey: key), !stored.isEmpty {
+            return stored
+        }
+        let generated = ChiakiFullSession.makeClientDUID() ?? ""
+        if !generated.isEmpty {
+            UserDefaults.standard.set(generated, forKey: key)
+        }
+        return generated
+    }
+
+    /// Tokens minted before the duid binding existed must be replaced by a fresh sign-in.
+    static let tokenDUIDBoundKey = "psn_token_duid_bound"
 
     static let scopes = [
         "psn:clientapp",
@@ -24,6 +41,40 @@ struct PSNAuthConstants {
         "pushNotification:webSocket.desktop.connect",
         "sessionManager:remotePlaySession.system.update"
     ].joined(separator: " ")
+
+    enum TokenGrant {
+        case authorizationCode(String)
+        case refreshToken(String)
+    }
+
+    static func tokenRequest(for grant: TokenGrant) -> URLRequest {
+        var fields = ["scope": scopes, "redirect_uri": redirectURI]
+        switch grant {
+        case .authorizationCode(let code):
+            fields["grant_type"] = "authorization_code"
+            fields["code"] = code
+        case .refreshToken(let token):
+            fields["grant_type"] = "refresh_token"
+            fields["refresh_token"] = token
+        }
+        var request = URLRequest(url: URL(string: "https://auth.api.sonyentertainmentnetwork.com/2.0/oauth/token")!)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.setValue("Basic " + Data("\(clientID):\(clientSecret)".utf8).base64EncodedString(),
+                         forHTTPHeaderField: "Authorization")
+        request.httpBody = Data(fields.urlEncodedString.utf8)
+        return request
+    }
+
+    static func tokenError(statusCode: Int, data: Data) -> PSNAuthError {
+        let response = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        switch response?["error"] as? String {
+        case "invalid_scope": return .invalidScope
+        case "invalid_grant": return .authorizationExpired
+        case "invalid_client": return .invalidClient
+        default: return .httpError(statusCode: statusCode)
+        }
+    }
     
     static var loginURL: String {
         var components = URLComponents(string: "https://auth.api.sonyentertainmentnetwork.com/2.0/oauth/authorize")!
@@ -39,7 +90,8 @@ struct PSNAuthConstants {
             URLQueryItem(name: "layout_type", value: "popup"),
             URLQueryItem(name: "smcid", value: "remoteplay"),
             URLQueryItem(name: "prompt", value: "always"),
-            URLQueryItem(name: "PlatformPrivacyWs1", value: "minimal")
+            URLQueryItem(name: "PlatformPrivacyWs1", value: "minimal"),
+            URLQueryItem(name: "duid", value: clientDUID)
         ]
         return components.url!.absoluteString
     }
@@ -58,6 +110,8 @@ class PSNAuthService: ObservableObject {
     @Published var isLoading = false
     @Published var userProfile: PSNUserProfile?
     @Published var lastError: PSNAuthError?
+
+    private var refreshTask: Task<Void, Error>?
     
     // MARK: - Private Constants
     
@@ -69,19 +123,15 @@ class PSNAuthService: ObservableObject {
     
     private enum APIEndpoints {
         static let authBase = "https://auth.api.sonyentertainmentnetwork.com"
-        static let profileBase = "https://web.np.playstation.com"
         
         static var tokenURL: URL { URL(string: "\(authBase)/2.0/oauth/token")! }
-        static var profileURL: URL { URL(string: "\(profileBase)/api/basicProfile/v1/profile/users/me")! }
-    }
-    
-    /// Phase 5.19: collapsed to a thin alias over `PSNAuthConstants` so there
-    /// is a single source of truth and the literal secret string never appears
-    /// in the binary.
-    private enum ClientCredentials {
-        static var clientId: String { PSNAuthConstants.clientID }
-        static var clientSecret: String { PSNAuthConstants.clientSecret }
-        static var redirectURI: String { PSNAuthConstants.redirectURI }
+        /// Token introspection endpoint (chiaki-ng psnaccountid.cpp): returns the numeric `user_id`
+        /// that Remote Play registration uses as the 8-byte PSN Account ID. Basic-auth, not Bearer.
+        static func accountInfoURL(accessToken: String) -> URL? {
+            var components = URLComponents(string: "\(authBase)/2.0/oauth/token")
+            components?.path += "/" + accessToken
+            return components?.url
+        }
     }
     
     // MARK: - Initialization
@@ -105,11 +155,10 @@ class PSNAuthService: ObservableObject {
         do {
             let tokenResponse = try await performTokenExchange(code: code)
             try await storeTokens(tokenResponse)
+            UserDefaults.standard.set(true, forKey: PSNAuthConstants.tokenDUIDBoundKey)
             
+            try await reloadProfile()
             isAuthenticated = true
-            
-            // Try to extract user profile from JWT, then fallback to API
-            await loadUserProfile(from: tokenResponse.accessToken)
             
             DebugLog.print("[PSNAuth] ✅ Authentication successful")
             
@@ -126,24 +175,35 @@ class PSNAuthService: ObservableObject {
     /// Refresh the access token using the stored refresh token.
     /// - Throws: `PSNAuthError` if refresh fails or no refresh token is available.
     func refreshAccessToken() async throws {
+        if let refreshTask {
+            return try await refreshTask.value
+        }
         guard let refreshToken = try? keychainGet(key: KeychainKeys.refreshToken) else {
             throw PSNAuthError.noRefreshToken
         }
-        
-        do {
-            let tokenResponse = try await performTokenRefresh(refreshToken: refreshToken)
-            try await storeTokens(tokenResponse)
-            DebugLog.print("[PSNAuth] ✅ Token refreshed successfully")
-            
-        } catch {
-            // Refresh failed - sign out and require re-authentication
-            await signOut()
-            throw PSNAuthError.refreshFailed(underlying: error)
+
+        let task = Task {
+            do {
+                let tokenResponse = try await performTokenRequest(for: .refreshToken(refreshToken))
+                try Task.checkCancellation()
+                try await storeTokens(tokenResponse)
+                DebugLog.print("[PSNAuth] ✅ Token refreshed successfully")
+            } catch {
+                if let authError = error as? PSNAuthError,
+                   authError == .authorizationExpired || authError == .invalidClient {
+                    await signOut()
+                }
+                throw PSNAuthError.refreshFailed(underlying: error)
+            }
         }
+        refreshTask = task
+        defer { refreshTask = nil }
+        try await task.value
     }
     
     /// Sign out and clear all stored credentials.
     func signOut() async {
+        refreshTask?.cancel()
         isAuthenticated = false
         userProfile = nil
         lastError = nil
@@ -152,6 +212,8 @@ class PSNAuthService: ObservableObject {
         try? keychainDelete(key: KeychainKeys.accessToken)
         try? keychainDelete(key: KeychainKeys.refreshToken)
         try? keychainDelete(key: KeychainKeys.tokenExpiry)
+        UserDefaults.standard.removeObject(forKey: PSNAuthConstants.tokenDUIDBoundKey)
+        UserDefaults.standard.removeObject(forKey: "psn_account_id")
         
         DebugLog.print("[PSNAuth] Signed out")
     }
@@ -175,47 +237,21 @@ class PSNAuthService: ObservableObject {
     // MARK: - Private: Token Operations
     
     private func performTokenExchange(code: String) async throws -> TokenResponse {
-        let body: [String: String] = [
-            "grant_type": "authorization_code",
-            "code": code,
-            "redirect_uri": ClientCredentials.redirectURI,
-            "client_id": ClientCredentials.clientId,
-            "client_secret": ClientCredentials.clientSecret
-        ]
-        
-        return try await performTokenRequest(body: body)
+        return try await performTokenRequest(for: .authorizationCode(code))
     }
     
-    private func performTokenRefresh(refreshToken: String) async throws -> TokenResponse {
-        let body: [String: String] = [
-            "grant_type": "refresh_token",
-            "refresh_token": refreshToken,
-            "client_id": ClientCredentials.clientId,
-            "client_secret": ClientCredentials.clientSecret
-        ]
-        
-        return try await performTokenRequest(body: body)
-    }
-    
-    private func performTokenRequest(body: [String: String]) async throws -> TokenResponse {
-        var request = URLRequest(url: APIEndpoints.tokenURL)
-        request.httpMethod = "POST"
-        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        request.httpBody = body.urlEncodedString.data(using: .utf8)
-        
+    private func performTokenRequest(for grant: PSNAuthConstants.TokenGrant) async throws -> TokenResponse {
+        let request = PSNAuthConstants.tokenRequest(for: grant)
         let (data, response) = try await URLSession.shared.data(for: request)
         
         guard let httpResponse = response as? HTTPURLResponse else {
             throw PSNAuthError.invalidResponse
         }
         
-        // Debug logging
-        if let rawResponse = String(data: data, encoding: .utf8) {
-            DebugLog.print("[PSNAuth] Token response (\(httpResponse.statusCode)): \(rawResponse.prefix(300))...")
-        }
+        DebugLog.print("[PSNAuth] Token request status: \(httpResponse.statusCode)")
         
         guard httpResponse.statusCode == 200 else {
-            throw PSNAuthError.httpError(statusCode: httpResponse.statusCode)
+            throw PSNAuthConstants.tokenError(statusCode: httpResponse.statusCode, data: data)
         }
         
         do {
@@ -246,39 +282,44 @@ class PSNAuthService: ObservableObject {
         return Date().timeIntervalSince1970 > expiry - 300
     }
     
+    /// Re-resolve the PSN Account ID (token-info endpoint) for a signed-in user.
+    func reloadProfile() async throws {
+        userProfile = try await fetchUserProfileFromAPI()
+    }
+
     // MARK: - Private: Profile Operations
     
     private func loadStoredCredentials() async {
-        guard let token = try? keychainGet(key: KeychainKeys.accessToken) else {
+        guard (try? keychainGet(key: KeychainKeys.accessToken)) != nil else {
+            return
+        }
+        guard UserDefaults.standard.bool(forKey: PSNAuthConstants.tokenDUIDBoundKey) else {
+            DebugLog.print("[PSNAuth] Stored token predates the duid binding; sign in again")
+            await signOut()
             return
         }
         
-        isAuthenticated = true
-        await loadUserProfile(from: token)
-    }
-    
-    private func loadUserProfile(from accessToken: String) async {
-        // Try JWT extraction first (faster, no network)
-        if let profile = extractProfileFromJWT(accessToken) {
-            userProfile = profile
-            return
-        }
-        
-        // Fallback to API call
         do {
-            userProfile = try await fetchUserProfileFromAPI()
+            try await reloadProfile()
+            isAuthenticated = true
         } catch {
+            lastError = (error as? PSNAuthError) ?? .tokenExchangeFailed(underlying: error)
             DebugLog.print("[PSNAuth] Profile fetch failed: \(error.localizedDescription)")
         }
     }
     
+    /// Resolve the PSN Account ID from the token-info endpoint, exactly like chiaki-ng's
+    /// `PSNAccountID::handUserIDResponse`: `GET <tokenURL>/<access_token>` with Basic auth,
+    /// then `user_id` (decimal) -> 8 bytes little-endian -> Base64.
     private func fetchUserProfileFromAPI() async throws -> PSNUserProfile {
         let token = try await getAccessToken()
         
-        var request = URLRequest(url: APIEndpoints.profileURL)
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        guard let url = APIEndpoints.accountInfoURL(accessToken: token) else {
+            throw PSNAuthError.invalidResponse
+        }
+        var request = URLRequest(url: url)
+        request.setValue(Self.basicAuthorizationHeader(), forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("en-US", forHTTPHeaderField: "Accept-Language")
         
         let (data, response) = try await URLSession.shared.data(for: request)
         
@@ -286,13 +327,21 @@ class PSNAuthService: ObservableObject {
             throw PSNAuthError.invalidResponse
         }
         
-        DebugLog.print("[PSNAuth] Profile response status: \(httpResponse.statusCode)")
+        DebugLog.print("[PSNAuth] Account info response status: \(httpResponse.statusCode)")
         
         guard httpResponse.statusCode == 200 else {
             throw PSNAuthError.httpError(statusCode: httpResponse.statusCode)
         }
         
-        return try parseUserProfile(from: data)
+        let profile = try parseUserProfile(from: data)
+        // Single source of truth shared with PairingView / SettingsView.
+        UserDefaults.standard.set(profile.accountId, forKey: "psn_account_id")
+        return profile
+    }
+
+    private static func basicAuthorizationHeader() -> String {
+        let credentials = "\(PSNAuthConstants.clientID):\(PSNAuthConstants.clientSecret)"
+        return "Basic " + Data(credentials.utf8).base64EncodedString()
     }
     
     private func parseUserProfile(from data: Data) throws -> PSNUserProfile {
@@ -300,73 +349,31 @@ class PSNAuthService: ObservableObject {
             throw PSNAuthError.decodingFailed(underlying: nil)
         }
         
-        let accountId = json["accountId"] as? String
-        let onlineId = json["onlineId"] as? String
-        
-        // Check nested profile object (older API format)
-        var nestedAccountId: String?
-        var nestedOnlineId: String?
-        if let profile = json["profile"] as? [String: Any] {
-            nestedAccountId = profile["accountId"] as? String
-            nestedOnlineId = profile["onlineId"] as? String
+        // `user_id` arrives as a decimal string (chiaki-ng: std::stoll); tolerate a JSON number too.
+        let userId: UInt64?
+        if let text = json["user_id"] as? String {
+            userId = UInt64(text)
+        } else if let number = json["user_id"] as? NSNumber {
+            userId = number.uint64Value
+        } else {
+            userId = nil
         }
-        
-        let finalAccountId = accountId ?? nestedAccountId ?? ""
-        let finalOnlineId = onlineId ?? nestedOnlineId ?? "PSN User"
-        
-        guard !finalAccountId.isEmpty || !finalOnlineId.isEmpty else {
+        guard let userId else {
             throw PSNAuthError.profileNotFound
         }
         
-        DebugLog.print("[PSNAuth] ✅ Profile parsed - onlineId: \(finalOnlineId)")
-        return PSNUserProfile(onlineId: finalOnlineId, accountId: finalAccountId)
+        let accountId = Self.accountIdBase64(userId: userId)
+        let onlineId = (json["online_id"] as? String) ?? "PSN User"
+        
+        DebugLog.print("[PSNAuth] ✅ Account ID resolved")
+        return PSNUserProfile(onlineId: onlineId, accountId: accountId)
     }
     
-    // MARK: - Private: JWT Parsing
-    
-    private func extractProfileFromJWT(_ token: String) -> PSNUserProfile? {
-        let parts = token.split(separator: ".")
-        guard parts.count >= 2 else {
-            return nil
-        }
-        
-        guard let payloadData = decodeBase64URL(String(parts[1])) else {
-            return nil
-        }
-        
-        do {
-            guard let json = try JSONSerialization.jsonObject(with: payloadData) as? [String: Any] else {
-                return nil
-            }
-            
-            // Extract account ID from standard JWT claims
-            let accountId = (json["sub"] as? String) ?? (json["account_id"] as? String)
-            let onlineId = (json["online_id"] as? String) ?? (json["username"] as? String)
-            
-            guard let accountId = accountId else {
-                return nil
-            }
-            
-            DebugLog.print("[PSNAuth] ✅ Extracted profile from JWT - accountId: \(accountId)")
-            return PSNUserProfile(onlineId: onlineId ?? "PSN User", accountId: accountId)
-            
-        } catch {
-            return nil
-        }
-    }
-    
-    private func decodeBase64URL(_ string: String) -> Data? {
-        var base64 = string
-            .replacingOccurrences(of: "-", with: "+")
-            .replacingOccurrences(of: "_", with: "/")
-        
-        // Add padding if needed
-        let remainder = base64.count % 4
-        if remainder > 0 {
-            base64 += String(repeating: "=", count: 4 - remainder)
-        }
-        
-        return Data(base64Encoded: base64)
+    /// `user_id.to_bytes(8, "little")` + Base64 — the format the PS5 registration payload expects.
+    private static func accountIdBase64(userId: UInt64) -> String {
+        var littleEndian = userId.littleEndian
+        let bytes = withUnsafeBytes(of: &littleEndian) { Data($0) }
+        return bytes.base64EncodedString()
     }
     
     // MARK: - Keychain Operations
@@ -426,13 +433,11 @@ struct TokenResponse: Codable {
     let accessToken: String
     let refreshToken: String?
     let expiresIn: Int
-    let tokenType: String
     
     enum CodingKeys: String, CodingKey {
         case accessToken = "access_token"
         case refreshToken = "refresh_token"
         case expiresIn = "expires_in"
-        case tokenType = "token_type"
     }
 }
 
@@ -458,6 +463,9 @@ enum PSNAuthError: LocalizedError, Equatable {
     case decodingFailed(underlying: Error?)
     case profileNotFound
     case keychainError(operation: String)
+    case invalidScope
+    case authorizationExpired
+    case invalidClient
     
     var errorDescription: String? {
         switch self {
@@ -479,6 +487,12 @@ enum PSNAuthError: LocalizedError, Equatable {
             return "User profile not found"
         case .keychainError(let operation):
             return "Keychain \(operation) failed"
+        case .invalidScope:
+            return "PSN rejected the requested permissions (invalid_scope). Sign in again using this app's PSN login link."
+        case .authorizationExpired:
+            return "PSN authorization expired or was revoked. Sign in again using a new redirect URL."
+        case .invalidClient:
+            return "PSN rejected the app's OAuth client configuration. Check PSNClientID and PSNClientSecret."
         }
     }
     
@@ -494,6 +508,9 @@ enum PSNAuthError: LocalizedError, Equatable {
         case (.decodingFailed, .decodingFailed): return true
         case (.profileNotFound, .profileNotFound): return true
         case (.keychainError(let l), .keychainError(let r)): return l == r
+        case (.invalidScope, .invalidScope): return true
+        case (.authorizationExpired, .authorizationExpired): return true
+        case (.invalidClient, .invalidClient): return true
         default: return false
         }
     }
@@ -502,8 +519,12 @@ enum PSNAuthError: LocalizedError, Equatable {
 // MARK: - Extensions
 
 private extension Dictionary where Key == String, Value == String {
-    /// Encode dictionary as URL query string.
     var urlEncodedString: String {
-        map { "\($0.key)=\($0.value)" }.joined(separator: "&")
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+        return keys.sorted().map { key in
+            let encodedKey = key.addingPercentEncoding(withAllowedCharacters: allowed)!
+            let encodedValue = self[key]!.addingPercentEncoding(withAllowedCharacters: allowed)!
+            return "\(encodedKey)=\(encodedValue)"
+        }.joined(separator: "&")
     }
 }

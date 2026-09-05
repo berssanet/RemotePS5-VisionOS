@@ -8,30 +8,34 @@ class PSNSessionManager: ObservableObject {
     
     @Published var devices: [PSNDevice] = []
     @Published var isLoading = false
-    @Published var error: String?
-    @Published var isWebSocketConnected = false
     
-    private let authService = PSNAuthService()
+    /// The app-wide auth service (AppState.psnAuthService). Injected by the UI so a
+    /// 401 refresh / sign-out here cannot desync from what the user sees.
+    var authService: PSNAuthService?
     private let webSocketService = PSNWebSocketService.shared
     
     // Current session info
-    private var currentSessionId: String?
     private var sessionCreatedContinuation: CheckedContinuation<String, Error>?
     
     // API Endpoints (from chiaki-ng)
-    private static let baseURL = "https://web.np.playstation.com"
     private static let sessionManagerURL = "https://web.np.playstation.com/api/sessionManager/v1/remotePlaySessions"
-    private static let devicesURL = "https://web.np.playstation.com/api/cloudAssistedNavigation/v2/users/me/clients"
+    // Same query as chiaki-ng holepunch.c device_list_url_fmt: without `includeFields=device`
+    // PSN omits `name` and `enabledFeatures` from each client record.
+    private static let devicesURL = "https://web.np.playstation.com/api/cloudAssistedNavigation/v2/users/me/clients?platform=PS5&includeFields=device&limit=10&offset=0"
     private static let commandsURL = "https://web.np.playstation.com/api/cloudAssistedNavigation/v2/users/me/commands"
     
     init() {
         setupWebSocketCallbacks()
     }
+
+    private func requireAuthService() throws -> PSNAuthService {
+        guard let authService else { throw PSNAuthError.noAccessToken }
+        return authService
+    }
     
     private func setupWebSocketCallbacks() {
         webSocketService.onSessionCreated = { [weak self] (sessionId: String) in
             DebugLog.print("[PSNSession] WebSocket: Session created with ID: \(sessionId)")
-            self?.currentSessionId = sessionId
             self?.sessionCreatedContinuation?.resume(returning: sessionId)
             self?.sessionCreatedContinuation = nil
         }
@@ -49,11 +53,11 @@ class PSNSessionManager: ObservableObject {
     // MARK: - Device Listing
     
     /// List all PlayStation devices associated with the PSN account
-    func listDevices() async throws -> [PSNDevice] {
+    func listDevices(retried: Bool = false) async throws -> [PSNDevice] {
         isLoading = true
-        error = nil
         defer { isLoading = false }
         
+        let authService = try requireAuthService()
         let accessToken = try await authService.getAccessToken()
         
         guard let url = URL(string: Self.devicesURL) else {
@@ -75,14 +79,10 @@ class PSNSessionManager: ObservableObject {
         
         DebugLog.print("[PSNSession] List devices status: \(httpResponse.statusCode)")
         
-        if let responseStr = String(data: data, encoding: .utf8) {
-            DebugLog.print("[PSNSession] Response: \(responseStr.prefix(500))")
-        }
-        
-        if httpResponse.statusCode == 401 {
-            // Token expired, try refreshing
+        if httpResponse.statusCode == 401, !retried {
+            // Token expired, try refreshing (once)
             try await authService.refreshAccessToken()
-            return try await listDevices()
+            return try await listDevices(retried: true)
         }
         
         guard httpResponse.statusCode == 200 else {
@@ -103,16 +103,15 @@ class PSNSessionManager: ObservableObject {
     /// Following chiaki-ng flow: 1) Connect WebSocket 2) Create HTTP session 3) Wait for notification
     func createSession(for device: PSNDevice) async throws -> PSNSession {
         isLoading = true
-        error = nil
         defer { isLoading = false }
         
+        let authService = try requireAuthService()
         let accessToken = try await authService.getAccessToken()
         
         // Step 1: Connect WebSocket FIRST (required before HTTP session creation)
         if !webSocketService.isConnected {
             DebugLog.print("[PSNSession] Connecting WebSocket before session creation...")
             try await webSocketService.connect(accessToken: accessToken)
-            isWebSocketConnected = true
             DebugLog.print("[PSNSession] ✅ WebSocket connected!")
         }
         
@@ -154,10 +153,6 @@ class PSNSessionManager: ObservableObject {
         
         DebugLog.print("[PSNSession] Creating session for device: \(device.name ?? device.deviceId)")
         DebugLog.print("[PSNSession] Using pushContextId: \(pushContextId)")
-        DebugLog.print("[PSNSession] Token (first 20 chars): \(String(accessToken.prefix(20)))...")
-        if let bodyStr = String(data: request.httpBody ?? Data(), encoding: .utf8) {
-            DebugLog.print("[PSNSession] Request body: \(bodyStr)")
-        }
         
         // Step 2: Send HTTP session creation request
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -175,7 +170,6 @@ class PSNSessionManager: ObservableObject {
         if httpResponse.statusCode == 401 {
             // Token issue - disconnect WebSocket and retry
             webSocketService.disconnect()
-            isWebSocketConnected = false
             try await authService.refreshAccessToken()
             return try await createSession(for: device)
         }
@@ -191,20 +185,19 @@ class PSNSessionManager: ObservableObject {
            let firstSession = sessions.first,
            let sessionId = firstSession["sessionId"] as? String {
             DebugLog.print("[PSNSession] ✅ Session created: \(sessionId)")
-            currentSessionId = sessionId
             return PSNSession(sessionId: sessionId, status: "created", createdAt: nil)
         }
         
         // Try standard decode as fallback
         let session = try JSONDecoder().decode(PSNSession.self, from: data)
         DebugLog.print("[PSNSession] ✅ Session created: \(session.sessionId ?? "N/A")")
-        currentSessionId = session.sessionId
         
         return session
     }
     
     /// Send a command to start Remote Play on a device
     func sendRemotePlayCommand(to device: PSNDevice, session: PSNSession) async throws {
+        let authService = try requireAuthService()
         let accessToken = try await authService.getAccessToken()
         
         guard let url = URL(string: Self.commandsURL) else {
@@ -261,6 +254,7 @@ class PSNSessionManager: ObservableObject {
         isLoading = true
         defer { isLoading = false }
         
+        let authService = try requireAuthService()
         let accessToken = try await authService.getAccessToken()
         
         guard let sessionId = session.sessionId,
@@ -303,6 +297,7 @@ class PSNSessionManager: ObservableObject {
     
     /// Delete a session
     func deleteSession(_ session: PSNSession) async throws {
+        let authService = try requireAuthService()
         let accessToken = try await authService.getAccessToken()
         
         guard let sessionId = session.sessionId,
@@ -336,12 +331,6 @@ class PSNSessionManager: ObservableObject {
         return Data(bytes).base64EncodedString()
     }
     
-    /// Generate a push context ID for session creation
-    private func generatePushContextId() -> String {
-        // UUID format for push context
-        return UUID().uuidString.lowercased()
-    }
-    
     /// Generate random data for connection parameters
     private func generateRandomData(_ count: Int) -> Data {
         var bytes = [UInt8](repeating: 0, count: count)
@@ -360,6 +349,46 @@ struct PSNDevice: Codable, Identifiable {
     let deviceType: String?
     let status: String?
     let remotePlayEnabled: Bool?
+    /// PSN's `enabledFeatures` for the console. chiaki-ng (holepunch.c
+    /// chiaki_holepunch_list_devices) treats the console as Remote Play capable only when it
+    /// contains "remotePlay"; a console that has not enabled Remote Play reports no features
+    /// and ignores the PSN `remotePlay` command.
+    let enabledFeatures: [String]?
+    let updatedDateTime: String?
+
+    /// True only when PSN explicitly reports Remote Play as disabled. A missing
+    /// `enabledFeatures` (older API shape) is not treated as disabled.
+    var isRemotePlayReportedDisabled: Bool {
+        if remotePlayEnabled == false { return true }
+        guard let enabledFeatures else { return false }
+        return !enabledFeatures.contains("remotePlay")
+    }
+
+    private struct DeviceDetails: Decodable {
+        let name: String?
+        let enabledFeatures: [String]?
+        let updatedDateTime: String?
+    }
+
+    private enum APIKeys: String, CodingKey {
+        case device, platform
+    }
+
+    init(from decoder: Decoder) throws {
+        let fields = try decoder.container(keyedBy: CodingKeys.self)
+        let api = try decoder.container(keyedBy: APIKeys.self)
+        let device = try api.decodeIfPresent(DeviceDetails.self, forKey: .device)
+        deviceId = try fields.decode(String.self, forKey: .deviceId)
+        name = try device?.name ?? fields.decodeIfPresent(String.self, forKey: .name)
+        deviceType = try api.decodeIfPresent(String.self, forKey: .platform)
+            ?? fields.decodeIfPresent(String.self, forKey: .deviceType)
+        status = try fields.decodeIfPresent(String.self, forKey: .status)
+        remotePlayEnabled = try fields.decodeIfPresent(Bool.self, forKey: .remotePlayEnabled)
+        enabledFeatures = try device?.enabledFeatures
+            ?? fields.decodeIfPresent([String].self, forKey: .enabledFeatures)
+        updatedDateTime = try fields.decodeIfPresent(String.self, forKey: .updatedDateTime)
+            ?? device?.updatedDateTime
+    }
     
     enum CodingKeys: String, CodingKey {
         case deviceId = "duid"
@@ -367,6 +396,8 @@ struct PSNDevice: Codable, Identifiable {
         case deviceType = "type"
         case status
         case remotePlayEnabled = "remoteplay_enabled"
+        case enabledFeatures
+        case updatedDateTime
     }
 }
 
@@ -389,18 +420,6 @@ struct PSNSession: Codable {
         case sessionId = "id"
         case status
         case createdAt = "created_at"
-    }
-}
-
-struct PSNSessionCreateRequest: Codable {
-    let deviceId: String
-    let deviceType: String
-    let clientType: String
-    
-    enum CodingKeys: String, CodingKey {
-        case deviceId = "device_id"
-        case deviceType = "device_type"
-        case clientType = "client_type"
     }
 }
 
@@ -439,8 +458,6 @@ enum PSNSessionError: LocalizedError {
     case sessionCreationFailed(String)
     case sessionStartFailed(String)
     case sessionDeleteFailed
-    case noDevicesFound
-    case webSocketConnectionFailed
     
     var errorDescription: String? {
         switch self {
@@ -456,10 +473,6 @@ enum PSNSessionError: LocalizedError {
             return "Session start failed: \(message)"
         case .sessionDeleteFailed:
             return "Failed to delete session"
-        case .noDevicesFound:
-            return "No PlayStation devices found"
-        case .webSocketConnectionFailed:
-            return "WebSocket connection failed"
         }
     }
 }

@@ -319,10 +319,4 @@ final class EnhancedUpscaler {
         
         return outputTexture
     }
-    
-    func flush() {
-        if let cache = textureCache {
-            CVMetalTextureCacheFlush(cache, 0)
-        }
-    }
 }

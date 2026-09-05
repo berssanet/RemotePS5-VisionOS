@@ -2,6 +2,8 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
+    /// Navigation path shared with HomeView / PairingView (PairingView resets it to pop home).
+    @State private var navigationPath: NavigationPath = NavigationPath()
     
     var body: some View {
         Group {
@@ -14,8 +16,8 @@ struct ContentView: View {
                     .opacity(0)
                     .allowsHitTesting(false)
             } else {
-                NavigationStack {
-                    HomeView()
+                NavigationStack(path: $navigationPath) {
+                    HomeView(navigationPath: $navigationPath)
                 }
                 .ornament(attachmentAnchor: .scene(.bottom)) {
                     ConnectionStatusBar()

@@ -44,3 +44,6 @@ opus-build/
 
 # Core ML depth model (48MB, local-only — re-download per TODO.md Spatial 3D notes)
 VisionRemotePS5/Resources/DepthAnythingV2SmallF16.mlmodelc/
+
+# Reality Composer Pro per-user state
+*.rcuserdata

@@ -13,6 +13,11 @@ import QuartzCore  // v10.1: For CACurrentMediaTime monotonic clock
 
 // MARK: - Streaming Configuration
 
+struct PSNStreamingConnection: Sendable {
+    let token: String
+    let deviceID: Data
+}
+
 struct StreamingConfiguration {
     let host: String
     let rpKey: Data           // 16 bytes from registration
@@ -25,19 +30,13 @@ struct StreamingConfiguration {
     let height: Int
     let fps: Int
     let bitrate: Int
-    
-    static func defaultPS5Config(host: String, rpKey: Data, registKey: String, psnAccountID: Data) -> StreamingConfiguration {
-        return StreamingConfiguration(
-            host: host,
-            rpKey: rpKey,
-            registKey: registKey,
-            psnAccountID: psnAccountID,
-            isPS5: true,
-            width: 1920,
-            height: 1080,
-            fps: 60,
-            bitrate: 15000
-        )
+    var psnConnection: PSNStreamingConnection? = nil
+
+    var hasValidCredentials: Bool {
+        if let psnConnection {
+            return !psnConnection.token.isEmpty && psnConnection.deviceID.count == 32 && psnAccountID.count == 8
+        }
+        return rpKey.count == 16
     }
 }
 
@@ -46,7 +45,6 @@ struct StreamingConfiguration {
 enum StreamingState: Equatable {
     case idle
     case connecting
-    case requestingSession
     case negotiating
     case streaming
     case error(String)
@@ -66,22 +64,14 @@ protocol StreamingServiceDelegate: AnyObject {
 
 enum StreamingError: LocalizedError {
     case connectionFailed(String)
-    case sessionRequestFailed(String)
-    case negotiationFailed(String)
-    case decodingFailed(String)
     case invalidConfiguration
     case alreadyStreaming
-    case notConnected
     
     var errorDescription: String? {
         switch self {
         case .connectionFailed(let msg): return "Connection failed: \(msg)"
-        case .sessionRequestFailed(let msg): return "Session request failed: \(msg)"
-        case .negotiationFailed(let msg): return "Negotiation failed: \(msg)"
-        case .decodingFailed(let msg): return "Decoding failed: \(msg)"
         case .invalidConfiguration: return "Invalid streaming configuration"
         case .alreadyStreaming: return "Already streaming"
-        case .notConnected: return "Not connected to console"
         }
     }
 }
@@ -112,15 +102,9 @@ final class StreamingService: ObservableObject {
     weak var delegate: StreamingServiceDelegate?
     
     private var configuration: StreamingConfiguration?
-
-    // Dedicated video processing queue - NEVER use main thread for decoding!
-    // This queue handles: NAL parsing -> VideoToolbox decode -> MetalFX upscale
-    private let videoProcessingQueue = DispatchQueue(
-        label: "com.visionremoteps5.video.processing",
-        qos: .userInteractive,
-        attributes: [],
-        autoreleaseFrequency: .workItem
-    )
+    private var psnStartTask: Task<Void, Error>?
+    private var isStopping = false
+    @Published private(set) var connectionStatusMessage = ""
 
     // Video decoder
     private var videoDecoder: StreamVideoDecoder?
@@ -154,15 +138,17 @@ final class StreamingService: ObservableObject {
     // MARK: - Public Methods
     
     func startStreaming(configuration: StreamingConfiguration) async throws {
-        guard state == .idle || state == .stopped else {
+        guard (state == .idle || state == .stopped), psnStartTask == nil, !isStopping else {
             throw StreamingError.alreadyStreaming
         }
         
-        guard configuration.rpKey.count == 16 else {
+        guard configuration.hasValidCredentials else {
             throw StreamingError.invalidConfiguration
         }
         
         self.configuration = configuration
+        connectionStatusMessage = configuration.psnConnection == nil
+            ? "Connecting on the local network…" : "Connecting through PlayStation Network…"
         
         await MainActor.run {
             self.state = .connecting
@@ -170,15 +156,22 @@ final class StreamingService: ObservableObject {
         }
         
         DebugLog.print("[StreamingService] Starting streaming to \(configuration.host)")
-        DebugLog.print("[StreamingService] RP-Key: \(configuration.rpKey.hexString)")
         
         // WAKEUP: Send wakeup packet first (PS5 might be in standby)
         // The PS5 refuses connections on port 9295 when in standby mode.
         // We need to wake it first, then wait a bit for it to become ready.
-        await wakeupConsoleIfNeeded(configuration: configuration)
+        if configuration.psnConnection == nil {
+            await wakeupConsoleIfNeeded(configuration: configuration)
+        }
         
         // Use ChiakiFullSession (chiaki-ng library)
-        try await startStreamingV2()
+        do {
+            try Task.checkCancellation()
+            try await startStreamingV2()
+        } catch {
+            stopStreaming()
+            throw error
+        }
     }
     
     /// Send wakeup packet to console if it might be in standby
@@ -318,6 +311,11 @@ final class StreamingService: ObservableObject {
             self.framePacer?.start()
         }
         
+        if let psnConnection = config.psnConnection {
+            try await startPSNStreaming(connection: psnConnection, config: config)
+            return
+        }
+
         // Parse registKey to binary (hex string -> Data)
         let registKeyData = parseRegistKey(config.registKey)
         
@@ -331,9 +329,6 @@ final class StreamingService: ObservableObject {
         
         DebugLog.info("StreamingService", "Starting ChiakiFullSession...")
         DebugLog.print("[StreamingService]   Host: \(config.host)")
-        DebugLog.print("[StreamingService]   RegistKey: \(registKeyData.hexString)")
-        DebugLog.print("[StreamingService]   RP-Key: \(config.rpKey.hexString)")
-        DebugLog.print("[StreamingService]   PSN ID: \(psnAccountIDPadded.hexString)")
         
         let success = ChiakiFullSession.shared.start(
             host: config.host,
@@ -358,6 +353,52 @@ final class StreamingService: ObservableObject {
         }
     }
     
+    private func startPSNStreaming(connection: PSNStreamingConnection, config: StreamingConfiguration) async throws {
+        let session = ChiakiFullSession.shared
+        connectionStatusMessage = "Connecting through PlayStation Network…"
+        let startTask = Task.detached(priority: .userInitiated) {
+            try Task.checkCancellation()
+            try session.startPSN(
+                token: connection.token, consoleDUID: connection.deviceID,
+                isPS5: config.isPS5, psnAccountID: config.psnAccountID,
+                autoRegist: false,
+                width: UInt32(config.width), height: UInt32(config.height),
+                fps: UInt32(config.fps), bitrate: UInt32(config.bitrate)
+            )
+            try Task.checkCancellation()
+        }
+        psnStartTask = startTask
+        var timedOut = false
+        let timeoutTask = Task {
+            do {
+                try await Task.sleep(nanoseconds: 120_000_000_000)
+            } catch { return }
+            timedOut = true
+            session.cancelPSN()
+        }
+        defer {
+            timeoutTask.cancel()
+            psnStartTask = nil
+        }
+        do {
+            try await withTaskCancellationHandler {
+                try await startTask.value
+                try Task.checkCancellation()
+            } onCancel: {
+                startTask.cancel()
+                session.cancelPSN()
+            }
+        } catch {
+            if timedOut {
+                throw PSNRemotePlayCoordinator.CoordinatorError.timeout(stage: connectionStatusMessage)
+            }
+            throw error
+        }
+        if timedOut {
+            throw PSNRemotePlayCoordinator.CoordinatorError.timeout(stage: connectionStatusMessage)
+        }
+    }
+
     /// Setup callbacks from ChiakiFullSession
     private func setupChiakiCallbacks() {
         // SAFE VIDEO PATH: Copy network buffer to safe pool before async decoding
@@ -479,6 +520,7 @@ final class StreamingService: ObservableObject {
             case .connected:
                 DebugLog.info("StreamingService", "✅ Connected via ChiakiFullSession!")
                 Task { @MainActor in
+                    guard !self.isStopping, self.state == .connecting || self.state == .negotiating else { return }
                     // Phase 5.21: state is the single source of truth; isStreaming derives from it.
                     self.state = .streaming
                     self.delegate?.streamingService(self, didChangeState: .streaming)
@@ -487,8 +529,16 @@ final class StreamingService: ObservableObject {
             case .quit:
                 DebugLog.print("[StreamingService] ❌ Session quit: \(reason ?? "unknown")")
                 Task { @MainActor in
-                    self.state = .stopped
-                    self.delegate?.streamingService(self, didChangeState: .stopped)
+                    guard !self.isStopping, self.state != .stopped else { return }
+                    self.state = .error(reason ?? "The console ended the session")
+                    self.delegate?.streamingService(self, didChangeState: self.state)
+                }
+
+            case .holepunch:
+                if let reason, let stage = PSNConnectionStage(rawValue: reason) {
+                    Task { @MainActor in
+                        self.connectionStatusMessage = stage.message
+                    }
                 }
                 
             default:
@@ -553,19 +603,26 @@ final class StreamingService: ObservableObject {
     }
     
     func stopStreaming() {
+        guard !isStopping else { return }
+        isStopping = true
         DebugLog.info("StreamingService", "Stopping streaming...")
         
         // Stop ChiakiFullSession if active
-        if ChiakiFullSession.shared.isActive {
-            ChiakiFullSession.shared.stop()
-        }
+        let startTask = psnStartTask
+        startTask?.cancel()
+        ChiakiFullSession.shared.cancelPSN()
         
         videoDecoder?.stop()
         audioPlayer?.stop()
         framePacer?.stop()
         framePacer = nil
 
-        DispatchQueue.main.async {
+        Task { @MainActor in
+            _ = await startTask?.result
+            ChiakiFullSession.shared.teardown()
+            self.configuration = nil
+            self.connectionStatusMessage = ""
+            self.isStopping = false
             // Phase 5.21: state drives isStreaming.
             self.state = .stopped
             self.delegate?.streamingService(self, didChangeState: .stopped)
@@ -575,11 +632,6 @@ final class StreamingService: ObservableObject {
     }
     
     // MARK: - Controller Input
-    
-    func setControllerState(_ state: ControllerState) {
-        self.controllerState = state
-        sendControllerState()
-    }
     
     func pressButton(_ button: ControllerButton) {
         controllerState.buttons.insert(button)
@@ -602,7 +654,6 @@ final class StreamingService: ObservableObject {
         controllerState.rightY = y
         sendControllerState()
     }
-    
     
     // MARK: - Controller
     
@@ -686,13 +737,9 @@ class StreamVideoDecoder {
     
     private var frameCount = 0
     
-    // v10.1: Recovery flag for anti-smearing on buffer exhaustion
-    private var needsRecovery: Bool = false
-    
     /// v10.1: Mark decoder for recovery - will skip non-IDR frames until next keyframe
     /// Call this when buffer pool is exhausted to prevent smearing from corrupted reference frames
     func markForRecovery() {
-        needsRecovery = true
         // Clear format description to force wait for next VPS/SPS/PPS + IDR
         formatDescription = nil
         vps = nil
@@ -721,56 +768,6 @@ class StreamVideoDecoder {
         sps = nil
         pps = nil
         DebugLog.info("VideoDecoder", "Stopped")
-    }
-    
-    func decode(nalData: Data, completion: @escaping (CVPixelBuffer?, UInt64) -> Void) {
-        guard nalData.count > 4 else { 
-            DebugLog.print("[VideoDecoder] ⚠️ NAL data too short: \(nalData.count) bytes")
-            return 
-        }
-        
-        frameCount += 1
-        
-        // Split concatenated NAL units (PS5 sends VPS+SPS+PPS+IDR in one packet)
-        let nalUnits = splitNALUnits(nalData)
-        
-        if frameCount <= 5 {
-            DebugLog.print("[VideoDecoder] 🔍 Frame #\(frameCount): \(nalData.count) bytes, \(nalUnits.count) NAL(s)")
-        }
-        
-        for nalUnit in nalUnits {
-            processNALUnit(nalUnit, completion: completion)
-        }
-    }
-    
-    /// ZERO-COPY DECODE: Accepts raw pointer without memory allocation
-    /// The pointer MUST remain valid for the duration of this call!
-    /// Uses Data(bytesNoCopy:) to create a view without copying.
-    /// ⚠️ WARNING: This method has a race condition bug - use decodeFromSafeBuffer instead!
-    @available(*, deprecated, message: "Use decodeFromSafeBuffer to avoid race conditions")
-    func decodeZeroCopy(pointer: UnsafeRawPointer, size: Int, completion: @escaping (CVPixelBuffer?, UInt64) -> Void) {
-        guard size > 4 else {
-            return
-        }
-        
-        frameCount += 1
-        
-        // Create a Data view WITHOUT copying the underlying memory
-        // deallocator: .none means we don't own the memory (chiaki owns it)
-        let nalData = Data(bytesNoCopy: UnsafeMutableRawPointer(mutating: pointer), 
-                           count: size, 
-                           deallocator: .none)
-        
-        // Split concatenated NAL units
-        let nalUnits = splitNALUnits(nalData)
-        
-        if frameCount <= 5 {
-            DebugLog.print("[VideoDecoder] 🔍 Frame #\(frameCount) (zero-copy): \(size) bytes, \(nalUnits.count) NAL(s)")
-        }
-        
-        for nalUnit in nalUnits {
-            processNALUnit(nalUnit, completion: completion)
-        }
     }
     
     /// SAFE BUFFER DECODE: Accepts a SafeBuffer that owns its memory

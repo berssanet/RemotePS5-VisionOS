@@ -205,6 +205,7 @@ struct PSNConnectionView: View {
     // MARK: - Actions
     
     private func loadDevices() async {
+        sessionManager.authService = authService
         do {
             _ = try await sessionManager.listDevices()
         } catch {

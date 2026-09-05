@@ -8,6 +8,134 @@
 import XCTest
 @testable import VisionRemotePS5
 
+final class PSNProtocolRegressionTests: XCTestCase {
+    func testPSNProgressDoesNotTreatCommandSendingAsConsoleJoining() {
+        XCTAssertEqual(PSNConnectionStage(rawValue: "psn-sending-command"), .sendingCommand)
+        XCTAssertEqual(PSNConnectionStage(rawValue: "psn-awaiting-console"), .awaitingConsole)
+        XCTAssertTrue(PSNConnectionStage.awaitingConsole.message.contains("Waiting for the console"))
+        XCTAssertTrue(PSNConnectionStage.punchingControl.message.contains("console joined"))
+        XCTAssertNil(PSNConnectionStage(rawValue: "data-punching"))
+        XCTAssertEqual(Set(PSNConnectionStage.allCases.map(\.message)).count, 6)
+    }
+
+    private func formFields(_ request: URLRequest) throws -> [String: String] {
+        let body = String(decoding: try XCTUnwrap(request.httpBody), as: UTF8.self)
+        let query = body.replacingOccurrences(of: "+", with: "%20")
+        let components = try XCTUnwrap(URLComponents(string: "https://example.invalid/?\(query)"))
+        return Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+    }
+
+    func testRefreshSendsExplicitRemotePlayScopesAndRedirect() throws {
+        let request = PSNAuthConstants.tokenRequest(for: .refreshToken("synthetic-refresh"))
+        let fields = try formFields(request)
+        XCTAssertEqual(fields["grant_type"], "refresh_token")
+        XCTAssertEqual(fields["refresh_token"], "synthetic-refresh")
+        XCTAssertEqual(fields["redirect_uri"], PSNAuthConstants.redirectURI)
+        XCTAssertEqual(Set(try XCTUnwrap(fields["scope"]).split(separator: " ").map(String.init)), Set([
+            "psn:clientapp", "referenceDataService:countryConfig.read",
+            "pushNotification:webSocket.desktop.connect", "sessionManager:remotePlaySession.system.update"
+        ]))
+        XCTAssertNil(fields["code"])
+    }
+
+    func testAuthorizationCodeUsesTheSameScopes() throws {
+        let request = PSNAuthConstants.tokenRequest(for: .authorizationCode("synthetic-code"))
+        let fields = try formFields(request)
+        XCTAssertEqual(fields["grant_type"], "authorization_code")
+        XCTAssertEqual(fields["code"], "synthetic-code")
+        XCTAssertEqual(fields["scope"], PSNAuthConstants.scopes)
+        XCTAssertNil(fields["refresh_token"])
+    }
+
+    func testTokenFormPreservesReservedCharactersAndUnicode() throws {
+        let credential = "synthetic+code&part=two%25 ?/#:\r\n ação"
+        let codeFields = try formFields(PSNAuthConstants.tokenRequest(for: .authorizationCode(credential)))
+        let refreshFields = try formFields(PSNAuthConstants.tokenRequest(for: .refreshToken(credential)))
+        XCTAssertEqual(codeFields["code"], credential)
+        XCTAssertEqual(refreshFields["refresh_token"], credential)
+        XCTAssertEqual(codeFields.count, 4)
+        XCTAssertEqual(refreshFields.count, 4)
+    }
+
+    func testTokenRequestUsesBasicAuthenticationWithoutCredentialsInBody() throws {
+        let request = PSNAuthConstants.tokenRequest(for: .refreshToken("synthetic-refresh"))
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.url?.path, "/2.0/oauth/token")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/x-www-form-urlencoded")
+        XCTAssertTrue(request.value(forHTTPHeaderField: "Authorization")?.hasPrefix("Basic ") == true)
+        let fields = try formFields(request)
+        XCTAssertNil(fields["client_id"])
+        XCTAssertNil(fields["client_secret"])
+    }
+
+    func testInvalidScopeResponsePreservesActionableError() {
+        let response = Data(#"{"error":"invalid_scope","error_code":4153}"#.utf8)
+        XCTAssertEqual(PSNAuthConstants.tokenError(statusCode: 400, data: response), .invalidScope)
+    }
+
+    func testRevokedGrantAndInvalidClientRemainDistinct() {
+        XCTAssertEqual(PSNAuthConstants.tokenError(statusCode: 400,
+            data: Data(#"{"error":"invalid_grant"}"#.utf8)), .authorizationExpired)
+        XCTAssertEqual(PSNAuthConstants.tokenError(statusCode: 401,
+            data: Data(#"{"error":"invalid_client"}"#.utf8)), .invalidClient)
+    }
+
+    func testUnknownServerErrorsDoNotExposeResponseBody() {
+        let response = Data(#"{"error":"unknown","error_description":"synthetic-private-token"}"#.utf8)
+        let error = PSNAuthConstants.tokenError(statusCode: 503, data: response)
+        XCTAssertEqual(error, .httpError(statusCode: 503))
+        XCTAssertFalse(error.localizedDescription.contains("synthetic-private-token"))
+        XCTAssertEqual(PSNAuthConstants.tokenError(statusCode: 502, data: Data()), .httpError(statusCode: 502))
+    }
+
+    func testDeviceListReadsNestedDeviceAndPlatform() throws {
+        let response = Data(#"{"clients":[{"duid":"synthetic-console","platform":"PS5","device":{"name":"Test PS5","enabledFeatures":["remotePlay"],"updatedDateTime":"2026-01-01T00:00:00Z"}}]}"#.utf8)
+        let devices = try JSONDecoder().decode(PSNDevicesResponse.self, from: response)
+        let device = try XCTUnwrap(devices.clients?.first)
+        XCTAssertEqual(device.deviceId, "synthetic-console")
+        XCTAssertEqual(device.name, "Test PS5")
+        XCTAssertEqual(device.deviceType, "PS5")
+        XCTAssertEqual(device.enabledFeatures, ["remotePlay"])
+        XCTAssertNotNil(device.updatedDateTime)
+        XCTAssertFalse(device.isRemotePlayReportedDisabled)
+    }
+
+    func testNestedDisabledFeaturesOverrideStaleFlatFeatures() throws {
+        let response = Data(#"{"duid":"synthetic-console","enabledFeatures":["remotePlay"],"device":{"enabledFeatures":[]}}"#.utf8)
+        let device = try JSONDecoder().decode(PSNDevice.self, from: response)
+        XCTAssertTrue(device.isRemotePlayReportedDisabled)
+    }
+
+    func testMissingFeaturesAreUnknownRatherThanDisabled() throws {
+        let response = Data(#"{"duid":"synthetic-console","device":null}"#.utf8)
+        let device = try JSONDecoder().decode(PSNDevice.self, from: response)
+        XCTAssertNil(device.enabledFeatures)
+        XCTAssertFalse(device.isRemotePlayReportedDisabled)
+    }
+
+    func testLegacyDeviceShapeAndExplicitDisabledFlag() throws {
+        let response = Data(#"{"duid":"synthetic-console","name":"Legacy PS5","type":"PS5","remoteplay_enabled":false}"#.utf8)
+        let device = try JSONDecoder().decode(PSNDevice.self, from: response)
+        XCTAssertEqual(device.name, "Legacy PS5")
+        XCTAssertEqual(device.deviceType, "PS5")
+        XCTAssertTrue(device.isRemotePlayReportedDisabled)
+        let roundTrip = try JSONDecoder().decode(PSNDevice.self, from: JSONEncoder().encode(device))
+        XCTAssertEqual(roundTrip.deviceId, device.deviceId)
+        XCTAssertTrue(roundTrip.isRemotePlayReportedDisabled)
+    }
+
+    func testDeviceRequiresConsoleIdentifier() {
+        XCTAssertThrowsError(try JSONDecoder().decode(PSNDevice.self, from: Data(#"{"platform":"PS5"}"#.utf8)))
+    }
+
+    func testConsoleTimeoutIsNotReportedAsAuthenticationFailure() {
+        let error = PSNStartError.consoleDidNotJoin
+        XCTAssertTrue(error.localizedDescription.contains("PSN accepted"))
+        XCTAssertTrue(error.localizedDescription.contains("did not join"))
+        XCTAssertNotEqual(error, .requestFailed(code: 1))
+    }
+}
+
 final class PSNAuthServiceTests: XCTestCase {
     
     // MARK: - Test Properties

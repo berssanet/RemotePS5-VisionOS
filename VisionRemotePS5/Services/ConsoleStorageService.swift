@@ -92,58 +92,11 @@ actor ConsoleStorageService {
         return consoles
     }
     
-    /// Get a specific registered console by IP address.
-    /// - Parameter ip: The IP address to search for
-    /// - Returns: The console if found
-    func getRegisteredConsole(byIP ip: String) -> Console? {
-        return getRegisteredConsoles().first { $0.ipAddress == ip }
-    }
-    
-    /// Get a specific registered console by ID.
-    /// - Parameter id: The UUID to search for
-    /// - Returns: The console if found
-    func getRegisteredConsole(byID id: UUID) -> Console? {
-        return getRegisteredConsoles().first { $0.id == id }
-    }
-    
-    /// Remove a registered console.
-    /// - Parameter console: The console to remove
-    func removeRegisteredConsole(_ console: Console) {
-        var consoles = getRegisteredConsoles()
-        consoles.removeAll { $0.id == console.id || $0.ipAddress == console.ipAddress }
-        
-        saveConsolesToDisk(consoles)
-        cachedConsoles = consoles
-        
-        // Remove RP-Key from Keychain
-        deleteRPKeyFromKeychain(for: console)
-        
-        DebugLog.print("[ConsoleStorage] Removed console: \(console.name)")
-    }
-    
     /// Check if a console is registered with valid credentials.
     /// - Parameter ip: The IP address to check
     /// - Returns: True if console is registered with RP-Key
     func isConsoleRegistered(ip: String) -> Bool {
         return getRegisteredConsoles().contains { $0.ipAddress == ip && $0.rpKey != nil }
-    }
-    
-    /// Clear all registered consoles and their credentials.
-    func clearAllConsoles() {
-        let consoles = getRegisteredConsoles()
-        for console in consoles {
-            deleteRPKeyFromKeychain(for: console)
-        }
-        
-        defaults.removeObject(forKey: registeredConsolesKey)
-        cachedConsoles = []
-        
-        DebugLog.print("[ConsoleStorage] Cleared all consoles")
-    }
-    
-    /// Invalidate the cache, forcing a reload from disk on next access.
-    func invalidateCache() {
-        cachedConsoles = nil
     }
     
     // MARK: - Private: Disk Operations
@@ -233,31 +186,6 @@ actor ConsoleStorageService {
             return data
         }
         return nil
-    }
-    
-    private func deleteRPKeyFromKeychain(for console: Console) {
-        let service = "\(keychainServicePrefix).rpkey"
-        let account = console.ipAddress
-        
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account
-        ]
-        
-        SecItemDelete(query as CFDictionary)
-        DebugLog.print("[ConsoleStorage] RP-Key deleted from Keychain for \(console.ipAddress)")
-    }
-}
-
-// MARK: - Console Extension for Async Loading
-
-extension Console {
-    /// Create a console from stored data with RP-Key from Keychain
-    /// - Parameter ip: IP address to load
-    /// - Returns: Console if found in storage
-    static func loadFromStorage(ip: String) async -> Console? {
-        return await ConsoleStorageService.shared.getRegisteredConsole(byIP: ip)
     }
 }
 

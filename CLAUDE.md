@@ -139,7 +139,7 @@ cargo install typos-cli
 The primary untrusted input surfaces are:
 1. **PS5 network stream** — video/audio/haptic data over encrypted Chiaki session. Gate: C bridge validates frame sizes; Swift decoders validate NAL unit boundaries.
 2. **PSN OAuth flow** — network responses from Sony servers. Gate: HTTPS-only, certificate pinning via ATS defaults.
-3. **mDNS discovery** — console announcements on local network. Gate: validate hostname length and character set before display.
+3. **Console addresses** — host/IP strings entered or received for a console on the local network. Gate: validate hostname length and character set before display.
 
 ## Pre-commit / CI integration
 

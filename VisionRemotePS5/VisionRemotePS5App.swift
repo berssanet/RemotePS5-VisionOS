@@ -58,6 +58,17 @@ struct VisionRemotePS5App: App {
                 .environmentObject(appState)
         }
         .immersionStyle(selection: .constant(.mixed), in: .mixed)
+
+        // v13.0: Controller Test Range — practice/calibrate the virtual
+        // controller with two mini-games, no PS5 session required.
+        // v13.1: FULL immersion — the player sees ONLY the app (a virtual
+        // arena) while configuring, per user direction. Two view modes:
+        // first-person shooting range and third-person runner.
+        ImmersiveSpace(id: "TrainingRangeSpace") {
+            ControllerTestRangeView()
+                .environmentObject(appState)
+        }
+        .immersionStyle(selection: .constant(.full), in: .full)
     }
 }
 
@@ -65,10 +76,10 @@ struct VisionRemotePS5App: App {
 @MainActor
 class AppState: ObservableObject {
     @Published var isConnected: Bool = false
-    @Published var isStreaming: Bool = false
     @Published var isAuthenticated: Bool = false
     @Published var isImmersiveActive: Bool = false  // v10.5: Track VR mode globally
     @Published var isHoloPadSpaceActive: Bool = false  // v12.6: mixed HoloPad space (windowed input)
+    @Published var isTrainingRangeActive: Bool = false  // v13.0: Controller Test Range (no PS5)
     @Published var isInStreamingSession: Bool = false  // v10.5.2: Hide console selection when streaming
     // v12.5: HoloPad is THE controller (user direction 2026-07-04). The other
     // modes stay in code but are not selectable — see ControllerMode.selectable.
@@ -121,14 +132,6 @@ class AppState: ObservableObject {
             case .handGesture: return "hand.point.up.braille"
             }
         }
-
-        var description: String {
-            switch self {
-            case .standard: return "Touch controls"
-            case .virtualWheel: return "Hand tracking wheel (VR only)"
-            case .handGesture: return "Finger gestures, full DualSense (VR only)"
-            }
-        }
     }
     
     /// v11.0: GPU Processing Preset
@@ -146,16 +149,6 @@ class AppState: ObservableObject {
             case .fps: return "scope"
             case .rpg: return "shield.fill"
             case .cinematic: return "film.fill"
-            }
-        }
-        
-        var description: String {
-            switch self {
-            case .auto: return "Ajuste automático por thermal state"
-            case .racing: return "Motion blur reduction máximo"
-            case .fps: return "Latência mínima, sharpening alto"
-            case .rpg: return "Qualidade visual máxima"
-            case .cinematic: return "HDR e cores cinematográficas"
             }
         }
     }

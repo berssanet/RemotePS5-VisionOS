@@ -17,9 +17,7 @@ struct Console: Identifiable, Codable, Hashable {
     var serverMAC: [UInt8]?    // 6-byte MAC address from registration
     var nickname: String?      // Console nickname from registration
     var psnAccountId: Data?    // 8-byte PSN Account ID (from PSNAuthService)
-    
-    /// Convenience property for IP address
-    var address: String { ipAddress }
+    var psnDeviceID: Data?
     
     enum ConsoleType: String, Codable {
         case ps5 = "PS5"
@@ -47,7 +45,8 @@ struct Console: Identifiable, Codable, Hashable {
         registKey: String? = nil,
         serverMAC: [UInt8]? = nil,
         nickname: String? = nil,
-        psnAccountId: Data? = nil
+        psnAccountId: Data? = nil,
+        psnDeviceID: Data? = nil
     ) {
         self.id = id
         self.name = name
@@ -62,28 +61,6 @@ struct Console: Identifiable, Codable, Hashable {
         self.serverMAC = serverMAC
         self.nickname = nickname
         self.psnAccountId = psnAccountId
-    }
-}
-
-// MARK: - Preview Helpers
-extension Console {
-    static var preview: Console {
-        Console(
-            name: "PlayStation 5",
-            ipAddress: "192.168.1.100",
-            macAddress: "00:11:22:33:44:55",
-            type: .ps5,
-            status: .online,
-            isPaired: true,
-            lastConnected: Date()
-        )
-    }
-    
-    static var previewList: [Console] {
-        [
-            Console(name: "Living Room PS5", ipAddress: "192.168.1.100", type: .ps5, status: .online, isPaired: true),
-            Console(name: "Bedroom PS5", ipAddress: "192.168.1.101", type: .ps5Digital, status: .standby, isPaired: true),
-            Console(name: "Office PS4", ipAddress: "192.168.1.102", type: .ps4Pro, status: .offline, isPaired: false)
-        ]
+        self.psnDeviceID = psnDeviceID
     }
 }

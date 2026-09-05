@@ -75,7 +75,6 @@ final class SpatialScreenCoordinator {
     private var hasVideoMaterial = false
     private var updateInProgress = false
     private var lastUpdateTime: CFTimeInterval = 0
-    private var depthFrameCounter: UInt64 = 0
 
     private init() {}
 
@@ -242,7 +241,6 @@ final class SpatialScreenCoordinator {
 
         updateInProgress = true
         lastUpdateTime = now
-        depthFrameCounter += 1
 
         guard let commandBuffer = queue.makeCommandBuffer() else {
             updateInProgress = false

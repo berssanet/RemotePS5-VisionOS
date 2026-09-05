@@ -54,7 +54,6 @@ struct MetalTextureView: UIViewRepresentable {
     
     func updateUIView(_ mtkView: MTKView, context: Context) {
         context.coordinator.texture = texture
-        context.coordinator.lastFrameId = frameId
     }
     
     func makeCoordinator() -> Coordinator {
@@ -63,7 +62,6 @@ struct MetalTextureView: UIViewRepresentable {
     
     class Coordinator: NSObject, MTKViewDelegate {
         var texture: MTLTexture?
-        var lastFrameId: UInt64 = 0
         private var commandQueue: MTLCommandQueue?
         private var pipelineState: MTLRenderPipelineState?
         private var sampler: MTLSamplerState?

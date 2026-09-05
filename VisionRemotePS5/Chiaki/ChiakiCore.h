@@ -135,4 +135,43 @@ bool chiaki_fullsession_is_active_wrapper(void);
 // Set rumble callback (call before starting session)
 void chiaki_set_rumble_callback_wrapper(ChiakiWrapperRumbleCallback rumble_cb);
 
+// ===========================================
+// PSN (holepunch) session — no PIN, no IP (official Remote Play app flow)
+// ===========================================
+
+// Start a session through PSN: creates the push-notification session, sends the
+// remotePlay command (wakes the console), punches the ctrl hole and lets session.c
+// register the console over RUDP with the PSN-provided secret. With auto_regist the
+// session stops right after CHIAKI_EVENT_REGIST (use the getter below to persist the
+// keys); otherwise it continues into streaming. Blocking for several seconds: call
+// from a background thread. console_duid = 32 bytes (the PSN device "duid" hex decoded).
+ChiakiErrorCode chiaki_fullsession_start_psn_wrapper(
+    const char *psn_oauth2_token, const uint8_t *console_duid, bool is_ps5,
+    const uint8_t *psn_account_id, bool auto_regist, uint32_t width,
+    uint32_t height, uint32_t fps, uint32_t bitrate,
+    ChiakiWrapperVideoCallback video_cb, ChiakiWrapperAudioCallback audio_cb,
+    ChiakiWrapperEventCallback event_cb, void *user_data);
+
+// After CHIAKI_EVENT_REGIST: copies rp_key (16), regist key (16 raw bytes, zero padded),
+// server MAC (6), nickname and the console address selected by the holepunch.
+bool chiaki_fullsession_copy_registered_host_wrapper(
+    uint8_t *out_rp_key, uint8_t *out_regist_key, uint8_t *out_server_mac,
+    char *out_nickname, size_t nickname_size, char *out_console_ip,
+    size_t console_ip_size);
+
+// Path to a PEM CA bundle for the library's curl (mbedTLS backend has no system store).
+// Call before any PSN session; Swift passes the bundled cacert.pem.
+void chiaki_set_ca_bundle_path_wrapper(const char *path);
+
+// Abort an in-flight PSN start (no-op once the library session started).
+void chiaki_fullsession_cancel_psn_wrapper(void);
+
+// True once chiaki_session_start succeeded (stop/join/fini are legal).
+bool chiaki_fullsession_is_started_wrapper(void);
+
+// Client DUID in PSN format ("0000000700410080" + 32 hex). The OAuth login URL must carry
+// it as `duid=`; tokens minted without it are refused by the push WebSocket (holepunch.h).
+// out_size must be >= 49.
+bool chiaki_generate_client_duid_wrapper(char *out, size_t out_size);
+
 #endif /* ChiakiCore_h */

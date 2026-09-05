@@ -21,7 +21,6 @@ enum ColorPrimaries: Int {
 enum TransferFunction {
     case sdr        // Standard gamma 2.2
     case pq         // ST.2084 (HDR10)
-    case hlg        // Hybrid Log-Gamma (rarely used by PS5)
 }
 
 /// Metal-based color space converter for HDR video processing.
@@ -97,17 +96,6 @@ final class ColorSpaceConverter {
         // Normalize from 10000 nits reference to EDR range
         // Vision Pro supports ~1600 nits, so we scale accordingly
         return linear * 10.0;  // Returns 0-10 for EDR (10 = 1000 nits)
-    }
-    
-    // sRGB EOTF (gamma expansion for SDR)
-    float3 srgbEOTF(float3 srgb) {
-        float3 linear;
-        for (int i = 0; i < 3; i++) {
-            linear[i] = srgb[i] <= 0.04045 
-                ? srgb[i] / 12.92 
-                : pow((srgb[i] + 0.055) / 1.055, 2.4);
-        }
-        return linear;
     }
     
     // ============================================================
@@ -513,12 +501,6 @@ final class ColorSpaceConverter {
             return "NV12 8-bit (Video Range)"
         default:
             return "Unknown(\(format))"
-        }
-    }
-    
-    func flush() {
-        if let cache = textureCache {
-            CVMetalTextureCacheFlush(cache, 0)
         }
     }
 }

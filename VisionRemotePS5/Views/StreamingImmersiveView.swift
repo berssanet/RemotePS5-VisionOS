@@ -3,7 +3,7 @@
 //  VisionRemotePS5
 //
 //  Immersive view for streaming in VR space
-//  Uses same coordinator pattern as RealityKitVideoView to avoid duplicate entities
+//  Uses a texture coordinator that mutates RealityKit entities in place to avoid duplicate entities
 //
 
 import SwiftUI
@@ -31,11 +31,9 @@ final class ImmersiveTextureCoordinator {
     // v11.2: Atomic update tracking to prevent white flashes
     private var updateInProgress = false
     private var lastUpdateTime: CFAbsoluteTime = 0
-    private var frameCounter: UInt64 = 0
     private var sessionId: UInt64 = 0  // Track VR sessions to detect re-entry
     
     private(set) var videoEntity: ModelEntity?
-    private(set) var hasValidTexture = false
 
     /// Spatial 3D mode reuses this resource on the displaced screen — the
     /// backing LowLevelTexture updates in place, so every material
@@ -121,8 +119,6 @@ final class ImmersiveTextureCoordinator {
             textureSize = (sourceTexture.width, sourceTexture.height)
             isInitialized = true
             isInitializing = false
-            hasValidTexture = true
-            frameCounter = 0
             
             DebugLog.info("ImmersiveCoordinator", "✅ Texture: \(sourceTexture.width)x\(sourceTexture.height)")
             
@@ -155,7 +151,6 @@ final class ImmersiveTextureCoordinator {
         
         updateInProgress = true
         lastUpdateTime = CACurrentMediaTime()  // Phase 5.11: monotonic clock
-        frameCounter += 1
         
         guard let commandBuffer = queue.makeCommandBuffer() else {
             updateInProgress = false
@@ -209,8 +204,6 @@ final class ImmersiveTextureCoordinator {
         textureSize = (0, 0)
         isInitialized = false
         isInitializing = false
-        hasValidTexture = false
-        frameCounter = 0
         
         // v11.2: Also clear entity to force recreation on next VR entry
         if let entity = videoEntity {
@@ -246,12 +239,8 @@ struct StreamingImmersiveView: View {
     @StateObject private var gestureService = HandGestureControllerService()
     @State private var gestureInputTimer: Timer?
     
-    // v11.x: Wheel position in immersive space (relative to screen at [0, 1.8, -4.0])
-    @State private var wheelPosition: SIMD3<Float> = [0, 0.9, -1.2]  // Below screen center, ~1.2m away
-    
     // v11.x: Button bitmask for wheel panel buttons (wired into 120Hz input loop)
     @State private var pressedButtons: UInt32 = 0
-    
     
     var body: some View {
         ZStack {
@@ -568,23 +557,6 @@ struct StreamingImmersiveView: View {
     private func exitImmersive() async {
         await dismissImmersiveSpace()
     }
-    
-    // v10.6: Send steering wheel input to PS5
-    private func sendSteeringInput() {
-        guard steeringService.isTracking else { return }
-        
-        // Steering goes to left stick X
-        let steering = CGFloat(steeringService.steeringValue)
-        
-        // Triggers: R2 (throttle) - L2 (brake) = right stick Y
-        let throttleBrake = CGFloat(steeringService.rightTrigger - steeringService.leftTrigger)
-        
-        appState.streamingViewModel.sendJoystickInput(
-            left: CGPoint(x: steering, y: 0),
-            right: CGPoint(x: 0, y: throttleBrake)
-        )
-    }
-    
 }
 
 // MARK: - Immersive 4K Surface (using coordinator - original without GPU)

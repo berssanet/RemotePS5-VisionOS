@@ -103,10 +103,11 @@ VisionRemotePS5/
 - **Cockpit Tilt** — Wheel angled at 20° for natural ergonomics
 
 ### Connectivity
-- **PSN Authentication** — OAuth2 login via WebView
+- **PSN Authentication** — OAuth2 browser login and Account ID resolution
 - **Console Discovery** — UDP broadcast to find PS5 on network
-- **Remote Connection** — PSN holepunch for non-local play
-- **Manual Pairing** — 8-digit PIN pairing support
+- **Local Connection** — Direct IP discovery and reuse of this app's registration keys
+- **Remote Registration** — Separate PSN holepunch path; not a verified end-to-end internet streaming flow
+- **Manual Pairing** — One-time 8-digit Link Device PIN for local registration
 - **Wake-on-LAN** — Wake sleeping consoles remotely
 - **Encryption** — AES-GCM session encryption
 
@@ -130,11 +131,29 @@ VisionRemotePS5/
 2. Select "Apple Vision Pro" device
 3. Build and Run (⌘R)
 
+### Connect on the same local network
+
+1. On the home screen, use **Local Network**, enter the console's IP address,
+   and choose **Connect locally**. Allow Local Network access when prompted.
+2. If this app already has valid keys for that console and account, it starts
+   direct LAN streaming without creating a PSN session. Hardware identity is
+   checked using the discovery MAC; a matching name or IP alone is not enough.
+3. Otherwise, the local pairing screen opens with the console address filled.
+   PSN sign-in fills the Account ID. On the PS5, open **Settings > System > Remote
+   Play > Link Device**, then enter the displayed PIN in this app.
+4. After pairing, return to **Connect locally**. The app remembers the address
+   and reuses its own keys on subsequent connections.
+
+The official app's registration is not shared with this app. PSN login alone
+does not supply local registration keys. **Try PSN registration** is a separate
+path and is not required for the LAN workflow. Do not share the PIN or pairing
+keys in logs or screenshots.
+
 ## ⚙️ Configuration
 
 ### Info.plist Capabilities
 - **Microphone** — Voice chat
-- **Local Network** — Console discovery (Bonjour: `_psremoteplay._tcp`)
+- **Local Network** — Streaming to consoles on the local network (Remote Play over UDP/TCP)
 - **Background Audio** — Streaming audio
 - **Hand Tracking** — Virtual steering wheel input
 

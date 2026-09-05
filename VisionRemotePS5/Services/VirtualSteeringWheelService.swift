@@ -44,9 +44,6 @@ final class VirtualSteeringWheelService: ObservableObject {
     /// Maximum steering angle in radians (45° = full lock)
     private let maxSteeringAngle: Float = .pi / 4
     
-    /// Pinch distance threshold (meters) - fingers closer than this = pinch active
-    private let pinchThreshold: Float = 0.025  // 2.5cm
-    
     // MARK: - Public Interface
     
     /// Start hand tracking
@@ -261,21 +258,5 @@ final class VirtualSteeringWheelService: ObservableObject {
         
         // INVERT: negate to fix left/right direction
         return -normalizedSteering
-    }
-}
-
-// MARK: - Errors
-
-enum SteeringWheelError: Error, LocalizedError {
-    case handTrackingDenied
-    case handTrackingUnavailable
-    
-    var errorDescription: String? {
-        switch self {
-        case .handTrackingDenied:
-            return "Hand tracking permission was denied"
-        case .handTrackingUnavailable:
-            return "Hand tracking is not available on this device"
-        }
     }
 }

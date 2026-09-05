@@ -10,20 +10,17 @@ import Foundation
 import Metal
 import CoreVideo
 import Combine
-import UIKit  // v9.0: For dynamic EDR headroom query
 import QuartzCore  // v10.1: For CACurrentMediaTime monotonic clock
 
 /// Upscaling quality mode
-enum UpscalerType: String, CaseIterable {
+enum UpscalerType: String {
     case metalFX = "MetalFX"       // MetalFX Spatial Scaler (fast)
     case enhanced = "Enhanced"     // Lanczos + CAS (better quality)
 }
 
 /// HDR processing mode
-enum HDRMode: String, CaseIterable {
+enum HDRMode: String {
     case auto = "Auto"             // Detect from stream
-    case forceSDR = "SDR"          // Force SDR (8-bit BGRA)
-    case forceHDR = "HDR10"        // Force HDR10 (P010 + BT.2020 + PQ)
 }
 
 /// GPU upscaling pipeline with selectable quality modes.
@@ -38,23 +35,12 @@ final class UpscalingPipeline: ObservableObject {
     // MARK: - Published Properties (Slow State Only - Low Frequency Updates)
     
     @Published var isEnabled: Bool = false
-    @Published var processingTimeMs: Double = 0
-    
-    /// Current upscaling mode
-    @Published var currentMode: UpscalingMode = .spatial
     
     /// Current upscaler type (MetalFX or Enhanced)
     @Published var upscalerType: UpscalerType = .metalFX
     
     /// CAS sharpening strength (0.0-1.0)
     @Published var sharpenStrength: Float = 0.5
-    
-    // MARK: - High-Performance Texture Callback (Bypasses SwiftUI)
-    
-    /// Called on GPU thread when upscaled texture is ready.
-    /// This is the HOT PATH - do NOT dispatch to MainActor from here.
-    /// - Warning: Called from Metal pipeline thread. Must be thread-safe.
-    var onTextureReady: ((MTLTexture) -> Void)?
     
     /// Last upscaled texture (Published for SwiftUI updates)
     @Published private(set) var upscaledTexture: MTLTexture?
@@ -100,7 +86,6 @@ final class UpscalingPipeline: ObservableObject {
             // Default to MetalFX, fall back to enhanced if unavailable
             if metalFXUpscaler != nil {
                 upscalerType = .metalFX
-                currentMode = metalFXUpscaler?.mode ?? .spatial
                 DebugLog.info("UpscalingPipeline", "✅ MetalFX upscaler ready (SPATIAL)")
             } else if enhancedUpscaler != nil {
                 upscalerType = .enhanced
@@ -126,8 +111,10 @@ final class UpscalingPipeline: ObservableObject {
         // Vision Pro adjusts max brightness based on thermal state
         updateDynamicEDRHeadroom()
         
+        #if DEBUG
         // v10.1: Use monotonic clock for accurate timing
         let startTime = CACurrentMediaTime()
+        #endif
         var result: MTLTexture?
         
         // Check pixel format to determine processing path
@@ -142,12 +129,6 @@ final class UpscalingPipeline: ObservableObject {
                 // Auto-detect: P010 = HDR, BGRA = SDR
                 converter.colorPrimaries = isP010 ? .bt2020 : .bt709
                 converter.transferFunction = isP010 ? .pq : .sdr
-            case .forceSDR:
-                converter.colorPrimaries = .bt709
-                converter.transferFunction = .sdr
-            case .forceHDR:
-                converter.colorPrimaries = .bt2020
-                converter.transferFunction = .pq
             }
         }
         
@@ -173,9 +154,6 @@ final class UpscalingPipeline: ObservableObject {
             upscaledTexture = texture
             textureFrameId = frameCount
             
-            // v10.3: Direct callback - bypasses SwiftUI state management
-            onTextureReady?(texture)
-            
             if frameCount == 1 {
                 let hdrStatus = isP010 ? "HDR" : "SDR"
                 DebugLog.info("UpscalingPipeline", "✅ First 4K frame generated! (\(upscalerType.rawValue), \(hdrStatus))")
@@ -184,14 +162,11 @@ final class UpscalingPipeline: ObservableObject {
             DebugLog.error("UpscalingPipeline", "Failed to upscale frame")
         }
         
-        // Track processing time
-        // v10.1: Monotonic clock for processing time
-        let elapsed = (CACurrentMediaTime() - startTime) * 1000
-        processingTimeMs = elapsed
-        
         #if DEBUG
         if frameCount > 0 && frameCount % 60 == 0 {
-            let hdrStatus = hdrMode == .forceHDR || (hdrMode == .auto && isP010) ? "HDR" : "SDR"
+            // v10.1: Monotonic clock for processing time
+            let elapsed = (CACurrentMediaTime() - startTime) * 1000
+            let hdrStatus = isP010 ? "HDR" : "SDR"
             DebugLog.print("[UpscalingPipeline] 📊 \(frameCount) frames, \(String(format: "%.1f", elapsed))ms/frame (\(upscalerType.rawValue), \(hdrStatus))")
         }
         #endif
@@ -226,30 +201,6 @@ final class UpscalingPipeline: ObservableObject {
     func disable() {
         isEnabled = false
         DebugLog.info("UpscalingPipeline", "⏸️ Disabled")
-    }
-    
-    func flush() {
-        metalFXUpscaler?.flush()
-        enhancedUpscaler?.flush()
-        colorSpaceConverter?.flush()
-    }
-    
-    // MARK: - HDR Control
-    
-    /// Set HDR processing mode
-    func setHDRMode(_ mode: HDRMode) {
-        hdrMode = mode
-        DebugLog.info("UpscalingPipeline", "🎨 HDR mode: \(mode.rawValue)")
-    }
-    
-    /// Configure color primaries manually
-    func setColorPrimaries(_ primaries: ColorPrimaries) {
-        colorSpaceConverter?.colorPrimaries = primaries
-    }
-    
-    /// Configure transfer function manually  
-    func setTransferFunction(_ tf: TransferFunction) {
-        colorSpaceConverter?.transferFunction = tf
     }
     
     // MARK: - v10.0 Dynamic EDR Headroom (from SwiftUI Environment)
@@ -304,16 +255,8 @@ final class UpscalingPipeline: ObservableObject {
             thermalMultiplier = 0.8
         }
         
-        #if os(visionOS)
         // visionOS: Use last known EDR or default, adjusted for thermal
         let currentHeadroom: Float = lastEDRHeadroom * thermalMultiplier
-        #else
-        let scenes = UIApplication.shared.connectedScenes
-        guard let windowScene = scenes.first(where: { $0 is UIWindowScene }) as? UIWindowScene else {
-            return
-        }
-        let currentHeadroom = Float(windowScene.screen.currentEDRHeadroom) * thermalMultiplier
-        #endif
         
         if abs(currentHeadroom - lastEDRHeadroom) > 0.1 {
             lastEDRHeadroom = currentHeadroom
@@ -323,30 +266,5 @@ final class UpscalingPipeline: ObservableObject {
                 DebugLog.info("UpscalingPipeline", "🌡️ Thermal-adjusted EDR: \(String(format: "%.2f", currentHeadroom))x")
             }
         }
-    }
-    
-    /// Set EDR headroom manually (1.0 = SDR, 2.0 = 2x HDR brightness)
-    func setEDRHeadroom(_ headroom: Float) {
-        lastEDRHeadroom = headroom
-        colorSpaceConverter?.edrHeadroom = headroom
-    }
-    
-    // MARK: - Mode Control
-    
-    /// Switch upscaler type
-    func setUpscalerType(_ type: UpscalerType) {
-        upscalerType = type
-        DebugLog.info("UpscalingPipeline", "⚙️ Switched to \(type.rawValue) upscaler")
-    }
-    
-    /// Switch upscaling mode (for MetalFX)
-    func setMode(_ mode: UpscalingMode) {
-        metalFXUpscaler?.setMode(mode)
-        currentMode = metalFXUpscaler?.mode ?? mode
-    }
-    
-    /// Signal a scene cut
-    func signalSceneCut() {
-        metalFXUpscaler?.signalSceneCut()
     }
 }

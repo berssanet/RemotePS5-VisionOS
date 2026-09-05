@@ -1,23 +1,16 @@
 import Foundation
-import Network
 import Combine
 
 // MARK: - Discovery Configuration
 
 /// Configuration for console discovery behavior.
 struct DiscoveryConfiguration {
-    /// Timeout for each discovery probe (seconds).
+    /// Time to wait for replies to each probe (seconds).
     let probeTimeout: TimeInterval
-    /// Maximum concurrent probes.
-    let maxConcurrentProbes: Int
-    /// Known IP addresses to probe directly.
+    /// Known IP addresses to probe directly (unicast) in addition to the broadcasts.
     let knownIPs: [String]
-    
-    static let `default` = DiscoveryConfiguration(
-        probeTimeout: 2.0,
-        maxConcurrentProbes: 8,
-        knownIPs: []
-    )
+
+    static let `default` = DiscoveryConfiguration(probeTimeout: 2.0, knownIPs: [])
 }
 
 // MARK: - Discovery State
@@ -31,429 +24,349 @@ enum DiscoveryState: Equatable {
 
 // MARK: - Console Discovery Service
 
-/// Service for discovering PlayStation consoles on the local network.
-/// Uses UDP broadcast via the DDP (Device Discovery Protocol) to find PS5/PS4 consoles.
-///
-/// All network operations run on a dedicated background queue, ensuring the UI never blocks.
+/// Finds PlayStation consoles on the local network with the DDP (Device Discovery Protocol)
+/// broadcast the official Remote Play app uses (`SRCH * HTTP/1.1`, UDP 9302 for PS5 and
+/// 987 for PS4). Uses BSD sockets with SO_BROADCAST: Network.framework cannot send to
+/// broadcast addresses. Consoles in rest mode answer `620 Server Standby` and are listed too.
 @MainActor
 final class ConsoleDiscoveryService: ObservableObject {
-    
+
     // MARK: - Published State
-    
+
     @Published private(set) var discoveredConsoles: [Console] = []
     @Published private(set) var state: DiscoveryState = .idle
     @Published private(set) var statusMessage: String = ""
-    
-    /// Convenience property for backward compatibility.
+
     var isSearching: Bool { state == .searching }
-    
+
     // MARK: - Private Properties
-    
+
     private var discoveryTask: Task<Void, Never>?
     private let configuration: DiscoveryConfiguration
-    
-    /// Dedicated queue for network operations (off main thread).
+    /// Set when a broadcast sendto is refused (EPERM/EACCES): visionOS may require the
+    /// Multicast Networking entitlement for 255.255.255.255; unicast probes still work.
+    private var broadcastBlocked: Bool = false
+    private var completedRuns: Int = 0
+
+    /// Dedicated queue for the blocking socket work (off the main thread).
     private let networkQueue = DispatchQueue(
         label: "com.visionremote.discovery.network",
         qos: .userInitiated,
         attributes: .concurrent
     )
-    
+
     // MARK: - DDP Protocol Constants
-    
+
     private enum DDPProtocol {
         static let ps5Port: UInt16 = 9302
         static let ps4Port: UInt16 = 987
-        
-        /// DDP v3 search packet (PS5 native).
-        static let v3SearchPacket = "SRCH * HTTP/1.1\r\nDevice-Discovery-Protocol-Version: 00030010\r\n\r\n"
-        
-        /// DDP v2 search packet (PS4, also works for PS5).
-        static let v2SearchPacket = "SRCH * HTTP/1.1\r\ndevice-discovery-protocol-version:00020020\r\n\r\n"
+        /// DDP v3 search packet (PS5) — byte-exact copy of chiaki_discovery_packet_fmt.
+        static let v3SearchPacket = "SRCH * HTTP/1.1\ndevice-discovery-protocol-version:00030010\n"
+        /// DDP v2 search packet (PS4, also answered by PS5).
+        static let v2SearchPacket = "SRCH * HTTP/1.1\ndevice-discovery-protocol-version:00020020\n"
     }
-    
+
     // MARK: - Initialization
-    
+
     init(configuration: DiscoveryConfiguration = .default) {
         self.configuration = configuration
-        DebugLog.print("[Discovery] Service initialized")
     }
-    
+
     deinit {
         discoveryTask?.cancel()
-        DebugLog.print("[Discovery] Service deinitialized")
     }
-    
+
     // MARK: - Public API
-    
-    /// Start discovering consoles on the local network.
-    /// This method returns immediately; discovery runs asynchronously in the background.
-    func startDiscovery() {
-        guard state != .searching else {
-            DebugLog.print("[Discovery] Already searching")
-            return
+
+    func discoverConsole(at address: String) async -> Console? {
+        var ps5 = await Self.probe(on: networkQueue, address: address, port: DDPProtocol.ps5Port,
+                                  packet: DDPProtocol.v3SearchPacket, timeout: configuration.probeTimeout)
+        if ps5.sendRefused {
+            DebugLog.print("[Discovery] Local probe refused; waiting briefly for Local Network permission")
+            do {
+                try await Task.sleep(nanoseconds: 3_000_000_000)
+            } catch { return nil }
+            ps5 = await Self.probe(on: networkQueue, address: address, port: DDPProtocol.ps5Port,
+                                  packet: DDPProtocol.v3SearchPacket, timeout: configuration.probeTimeout)
+            if ps5.sendRefused { return nil }
         }
-        
+        if let console = ps5.consoles.first(where: { $0.ipAddress == address }) { return console }
+        guard !Task.isCancelled else { return nil }
+        let ps4 = await Self.probe(on: networkQueue, address: address, port: DDPProtocol.ps4Port,
+                                  packet: DDPProtocol.v2SearchPacket, timeout: configuration.probeTimeout)
+        return ps4.consoles.first(where: { $0.ipAddress == address })
+    }
+
+    /// Start discovering consoles on the local network. Returns immediately.
+    /// `unicastTargets` (e.g. the IP typed by the user) are probed directly, on top of the
+    /// broadcasts and every registered console's address — no entitlement needed for those.
+    func startDiscovery(unicastTargets: [String] = []) {
+        guard state != .searching else { return }
         state = .searching
         statusMessage = "Searching for PlayStation consoles..."
         discoveredConsoles = []
-        
+        broadcastBlocked = false
         DebugLog.print("[Discovery] Starting DDP discovery...")
-        
-        // Launch discovery in a detached task to ensure UI never blocks
+        let startedAt = Date()
+
         discoveryTask = Task.detached(priority: .userInitiated) { [weak self] in
-            guard let self = self else { return }
-            
-            let consoles = await self.performDiscovery()
-            
+            guard let self else { return }
+            let registered = await ConsoleStorageService.shared.getRegisteredConsoles().map(\.ipAddress)
+            let result = await self.performDiscovery(unicastTargets: unicastTargets + registered)
             await MainActor.run {
-                self.handleDiscoveryComplete(consoles: consoles)
+                self.handleDiscoveryComplete(consoles: result.consoles, broadcastBlocked: result.broadcastBlocked)
+                // The first run races the local-network permission prompt: retry once.
+                if result.consoles.isEmpty, self.completedRuns == 1, Date().timeIntervalSince(startedAt) < 3 {
+                    DebugLog.print("[Discovery] First run may have raced the local-network prompt; retrying once")
+                    Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 3_000_000_000)
+                        self.startDiscovery(unicastTargets: unicastTargets)
+                    }
+                }
             }
         }
     }
-    
+
     /// Stop any ongoing discovery.
     func stopDiscovery() {
         discoveryTask?.cancel()
         discoveryTask = nil
         state = .idle
         statusMessage = "Search stopped"
-        DebugLog.print("[Discovery] Discovery stopped")
     }
-    
+
     /// Clear all discovered consoles and reset state.
     func clearCache() {
         stopDiscovery()
         discoveredConsoles.removeAll()
         statusMessage = ""
-        DebugLog.print("[Discovery] Cache cleared")
     }
-    
+
     /// Add a console manually (for testing or manual pairing).
     func addConsoleManually(name: String, ipAddress: String) {
-        let console = Console(
-            name: name,
-            ipAddress: ipAddress,
-            type: .ps5,
-            status: .online
-        )
-        
+        let console = Console(name: name, ipAddress: ipAddress, type: .ps5, status: .online)
         if !discoveredConsoles.contains(where: { $0.ipAddress == ipAddress }) {
             discoveredConsoles.append(console)
             statusMessage = "Console added: \(name)"
         }
     }
-    
-    /// Wake a console using the PS5 wakeup protocol.
-    func wakeConsole(_ console: Console) async -> Bool {
-        return await WakeOnLanService.shared.wakeConsole(console)
-    }
-    
+
     // MARK: - Private: Discovery Logic
-    
-    /// Performs the actual discovery. Runs entirely off the main thread.
-    private nonisolated func performDiscovery() async -> [Console] {
-        let broadcastAddresses = getBroadcastAddresses() + ["255.255.255.255"]
-        DebugLog.print("[Discovery] Probing \(broadcastAddresses.count) broadcast addresses")
-        
-        // Use TaskGroup for concurrent probing with automatic cancellation handling
-        let consoles = await withTaskGroup(of: Console?.self, returning: [Console].self) { group in
+
+    private struct DiscoveryRun {
+        let consoles: [Console]
+        let broadcastBlocked: Bool
+    }
+
+    private struct ProbeResult {
+        let consoles: [Console]
+        let sendRefused: Bool // EPERM / EACCES on sendto (broadcast not permitted)
+    }
+
+    /// Probes every broadcast address and every unicast target with both DDP versions concurrently.
+    private nonisolated func performDiscovery(unicastTargets: [String]) async -> DiscoveryRun {
+        let broadcasts = Self.broadcastAddresses() + ["255.255.255.255"]
+        let unicast = Array(Set(unicastTargets + configuration.knownIPs)).filter { !$0.isEmpty }
+        DebugLog.print("[Discovery] Probing broadcast \(broadcasts.joined(separator: ", ")) + unicast \(unicast.joined(separator: ", "))")
+        let timeout = configuration.probeTimeout
+        let queue = networkQueue
+
+        return await withTaskGroup(of: (ProbeResult, Bool).self, returning: DiscoveryRun.self) { group in
+            for address in broadcasts {
+                group.addTask {
+                    (await Self.probe(on: queue, address: address, port: DDPProtocol.ps5Port,
+                                      packet: DDPProtocol.v3SearchPacket, timeout: timeout), true)
+                }
+                group.addTask {
+                    (await Self.probe(on: queue, address: address, port: DDPProtocol.ps4Port,
+                                      packet: DDPProtocol.v2SearchPacket, timeout: timeout), true)
+                }
+            }
+            for ip in unicast {
+                group.addTask {
+                    (await Self.probe(on: queue, address: ip, port: DDPProtocol.ps5Port,
+                                      packet: DDPProtocol.v3SearchPacket, timeout: timeout), false)
+                }
+            }
+
             var discovered: [Console] = []
             var seenIPs = Set<String>()
-            
-            // Probe all broadcast addresses with both protocols
-            for address in broadcastAddresses {
-                // PS5 DDP v3 probe
-                group.addTask { [self] in
-                    await self.sendProbe(
-                        to: address,
-                        port: DDPProtocol.ps5Port,
-                        packet: DDPProtocol.v3SearchPacket
-                    )
-                }
-                
-                // PS4/PS5 DDP v2 probe
-                group.addTask { [self] in
-                    await self.sendProbe(
-                        to: address,
-                        port: DDPProtocol.ps4Port,
-                        packet: DDPProtocol.v2SearchPacket
-                    )
-                }
-            }
-            
-            // Also probe known IPs directly
-            for ip in configuration.knownIPs {
-                group.addTask { [self] in
-                    await self.sendProbe(
-                        to: ip,
-                        port: DDPProtocol.ps5Port,
-                        packet: DDPProtocol.v3SearchPacket
-                    )
-                }
-            }
-            
-            // Collect results, deduplicating by IP
-            for await console in group {
-                guard let console = console else { continue }
-                
-                if !seenIPs.contains(console.ipAddress) {
+            var broadcastRefused = false
+            for await (result, isBroadcast) in group {
+                if isBroadcast, result.sendRefused { broadcastRefused = true }
+                for console in result.consoles where !seenIPs.contains(console.ipAddress) {
                     seenIPs.insert(console.ipAddress)
                     discovered.append(console)
-                    DebugLog.print("[Discovery] Found: \(console.name) at \(console.ipAddress)")
+                    DebugLog.print("[Discovery] Found: \(console.name) at \(console.ipAddress) (\(console.status.rawValue))")
                 }
             }
-            
-            return discovered
-        }
-        
-        return consoles
-    }
-    
-    /// Send a single discovery probe and wait for response.
-    private nonisolated func sendProbe(to address: String, port: UInt16, packet: String) async -> Console? {
-        guard let packetData = packet.data(using: .utf8) else { return nil }
-        
-        let host = NWEndpoint.Host(address)
-        let nwPort = NWEndpoint.Port(rawValue: port)!
-        
-        // Configure UDP connection
-        let params = NWParameters.udp
-        params.allowLocalEndpointReuse = true
-        params.requiredInterfaceType = .wifi  // Prefer WiFi for local discovery
-        
-        let connection = NWConnection(host: host, port: nwPort, using: params)
-        
-        return await withTaskCancellationHandler {
-            await withCheckedContinuation { continuation in
-                let resumed = AtomicFlag()
-                
-                // Timeout handler
-                let timeoutTask = Task {
-                    try? await Task.sleep(nanoseconds: UInt64(configuration.probeTimeout * 1_000_000_000))
-                    if resumed.setIfFalse() {
-                        connection.cancel()
-                        continuation.resume(returning: nil)
-                    }
-                }
-                
-                connection.stateUpdateHandler = { [self] state in
-                    switch state {
-                    case .ready:
-                        self.handleConnectionReady(
-                            connection: connection,
-                            address: address,
-                            packetData: packetData,
-                            resumed: resumed,
-                            timeoutTask: timeoutTask,
-                            continuation: continuation
-                        )
-                        
-                    case .failed(let error):
-                        if resumed.setIfFalse() {
-                            timeoutTask.cancel()
-                            DebugLog.print("[Discovery] Probe failed to \(address):\(port) - \(error)")
-                            continuation.resume(returning: nil)
-                        }
-                        
-                    case .cancelled:
-                        if resumed.setIfFalse() {
-                            timeoutTask.cancel()
-                            continuation.resume(returning: nil)
-                        }
-                        
-                    default:
-                        break
-                    }
-                }
-                
-                connection.start(queue: networkQueue)
-            }
-        } onCancel: {
-            connection.cancel()
+            return DiscoveryRun(consoles: discovered, broadcastBlocked: broadcastRefused)
         }
     }
-    
-    /// Handle connection ready state - send packet and wait for response.
-    private nonisolated func handleConnectionReady(
-        connection: NWConnection,
-        address: String,
-        packetData: Data,
-        resumed: AtomicFlag,
-        timeoutTask: Task<Void, Never>,
-        continuation: CheckedContinuation<Console?, Never>
-    ) {
-        connection.send(content: packetData, completion: .contentProcessed { [self] error in
-            if let error = error {
-                if resumed.setIfFalse() {
-                    timeoutTask.cancel()
-                    connection.cancel()
-                    DebugLog.print("[Discovery] Send error to \(address): \(error)")
-                    continuation.resume(returning: nil)
-                }
-                return
+
+    private nonisolated static func probe(
+        on queue: DispatchQueue, address: String, port: UInt16, packet: String, timeout: TimeInterval
+    ) async -> ProbeResult {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                continuation.resume(returning: broadcastProbe(address: address, port: port, packet: packet, timeout: timeout))
             }
-            
-            // Wait for response
-            connection.receiveMessage { data, _, _, error in
-                timeoutTask.cancel()
-                connection.cancel()
-                
-                guard resumed.setIfFalse() else { return }
-                
-                if let error = error {
-                    DebugLog.print("[Discovery] Receive error from \(address): \(error)")
-                    continuation.resume(returning: nil)
-                    return
-                }
-                
-                guard let data = data,
-                      let response = String(data: data, encoding: .utf8) else {
-                    continuation.resume(returning: nil)
-                    return
-                }
-                
-                let console = self.parseDiscoveryResponse(response, fromAddress: address)
-                continuation.resume(returning: console)
-            }
-        })
+        }
     }
-    
-    /// Handle discovery completion on main thread.
-    private func handleDiscoveryComplete(consoles: [Console]) {
+
+    /// One UDP socket: SO_BROADCAST, send the probe, then collect every reply until `timeout`.
+    private nonisolated static func broadcastProbe(
+        address: String, port: UInt16, packet: String, timeout: TimeInterval
+    ) -> ProbeResult {
+        let fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+        guard fd >= 0 else {
+            DebugLog.print("[Discovery] socket() failed: \(String(cString: strerror(errno)))")
+            return ProbeResult(consoles: [], sendRefused: false)
+        }
+        defer { close(fd) }
+
+        var enable: Int32 = 1
+        let intSize = socklen_t(MemoryLayout<Int32>.size)
+        setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &enable, intSize)
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &enable, intSize)
+        let wholeSeconds = Int(timeout)
+        var receiveTimeout = timeval(
+            tv_sec: wholeSeconds,
+            tv_usec: Int32((timeout - Double(wholeSeconds)) * 1_000_000)
+        )
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &receiveTimeout, socklen_t(MemoryLayout<timeval>.size))
+
+        var destination = sockaddr_in()
+        destination.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        destination.sin_family = sa_family_t(AF_INET)
+        destination.sin_port = port.bigEndian
+        guard inet_pton(AF_INET, address, &destination.sin_addr) == 1 else {
+            return ProbeResult(consoles: [], sendRefused: false)
+        }
+
+        let payload = Array(packet.utf8) + [0] // chiaki sends len + 1 (NUL terminator)
+        let sent = withUnsafePointer(to: &destination) { pointer -> Int in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                sendto(fd, payload, payload.count, 0, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard sent == payload.count else {
+            let code = errno
+            DebugLog.print("[Discovery] sendto \(address):\(port) failed: \(String(cString: strerror(code)))")
+            return ProbeResult(consoles: [], sendRefused: code == EPERM || code == EACCES)
+        }
+
+        var results: [Console] = []
+        var buffer = [UInt8](repeating: 0, count: 2048)
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            var sender = sockaddr_in()
+            var senderLength = socklen_t(MemoryLayout<sockaddr_in>.size)
+            let received = withUnsafeMutablePointer(to: &sender) { pointer -> Int in
+                pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                    recvfrom(fd, &buffer, buffer.count, 0, sockaddrPointer, &senderLength)
+                }
+            }
+            guard received > 0 else { break } // timeout (EAGAIN) or error: this probe is done
+            var addressBuffer = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
+            var senderAddress = sender.sin_addr
+            guard inet_ntop(AF_INET, &senderAddress, &addressBuffer, socklen_t(addressBuffer.count)) != nil else { continue }
+            let fromAddress = String(cString: addressBuffer)
+            guard let text = String(bytes: buffer[0..<received], encoding: .utf8) else { continue }
+            if let console = parseDiscoveryResponse(text, fromAddress: fromAddress) {
+                results.append(console)
+            }
+        }
+        return ProbeResult(consoles: results, sendRefused: false)
+    }
+
+    /// Discovery completion on the main thread.
+    private func handleDiscoveryComplete(consoles: [Console], broadcastBlocked: Bool) {
+        completedRuns += 1
         discoveredConsoles = consoles
-        
+        self.broadcastBlocked = broadcastBlocked
         if consoles.isEmpty {
             state = .completed(count: 0)
-            statusMessage = "No consoles found. Make sure your PS5 is on and Remote Play is enabled."
+            statusMessage = broadcastBlocked
+                ? "Broadcast search is not permitted on this device. Type the PS5 IP address to probe it directly."
+                : "No consoles found. Make sure your PS5 is on and Remote Play is enabled."
         } else {
             state = .completed(count: consoles.count)
             statusMessage = "Found \(consoles.count) console(s)"
         }
-        
-        DebugLog.print("[Discovery] Completed - found \(consoles.count) consoles")
+        DebugLog.print("[Discovery] Completed - found \(consoles.count) consoles (broadcastBlocked=\(broadcastBlocked))")
     }
-    
+
     // MARK: - Private: Response Parsing
-    
-    /// Parse a DDP response into a Console object.
-    private nonisolated func parseDiscoveryResponse(_ response: String, fromAddress address: String) -> Console? {
-        // DDP responses are HTTP-like:
-        // HTTP/1.1 200 Ok
-        // host-id:1234567890ABCDEF
-        // host-type:PS5
-        // host-name:Living Room PS5
-        
-        guard response.contains("200 Ok") || response.contains("200 OK") else {
+
+    /// DDP replies are HTTP-like: `HTTP/1.1 200 Ok` (awake) or `HTTP/1.1 620 Server Standby`
+    /// (rest mode), followed by `host-id`, `host-type`, `host-name`, ... headers.
+    private nonisolated static func parseDiscoveryResponse(_ response: String, fromAddress address: String) -> Console? {
+        // The PS5 answers with LF line endings (chiaki_http_response_parse accepts both).
+        let lines = response.components(separatedBy: "\n").map { line -> String in
+            line.hasSuffix("\r") ? String(line.dropLast()) : line
+        }
+        guard let statusLine = lines.first, statusLine.hasPrefix("HTTP/1.1") else { return nil }
+        let status: Console.ConsoleStatus
+        if statusLine.contains(" 200 ") {
+            status = .online
+        } else if statusLine.contains(" 620 ") {
+            status = .standby
+        } else {
             return nil
         }
-        
+
         var headers: [String: String] = [:]
-        for line in response.components(separatedBy: "\r\n") {
-            if let colonIndex = line.firstIndex(of: ":") {
-                let key = String(line[..<colonIndex]).lowercased()
-                let value = String(line[line.index(after: colonIndex)...]).trimmingCharacters(in: .whitespaces)
-                headers[key] = value
-            }
+        for line in lines.dropFirst() {
+            if line.isEmpty { break }
+            guard let colonIndex = line.firstIndex(of: ":") else { continue }
+            let key = String(line[..<colonIndex]).lowercased()
+            let value = String(line[line.index(after: colonIndex)...]).trimmingCharacters(in: .whitespaces)
+            headers[key] = value
         }
-        
-        let hostName = headers["host-name"] ?? "PlayStation"
-        let hostId = headers["host-id"] ?? ""
-        let hostType = headers["host-type"]?.uppercased() ?? "PS5"
-        
-        let consoleType: Console.ConsoleType = {
-            switch hostType {
-            case "PS5": return .ps5
-            case "PS5DIGITAL", "PS5 DIGITAL": return .ps5Digital
-            case "PS4PRO", "PS4 PRO": return .ps4Pro
-            case "PS4": return .ps4
-            default: return .ps5
-            }
-        }()
-        
-        let status: Console.ConsoleStatus = {
-            if response.contains("Standby") || headers["status"]?.lowercased() == "standby" {
-                return .standby
-            }
-            return .online
-        }()
-        
+
+        let consoleType: Console.ConsoleType
+        switch (headers["host-type"] ?? "PS5").uppercased() {
+        case "PS4": consoleType = .ps4
+        case "PS4PRO", "PS4 PRO": consoleType = .ps4Pro
+        default: consoleType = .ps5
+        }
+
         return Console(
-            name: hostName,
+            name: headers["host-name"] ?? "PlayStation",
             ipAddress: address,
-            macAddress: hostId,
+            macAddress: headers["host-id"] ?? "",
             type: consoleType,
             status: status
         )
     }
-    
+
     // MARK: - Private: Network Helpers
-    
-    /// Get all broadcast addresses for local network interfaces.
-    private nonisolated func getBroadcastAddresses() -> [String] {
+
+    /// Broadcast addresses of every IPv4 interface with IFF_BROADCAST (skipping loopback).
+    private nonisolated static func broadcastAddresses() -> [String] {
         var addresses: [String] = []
-        
-        var ifaddr: UnsafeMutablePointer<ifaddrs>?
-        guard getifaddrs(&ifaddr) == 0, let firstAddr = ifaddr else {
-            return addresses
-        }
-        defer { freeifaddrs(ifaddr) }
-        
-        var ptr: UnsafeMutablePointer<ifaddrs>? = firstAddr
-        while let interface = ptr {
-            let iface = interface.pointee
-            let family = iface.ifa_addr.pointee.sa_family
-            
-            // IPv4 only
-            if family == UInt8(AF_INET) {
-                let name = String(cString: iface.ifa_name)
-                
-                // Skip loopback
-                if name != "lo0" {
-                    let flags = Int32(iface.ifa_flags)
-                    
-                    // Check for broadcast capability
-                    if (flags & IFF_BROADCAST) != 0, let broadcastAddr = iface.ifa_dstaddr {
-                        var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-                        if getnameinfo(
-                            broadcastAddr,
-                            socklen_t(broadcastAddr.pointee.sa_len),
-                            &hostname,
-                            socklen_t(hostname.count),
-                            nil, 0,
-                            NI_NUMERICHOST
-                        ) == 0 {
-                            let address = String(cString: hostname)
-                            if !addresses.contains(address) {
-                                addresses.append(address)
-                            }
-                        }
-                    }
-                }
+        var interfaceList: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&interfaceList) == 0, let first = interfaceList else { return addresses }
+        defer { freeifaddrs(interfaceList) }
+
+        var pointer: UnsafeMutablePointer<ifaddrs>? = first
+        while let interface = pointer {
+            let entry = interface.pointee
+            pointer = entry.ifa_next
+            guard let addr = entry.ifa_addr, addr.pointee.sa_family == UInt8(AF_INET) else { continue }
+            let name = String(cString: entry.ifa_name)
+            guard name != "lo0", (Int32(entry.ifa_flags) & IFF_BROADCAST) != 0,
+                  let broadcast = entry.ifa_dstaddr else { continue }
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            let resolved = getnameinfo(broadcast, socklen_t(broadcast.pointee.sa_len),
+                                       &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST)
+            guard resolved == 0 else { continue }
+            let address = String(cString: host)
+            if !addresses.contains(address) {
+                addresses.append(address)
             }
-            
-            ptr = iface.ifa_next
         }
-        
         return addresses
-    }
-}
-
-// MARK: - Thread-Safe Atomic Flag
-
-/// A thread-safe flag for ensuring single resumption of continuations.
-private final class AtomicFlag: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value = false
-    
-    /// Atomically sets the flag to true if currently false.
-    /// - Returns: `true` if the flag was successfully set (was false), `false` if already set.
-    func setIfFalse() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        
-        if value { return false }
-        value = true
-        return true
     }
 }

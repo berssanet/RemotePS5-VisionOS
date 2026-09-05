@@ -78,11 +78,12 @@ enum HoloPadInputProfile: String, CaseIterable {
     case thumbTaps = "Thumb Taps"
     /// v12.4 "Cyborg": each finger is an independent paddle pressed DOWN
     /// against the resting surface (thigh/armrest) — real passive haptics,
-    /// chord-capable, thumb reserved for the stick. Inspired by the
-    /// Cyborg II keypad: the hand never travels; keys live under the fingers.
-    ///   index  = analog trigger by press depth; LIFT of the index = bumper
-    ///   middle/ring/pinky presses = ✕/○/□ (right) or D-Up/Down/Left (left)
-    ///   thumb→index-side tap = △ / D-Right (unchanged)
+    /// chord-capable. The hand never travels; inputs live under the fingers.
+    /// v13.2 mapping (user direction — one finger, one job):
+    ///   thumb  = analog stick (position deflection from an adaptive centre)
+    ///   index  = R1 / L1 (digital bumper, press)
+    ///   middle = R2 / L2 (analog trigger, press depth)
+    ///   ring / pinky presses = ○/□ (right) or D-Down/D-Left (left)
     case cyborgPaddles = "Cyborg Paddles"
 }
 
@@ -118,6 +119,19 @@ final class HandGestureControllerService: ObservableObject {
     private(set) var leftTrigger: Float = 0
     private(set) var rightTrigger: Float = 0
 
+    /// v13.8 ON-SCREEN diagnostic — read by the panel HUD and shown as text,
+    /// so the mapping can be verified from a SCREENSHOT (the console-log tunnel
+    /// is unreliable). Posture (`down`, `rest`) + the thumb→index-segment
+    /// distances (`dist`, 4 values tip→base in metres) + the selected segment.
+    struct Debug {
+        var rDown: Float = 0, lDown: Float = 0
+        var rRest = false, lRest = false
+        var rSeg = -1, lSeg = -1
+        var rDist: SIMD4<Float> = .init(repeating: 9)
+        var lDist: SIMD4<Float> = .init(repeating: 9)
+    }
+    private(set) var debug = Debug()
+
     /// Both hands currently tracked (published — drives HUD state only).
     @Published private(set) var isTracking: Bool = false
 
@@ -141,6 +155,11 @@ final class HandGestureControllerService: ObservableObject {
 
     private struct HandState {
         var stickOrigin: SIMD3<Float>? = nil
+        /// v13.4: inertia-smoothed analog stick output (see thumbStickInertia).
+        var stickSmoothed: SIMD2<Float> = .zero
+        /// v13.6 thumb-fretboard: which index segment the thumb is touching
+        /// (0=tip, 1=intermediateTip, 2=intermediateBase, 3=knuckle; -1=none).
+        var segmentButton: Int = -1
         var tapActive: [HoloPadHandSnapshot.Point: Bool] = [:]
         var tracked = false
         /// Summon mode (palm facing the sky) — taps become system buttons.
@@ -214,9 +233,19 @@ final class HandGestureControllerService: ObservableObject {
 
     /// v12.7 thumb positional stick (Cyborg profile): the thumb IS the
     /// analog stick — deflection from an adaptive center, no pinch gesture.
-    private let thumbStickRadius: Float = 0.04      // full deflection at 4cm
+    // v13.4.1: device test said the stick felt sluggish/weak — reach full with
+    // less travel (radius 4cm→3cm), a gentler curve (expo 1.7→1.3, so mid
+    // movements read stronger), and less lag (inertia 0.5→0.7).
+    private let thumbStickRadius: Float = 0.03      // full deflection at 3cm
     private let thumbStickDeadzone: Float = 0.012   // 12mm neutral zone
     private let thumbRestAdaptRate: Float = 0.05    // recenter inside deadzone
+    /// v13.4 "scrub" analog model, applied from the ergonomic-microgesture
+    /// research: a response CURVE (the "Gain" concept — fine control near
+    /// centre, fast at the edge) and light INERTIA smoothing so camera-tracking
+    /// jitter reads as a weighted analog stick, not noise. Both are pure
+    /// software shaping of the SAME thumb signal (no extra sensors needed).
+    private let thumbStickExpo: Float = 1.3         // >1 = finer near centre
+    private let thumbStickInertia: Float = 0.7      // EMA toward target per frame
     /// v12.7.1 stillness recenter — fixes the stuck-deflection deadlock
     /// (center could never recover if the thumb settled outside the
     /// deadzone, leaving the camera spinning forever): a thumb that stays
@@ -290,6 +319,22 @@ final class HandGestureControllerService: ObservableObject {
         rightTrigger = 0
         isTracking = false
         DebugLog.info("HoloPad", "Hand tracking stopped")
+    }
+
+    /// Force a fresh calibration: clears both hands' adaptive references so
+    /// the next settled pose recaptures them. Identical to the reset the
+    /// profile switch performs (see `inputProfile.didSet`) — it touches only
+    /// per-hand state, never the tuning constants. Used by the training range
+    /// "Recalibrate" control; equivalent to lifting and re-resting the hands.
+    func recalibrate() {
+        leftHand = HandState()
+        rightHand = HandState()
+        buttonsBitmask = 0
+        leftStick = .zero
+        rightStick = .zero
+        leftTrigger = 0
+        rightTrigger = 0
+        DebugLog.info("HoloPad", "Recalibrated — references cleared")
     }
 
     // MARK: - Gesture engine
@@ -413,23 +458,24 @@ final class HandGestureControllerService: ObservableObject {
         }
         snapshot.isPalmUp = state.palmUp
 
-        // v12.7.2: gameplay posture = palm down (resting hand).
-        // v12.8.1: wide hysteresis (0.5 enter / 0.15 exit) + 0.3s sustained
-        // entry debounce — telemetry showed a hovering hand flapping across
-        // the old boundary and recapturing jumpy references each time.
-        let downness = -upness
+        // v13.7 (user direction): gameplay pose is the NATURAL RESTING position
+        // — hands palm-DOWN on the desk / lap / armrest, the way they rest by
+        // default (the handshake grip was rejected as unnatural). palmNormal
+        // points down, so `downness = -dot(palmNormal, up)` is ≈ +1. This is
+        // viable for the thumb-fretboard buttons because thumb-to-index-segment
+        // contact is laterally visible and does NOT depend on the fingertip
+        // curl / thumb-position signals that made the OLD palm-down stick
+        // flicker (those are suppressed in this batch).
+        let downness = -upness              // +1 = palm flat down, -1 = palm up
         let wasResting = state.restingPose
         let postureNow = CACurrentMediaTime()
         if state.restingPose {
-            // v12.9: exit ONLY past vertical — tilting the hand up for
-            // camera-up was crossing the old 0.15 exit and ejecting the hand
-            // from gameplay mid-gesture (telemetry: repeated re-settling).
-            // v12.9.1: ALSO exit when the hand RISES >20cm above its settled
-            // height — reaching for an object in view was ghosting stick and
-            // paddle input all the way (palm stays below vertical on a reach).
+            // v13.8: forgiving hold — hands resting on a desk sit at an angle,
+            // not perfectly flat. Exit only when the palm rolls well past
+            // vertical, or the hand rises >20cm above its settled height.
             let raised = state.settledWristY.map { wrist.y > $0 + 0.20 } ?? false
-            state.restingPose = downness > 0.0 && !raised
-        } else if downness > 0.5 {
+            state.restingPose = downness > -0.15 && !raised
+        } else if downness > 0.2 {  // v13.8: was 0.4 — permissive enough for a desk rest
             if state.restingCandidateSince == nil {
                 state.restingCandidateSince = postureNow
             }
@@ -455,129 +501,56 @@ final class HandGestureControllerService: ObservableObject {
             state.middleLifted = false
             state.restingCandidateSince = nil
             state.settledWristY = wrist.y
-            DebugLog.print("[HoloPad] 🫳 \(isRight ? "R" : "L") resting — settling \(settleWindow)s")
+            DebugLog.print("[HoloPad] 🖐 \(isRight ? "R" : "L") resting (palm-down) — settling \(settleWindow)s")
         }
         let settling = state.restingPose && postureNow < state.settleUntil
+
+        // v13.8: mirror posture into the on-screen diagnostic.
+        if isRight { debug.rDown = downness; debug.rRest = state.restingPose }
+        else { debug.lDown = downness; debug.lRest = state.restingPose }
+
+        // Posture telemetry (~0.6Hz per hand) to tune the palm-down gate.
+        DebugLog.every(stickLogCounter, interval: 150, "HoloPad",
+                       "🖐 \(isRight ? "R" : "L") downness=\(String(format: "%.2f", downness)) resting=\(state.restingPose)")
 
         // --- Analog stick (profile-dependent) ------------------------------
         var stick = SIMD2<Float>.zero
         var stickEngaged = false
 
+        // v13.8 thumb-fretboard: distances thumb→each index segment (tip→base),
+        // computed EVERY frame for the on-screen diagnostic. Looser touch radius
+        // than the fingertip taps — palm-down the thumb rests farther out.
+        //   segment 0 = index TIP  1 = intermediateTip  2 = intermediateBase  3 = KNUCKLE
+        let segJoints = [indexTip, worldAny(.indexFingerIntermediateTip), indexSide, indexKnuckle]
+        let segDist = SIMD4<Float>(simd_length(thumbTip - segJoints[0]),
+                                   simd_length(thumbTip - segJoints[1]),
+                                   simd_length(thumbTip - segJoints[2]),
+                                   simd_length(thumbTip - segJoints[3]))
+        if isRight { debug.rDist = segDist } else { debug.lDist = segDist }
+        let segmentPress: Float = 0.032    // 32mm touch radius (was 22mm)
+        let segmentRelease: Float = 0.048  // 48mm release (hysteresis)
+
         if inputProfile == .cyborgPaddles, !state.restingPose {
-            // Outside the resting pose the stick is neutral and references
-            // are discarded (recaptured when the hand settles again).
-            state.wristRefYaw = nil
-            state.wristRefPitch = nil
+            state.segmentButton = -1
         } else if inputProfile == .cyborgPaddles {
-            // v12.8: WRIST-TILT stick. v12.9: the forward axis comes from
-            // the RIGID hand-anchor transform (its x-axis points wrist →
-            // fingers), NOT from knuckle positions — telemetry showed
-            // middle-finger presses rocking the middleKnuckle and bursting
-            // the stick (button input leaking into the camera: the
-            // "commands feel swapped" symptom).
-            // v12.10: stick X = PALM ROLL, GRAVITY-REFERENCED. Absolute zero
-            // = palm flat toward the floor — no adaptive reference exists to
-            // deadlock, no forearm joint needed (v12.9.2's elbow is inferred
-            // outside the camera FOV and proved too unstable), and the hand
-            // resting flat is a real physical return spring. Roll the palm
-            // right → camera right. Stick Y stays pitch vs the settle-
-            // captured reference (telemetry showed it responsive).
-            let anchorX = origin.columns.0
-            let forward = simd_normalize(SIMD3<Float>(anchorX.x, anchorX.y, anchorX.z))
-            let handUp = -palmNormal   // palm-down hand ⇒ this points up
-            let worldUp = SIMD3<Float>(0, 1, 0)
-            // Signed roll: angle between world-up and hand-up, both projected
-            // perpendicular to the forward axis.
-            let upPerp = worldUp - forward * simd_dot(worldUp, forward)
-            let handUpPerp = handUp - forward * simd_dot(handUp, forward)
-            let upPerpLen = simd_length(upPerp)
-            let handUpPerpLen = simd_length(handUpPerp)
-            let frameValid = upPerpLen > 0.05 && handUpPerpLen > 0.05
-            let rollNow: Float
-            if frameValid {
-                let a = upPerp / upPerpLen
-                let b = handUpPerp / handUpPerpLen
-                rollNow = atan2(simd_dot(simd_cross(a, b), forward), simd_dot(a, b))
-            } else {
-                rollNow = 0
+            // Winner-takes-all: nearest segment within the touch radius fires;
+            // a held contact sticks until the thumb passes the release radius.
+            // Right hand → face buttons, left → D-pad (refreshCompositeState).
+            // The thumb is the SELECTOR here, so the analog stick is suppressed.
+            var nearest = -1
+            var nearestDist = segmentPress
+            for i in 0..<4 where segDist[i] < nearestDist { nearest = i; nearestDist = segDist[i] }
+            if nearest >= 0 {
+                state.segmentButton = nearest
+            } else if state.segmentButton >= 0, segDist[state.segmentButton] > segmentRelease {
+                state.segmentButton = -1
             }
-            let pitchNow = asin(max(-1, min(1, forward.y)))
-            let yawNow = rollNow   // stick X source (naming kept for the ref plumbing)
-
-            // v12.10.1: telemetry proved resting hands sit ~25° rolled on
-            // the thigh — gravity-absolute zero pinned both sticks at -1.
-            // Roll now uses the SAME settle-captured reference design as
-            // pitch (the axis telemetry showed working perfectly).
-            var refYaw = state.wristRefYaw ?? rollNow
-            var refPitch = state.wristRefPitch ?? pitchNow
-
-            func shortestAngle(_ a: Float) -> Float {
-                var angle = a
-                while angle > .pi { angle -= 2 * .pi }
-                while angle < -.pi { angle += 2 * .pi }
-                return angle
-            }
-
-            // Settling window: fast-converge both references to wherever
-            // the hand is actually coming to rest; stick stays neutral.
-            if settling {
-                refYaw += shortestAngle(rollNow - refYaw) * settleAdaptRate
-                refPitch += (pitchNow - refPitch) * settleAdaptRate
-            }
-
-            let deltaYaw = shortestAngle(yawNow - refYaw)
-            let deltaPitch = pitchNow - refPitch
-
-            // Raw-angle telemetry (~1Hz per hand) for remote tuning.
-            DebugLog.every(stickLogCounter, interval: 180, "HoloPad",
-                           "📐 \(isRight ? "R" : "L") roll=\(String(format: "%+.2f", rollNow)) pitch=\(String(format: "%+.2f", pitchNow)) refPitch=\(String(format: "%+.2f", refPitch)) resting=\(state.restingPose)")
-
-            func axisValue(_ delta: Float) -> Float {
-                let magnitude = abs(delta)
-                guard magnitude > wristDeadzone else { return 0 }
-                let usable = (magnitude - wristDeadzone) / (wristFullTilt - wristDeadzone)
-                return min(usable, 1) * (delta > 0 ? 1 : -1)
-            }
-
-            // Thumb touching the index side = stick click (R3/L3): freeze
-            // the stick during the click so it can't jerk the camera.
-            // v12.9.1: ONLY while the side tap is enabled — review found the
-            // freeze silently killing the stick for hands that rest the
-            // thumb against the index (a natural relaxed pose).
-            let sideContact = sideTapEnabled &&
-                simd_length(thumbTip - indexSide) < tapReleaseDistance
-
-            // (v12.9.2: the old cos(pitch) conditioning was a world-frame
-            // artifact; forearm-relative angles are well-conditioned in any
-            // resting pose.)
-            if !sideContact && !state.palmUp && !settling && frameValid {
-                stick = SIMD2<Float>(
-                    axisValue(deltaYaw),          // flick right = camera right
-                    -axisValue(deltaPitch)        // flick up = stick up (PS -Y)
-                )
-                stickEngaged = simd_length(stick) > 0.01
-                if stickEngaged {
-                    snapshot.stickOrigin = localPos(.thumbTip)
-                    snapshot.stickCurrent = localPos(.thumbTip)
-                }
-            }
-
-            // Pitch reference adapts ONLY inside the deadzone (roll has no
-            // reference at all — gravity is absolute). v12.9.1: the v12.9
-            // "mid-range bleed" and the saturation escape are GONE — the
-            // adversarial review proved both destroy legitimate gameplay
-            // (every sustained pan/walk decayed mid-hold and rubber-banded
-            // in reverse on release). The manual escape for a rare bad pitch
-            // capture is lifting the hand or flipping the palm and resting
-            // again (fresh 0.8s settle).
-            if abs(deltaYaw) < wristDeadzone && abs(deltaPitch) < wristDeadzone {
-                refYaw += deltaYaw * wristRefAdaptRate
-                refPitch += deltaPitch * wristRefAdaptRate
-            }
-
-            state.wristRefYaw = refYaw
-            state.wristRefPitch = refPitch
-        } else {
+            state.stickSmoothed = .zero
+            DebugLog.every(stickLogCounter, interval: 60, "HoloPad",
+                           "🎯 \(isRight ? "R" : "L") seg=\(state.segmentButton) d=(\(String(format: "%.3f", segDist[0])),\(String(format: "%.3f", segDist[1])),\(String(format: "%.3f", segDist[2])),\(String(format: "%.3f", segDist[3])))")
+        }
+        if isRight { debug.rSeg = state.segmentButton } else { debug.lSeg = state.segmentButton }
+        if inputProfile == .thumbTaps {
             // Thumb-taps profile keeps the original pinch-drag stick.
             let pinchDistance = simd_length(thumbTip - indexTip)
             let pinchPoint = (thumbTip + indexTip) * 0.5
@@ -664,38 +637,15 @@ final class HandGestureControllerService: ObservableObject {
 
                 if pressed { state.paddlePressed.insert(point) } else { state.paddlePressed.remove(point) }
 
-                if point == .indexTip {
-                    // Analog trigger: press depth beyond the button threshold.
-                    if pressed {
-                        trigger = max(0, min(1, (delta - paddleEnterDelta) /
-                                                (triggerFullDelta - paddleEnterDelta)))
-                    }
-                    // Lift off the surface = bumper (the keypad's up-lever).
-                    if suppressed || !liftsEnabled {
-                        state.indexLifted = false
-                    } else if state.indexLifted {
-                        state.indexLifted = delta < liftExitDelta
-                    } else {
-                        state.indexLifted = delta < liftEnterDelta
-                    }
-                }
-                if point == .middleTip {
-                    // v12.7: middle-finger lift = △ / D-Right (relocated from
-                    // the thumb, which is now the stick).
-                    if suppressed || !liftsEnabled {
-                        state.middleLifted = false
-                    } else if state.middleLifted {
-                        state.middleLifted = delta < liftExitDelta
-                    } else {
-                        state.middleLifted = delta < liftEnterDelta
-                    }
-                }
+                // v13.6: triggers SUPPRESSED this batch — the index finger is
+                // now the thumb-fretboard button board (see the stick section),
+                // not an analog trigger. L2/R2 are redefined in a later "parte".
+                // The paddle detection above is left intact (unused in Cyborg
+                // for now) to preserve the settle/baseline machinery.
 
-                // Adapt the baseline ONLY while idle — an active press or
-                // lift must never be absorbed into "rest".
-                let lifting = (point == .indexTip && state.indexLifted) ||
-                              (point == .middleTip && state.middleLifted)
-                if !pressed && !lifting && !suppressed {
+                // Adapt the baseline ONLY while idle — an active press must
+                // never be absorbed into "rest".
+                if !pressed && !suppressed {
                     rest += (curl - rest) * restAdaptRate
                 }
                 state.fingerRest[point] = rest
@@ -771,7 +721,9 @@ final class HandGestureControllerService: ObservableObject {
         // finger joining the pinch there means L3/R3, not ✕/D-Up.
         updateTap(.middleTip, target: middleTip,
                   gated: fingertipTapsEnabled && !stickEngaged && simd_length(middleTip - wrist) > fingerExtendedGate)
-        if stickEngaged {
+        if inputProfile == .thumbTaps, stickEngaged {
+            // Taps profile only: middle joining the pinch means L3/R3, not a
+            // face tap. In Cyborg the middle press IS R2, so keep its orb.
             state.tapActive[.middleTip] = false
             snapshot.activePoints.remove(.middleTip)
         }
@@ -795,7 +747,7 @@ final class HandGestureControllerService: ObservableObject {
             state.tapActive[.indexSide] = false
             snapshot.activePoints.remove(.indexSide)
         }
-        if stickEngaged { snapshot.activePoints.insert(.indexTip) }
+        if inputProfile == .thumbTaps, stickEngaged { snapshot.activePoints.insert(.indexTip) }
 
         // --- Commit per-hand outputs -------------------------------------
         if isRight {
@@ -823,14 +775,15 @@ final class HandGestureControllerService: ObservableObject {
             if rightHand.tapActive[.pinkyTip] == true { mask |= PSButtonMask.ps }
             if rightHand.tapActive[.indexSide] == true { mask |= PSButtonMask.touchpad }
         } else if cyborg {
-            // Right hand (v12.7): paddle presses = face buttons, middle lift
-            // = △, index lift = R1, thumb tap on index side = R3.
-            if rightHand.paddlePressed.contains(.middleTip) { mask |= PSButtonMask.cross }
-            if rightHand.paddlePressed.contains(.ringTip) { mask |= PSButtonMask.circle }
-            if rightHand.paddlePressed.contains(.pinkyTip) { mask |= PSButtonMask.square }
-            if rightHand.middleLifted { mask |= PSButtonMask.triangle }
-            if rightHand.tapActive[.indexSide] == true { mask |= PSButtonMask.r3 }
-            if rightHand.indexLifted { mask |= PSButtonMask.r1 }
+            // v13.6 thumb-fretboard (user images): the four RIGHT-index
+            // segments (thumb-selected) = the face buttons, tip→base.
+            switch rightHand.segmentButton {
+            case 0: mask |= PSButtonMask.square      // tip
+            case 1: mask |= PSButtonMask.cross       // intermediateTip
+            case 2: mask |= PSButtonMask.circle      // intermediateBase
+            case 3: mask |= PSButtonMask.triangle    // knuckle
+            default: break
+            }
         } else {
             // Right hand → face buttons
             if rightHand.tapActive[.middleTip] == true { mask |= PSButtonMask.cross }
@@ -844,14 +797,15 @@ final class HandGestureControllerService: ObservableObject {
             if leftHand.tapActive[.pinkyTip] == true { mask |= PSButtonMask.ps }
             if leftHand.tapActive[.indexSide] == true { mask |= PSButtonMask.touchpad }
         } else if cyborg {
-            // Left hand (v12.7): paddle presses = D-pad, middle lift =
-            // D-Right, index lift = L1, thumb tap on index side = L3.
-            if leftHand.paddlePressed.contains(.middleTip) { mask |= PSButtonMask.dpadUp }
-            if leftHand.paddlePressed.contains(.ringTip) { mask |= PSButtonMask.dpadDown }
-            if leftHand.paddlePressed.contains(.pinkyTip) { mask |= PSButtonMask.dpadLeft }
-            if leftHand.middleLifted { mask |= PSButtonMask.dpadRight }
-            if leftHand.tapActive[.indexSide] == true { mask |= PSButtonMask.l3 }
-            if leftHand.indexLifted { mask |= PSButtonMask.l1 }
+            // v13.6 thumb-fretboard: the four LEFT-index segments = the D-pad
+            // (positional mirror of the face diamond — CONFIRM order on device).
+            switch leftHand.segmentButton {
+            case 0: mask |= PSButtonMask.dpadLeft    // tip   (mirrors □)
+            case 1: mask |= PSButtonMask.dpadDown    // intermediateTip (mirrors ✕)
+            case 2: mask |= PSButtonMask.dpadRight   // intermediateBase (mirrors ○)
+            case 3: mask |= PSButtonMask.dpadUp      // knuckle (mirrors △)
+            default: break
+            }
         } else {
             // Left hand → D-pad
             if leftHand.tapActive[.middleTip] == true { mask |= PSButtonMask.dpadUp }
@@ -875,6 +829,12 @@ final class HandGestureControllerService: ObservableObject {
         if simd_length(rightStick) > 0.05 || simd_length(leftStick) > 0.05 {
             DebugLog.every(stickLogCounter, interval: 90, "HoloPad",
                            "🕹 L=(\(String(format: "%+.2f", leftStick.x)),\(String(format: "%+.2f", leftStick.y))) R=(\(String(format: "%+.2f", rightStick.x)),\(String(format: "%+.2f", rightStick.y)))")
+        }
+        // v13.3: trigger telemetry (the 🎛 mask line stays silent in the core
+        // pass since no digital buttons are mapped yet).
+        if leftTrigger > 0.05 || rightTrigger > 0.05 {
+            DebugLog.every(stickLogCounter, interval: 60, "HoloPad",
+                           "🎚 L2=\(String(format: "%.2f", leftTrigger)) R2=\(String(format: "%.2f", rightTrigger))")
         }
 
         let nowTracking = leftHand.tracked && rightHand.tracked

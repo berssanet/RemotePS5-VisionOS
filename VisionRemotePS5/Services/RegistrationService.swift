@@ -15,17 +15,12 @@ final class RegistrationService: ObservableObject {
     @Published private(set) var isRegistering: Bool = false
     @Published private(set) var registrationError: String?
     @Published private(set) var isRegistered: Bool = false
-    @Published private(set) var registeredHost: RegisteredHostInfo?
     
     // MARK: - Private Properties
     private var connection: NWConnection?
     
     // Registration uses same port as session (9295)
     private let registrationPort: UInt16 = 9295
-    
-    // Device identification (from Chiaki)
-    private let clientType = "dabfa2ec873de5839bee8d3f4c0239c4282c07c25c6077a2931afcf0adc0d34f"
-    private let deviceName = "VisionRemote"
     
     // PS5 registration endpoint
     private let registrationPath = "/sie/ps5/rp/sess/rgst"
@@ -49,7 +44,7 @@ final class RegistrationService: ObservableObject {
             return false
         }
         
-        guard pin.count == 8, pin.allSatisfy({ $0.isNumber }) else {
+        guard pin.utf8.count == 8, pin.utf8.allSatisfy({ (48...57).contains($0) }) else {
             registrationError = "PIN must be 8 digits"
             return false
         }
@@ -58,7 +53,6 @@ final class RegistrationService: ObservableObject {
         registrationError = nil
         
         DebugLog.print("[Registration] Starting registration with \(console.name) at \(console.ipAddress):\(registrationPort)")
-        DebugLog.print("[Registration] PIN: \(pin.prefix(4))****")
         
         do {
             // Step 1: UDP Search Handshake (CRITICAL - chiaki-ng regist.c line 322)
@@ -89,19 +83,17 @@ final class RegistrationService: ObservableObject {
             registeredConsole.registKey = hostInfo.registKey
             registeredConsole.serverMAC = hostInfo.serverMAC
             registeredConsole.nickname = hostInfo.nickname
+            // StreamingViewModel sends this 8-byte ID in the session connect info.
+            registeredConsole.psnAccountId = accountId.flatMap { Data(base64Encoded: $0) }
             registeredConsole.isPaired = true
             registeredConsole.lastConnected = Date()
             
             // Step 5: Save console with ALL data using ConsoleStorageService
             await ConsoleStorageService.shared.saveRegisteredConsole(registeredConsole)
             
-            // Step 6: Save registered host info for streaming
-            self.registeredHost = hostInfo
-            
             isRegistering = false
             isRegistered = true
             DebugLog.print("[Registration] Successfully registered with \(console.name)")
-            DebugLog.print("[Registration] RP-Key: \(hostInfo.rpKey.map { String(format: "%02x", $0) }.joined())")
             DebugLog.print("[Registration] Console saved to persistent storage")
             return true
             
@@ -121,24 +113,6 @@ final class RegistrationService: ObservableObject {
     /// Check if a console is registered
     func isConsoleRegistered(_ console: Console) async -> Bool {
         return await ConsoleStorageService.shared.isConsoleRegistered(ip: console.ipAddress)
-    }
-    
-    /// Get stored RP-Key for a console
-    func getRPKey(for console: Console) -> Data? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: "com.visionremote.ps5.rpkey",
-            kSecAttrAccount as String: console.ipAddress,
-            kSecReturnData as String: true
-        ]
-        
-        var result: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        
-        if status == errSecSuccess, let data = result as? Data {
-            return data
-        }
-        return nil
     }
     
     /// Clear stored RP-Key for a console
@@ -316,8 +290,6 @@ final class RegistrationService: ObservableObject {
             throw RegistrationError.invalidPin
         }
         
-        DebugLog.print("[Registration] Ambassador: \(ambassador.map { String(format: "%02x", $0) }.joined())")
-        DebugLog.print("[Registration] PIN: \(pin)")
         
         // Use ChiakiBridgeService NATIVE wrapper to format the payload
         // This directly calls chiaki_regist_request_payload_format for bit-perfect parity
@@ -346,12 +318,6 @@ final class RegistrationService: ObservableObject {
         DebugLog.print("[Registration] Endpoint: \(registrationPath)")
         DebugLog.print("[Registration] Payload size: \(payloadSize)")
         
-        // Debug: Hex dump of key offsets in payload
-        let payloadBytes = [UInt8](payload)
-        DebugLog.print("[Registration] Payload[0xc7-0xce] (aeropause 8-16): \(payloadBytes[0xc7..<0xcf].map { String(format: "%02x", $0) }.joined())")
-        DebugLog.print("[Registration] Payload[0x191-0x198] (aeropause 0-8): \(payloadBytes[0x191..<0x199].map { String(format: "%02x", $0) }.joined())")
-        DebugLog.print("[Registration] Payload[0x1e0-0x1f0] (encrypted inner, first 16): \(payloadBytes[0x1e0..<0x1f0].map { String(format: "%02x", $0) }.joined())")
-        
         // Combine header and payload
         guard var requestData = request.data(using: .utf8) else {
             throw RegistrationError.protocolError("Failed to encode request")
@@ -371,13 +337,7 @@ final class RegistrationService: ObservableObject {
         // Receive response
         let responseData = try await receiveData(connection: connection, timeout: 10.0)
         
-        // Debug: Log raw response bytes first
-        DebugLog.print("[Registration] Raw response: \(responseData.count) bytes")
-        let responseBytes = [UInt8](responseData)
-        if responseData.count > 0 {
-            let previewLen = min(100, responseData.count)
-            DebugLog.print("[Registration] Response first \(previewLen) bytes HEX: \(responseBytes.prefix(previewLen).map { String(format: "%02x", $0) }.joined())")
-        }
+        DebugLog.print("[Registration] Response received: \(responseData.count) bytes")
         
         // Try ASCII decoding first (covers both UTF-8 and ASCII responses)
         guard let responseStr = String(data: responseData, encoding: .ascii) else {
@@ -385,7 +345,6 @@ final class RegistrationService: ObservableObject {
             if let headerEnd = responseData.firstRange(of: Data("\r\n\r\n".utf8)) {
                 let headerData = responseData[responseData.startIndex..<headerEnd.lowerBound]
                 if let headerStr = String(data: headerData, encoding: .ascii) {
-                    DebugLog.print("[Registration] Parsed header from binary response:\n\(headerStr)")
                     // Use COMPUTED ambassador from crypt, NOT the original random
                     return try parseRegistrationResponse(headerStr, fullData: responseData, brightKey: result.brightKey, ambassadorKey: result.ambassadorKey)
                 }
@@ -393,7 +352,6 @@ final class RegistrationService: ObservableObject {
             throw RegistrationError.protocolError("Invalid response encoding")
         }
         
-        DebugLog.print("[Registration] Response:\n\(responseStr)")
         
         // Parse response with brightKey and COMPUTED ambassador for decryption
         return try parseRegistrationResponse(responseStr, fullData: responseData, brightKey: result.brightKey, ambassadorKey: result.ambassadorKey)
@@ -405,6 +363,7 @@ final class RegistrationService: ObservableObject {
         guard let statusLine = lines.first else {
             throw RegistrationError.protocolError("Empty response")
         }
+        DebugLog.print("[Registration] Response status: \(statusLine)")
         
         // Check status
         if statusLine.contains("200") || statusLine.contains("OK") {
@@ -423,8 +382,6 @@ final class RegistrationService: ObservableObject {
                             encryptedData: Data(body)
                         )
                         
-                        DebugLog.print("[Registration] ✅ Decrypted RP-Key: \(hostInfo.rpKey.map { String(format: "%02x", $0) }.joined())")
-                        DebugLog.print("[Registration] ✅ RegistKey: \(hostInfo.registKey)")
                         DebugLog.print("[Registration] ✅ Nickname: \(hostInfo.nickname)")
                         DebugLog.print("[Registration] ✅ MAC: \(hostInfo.serverMAC.map { String(format: "%02x", $0) }.joined())")
                         
@@ -444,7 +401,6 @@ final class RegistrationService: ObservableObject {
                     let keyHex = line.components(separatedBy: ":").last?.trimmingCharacters(in: .whitespaces) ?? ""
                     rpKeyData = Data(hexString: keyHex)
                     registKey = keyHex
-                    DebugLog.print("[Registration] Found RP-Key in response: \(keyHex)")
                 }
             }
             
@@ -534,33 +490,6 @@ final class RegistrationService: ObservableObject {
             }
         }
     }
-    
-    private func storeRPKey(_ rpKey: Data, for console: Console) throws {
-        // Delete existing key if present
-        let deleteQuery: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: "com.visionremote.ps5.rpkey",
-            kSecAttrAccount as String: console.ipAddress
-        ]
-        SecItemDelete(deleteQuery as CFDictionary)
-        
-        // Store new key
-        let addQuery: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: "com.visionremote.ps5.rpkey",
-            kSecAttrAccount as String: console.ipAddress,
-            kSecValueData as String: rpKey,
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked
-        ]
-        
-        let status = SecItemAdd(addQuery as CFDictionary, nil)
-        if status != errSecSuccess {
-            DebugLog.print("[Registration] Failed to store RP-Key: \(status)")
-            throw RegistrationError.keychainError
-        }
-        
-        DebugLog.print("[Registration] RP-Key stored successfully")
-    }
 }
 
 // MARK: - Registration Errors
@@ -570,7 +499,6 @@ enum RegistrationError: LocalizedError {
     case invalidPin
     case rejected(reason: String)
     case timeout
-    case keychainError
     case protocolError(String)
     
     var errorDescription: String? {
@@ -583,8 +511,6 @@ enum RegistrationError: LocalizedError {
             return "Registration rejected: \(reason)"
         case .timeout:
             return "Registration timed out"
-        case .keychainError:
-            return "Failed to store credentials"
         case .protocolError(let message):
             return "Protocol error: \(message)"
         }

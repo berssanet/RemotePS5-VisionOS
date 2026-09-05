@@ -52,7 +52,7 @@ final class WakeOnLanService {
         // Convert registKey to user_credential (interpret bytes as hex number)
         let userCredential = registKeyToCredential(registKey)
         
-        DebugLog.print("[WakeOnLan] Sending WAKEUP to \(host) | isPS5=\(isPS5) | credential=\(String(format: "%llx", userCredential))")
+        DebugLog.print("[WakeOnLan] Sending WAKEUP to \(host) | isPS5=\(isPS5)")
         
         // Build WAKEUP packet (HTTP-like format as per chiaki_discovery_packet_fmt)
         let protocolVersion = isPS5 ? ps5ProtocolVersion : ps4ProtocolVersion
@@ -77,56 +77,6 @@ final class WakeOnLanService {
         }
         
         return success
-    }
-    
-    /// Wake a console using its stored Console object
-    @discardableResult
-    func wakeConsole(_ console: Console) async -> Bool {
-        // Check if we have registration key (required for PS5 wakeup)
-        guard let registKeyString = console.registKey, !registKeyString.isEmpty else {
-            DebugLog.print("[WakeOnLan] ❌ Console \(console.name) has no registration key (required for wakeup)")
-            // Fallback: try traditional WoL if we have MAC address (for PS4 compatibility)
-            return await wakeConsoleTraditional(console)
-        }
-        
-        // chiaki-ng expects the registKey as a hex STRING, not as bytes!
-        // Example: registKey = "12345678" -> credential = strtoull("12345678", NULL, 16) = 0x12345678
-        guard let registKeyData = registKeyString.data(using: .utf8) else {
-            DebugLog.print("[WakeOnLan] ❌ Invalid registration key encoding")
-            return false
-        }
-        
-        let isPS5 = console.type == .ps5 || console.type == .ps5Digital
-        return await wakeConsole(host: console.ipAddress, registKey: registKeyData, isPS5: isPS5)
-    }
-    
-    // MARK: - Traditional WoL (PS4 Fallback)
-    
-    /// Send traditional Wake-on-LAN Magic Packet (for PS4 or fallback)
-    func wakeConsoleTraditional(_ console: Console) async -> Bool {
-        guard let mac = console.serverMAC, mac.count == 6 else {
-            if !console.macAddress.isEmpty {
-                let parsed = parseMACString(console.macAddress)
-                if parsed.count == 6 {
-                    return await sendMagicPacket(macAddress: parsed)
-                }
-            }
-            DebugLog.print("[WakeOnLan] ❌ No valid MAC address for traditional WoL")
-            return false
-        }
-        return await sendMagicPacket(macAddress: mac)
-    }
-    
-    /// Send traditional Magic Packet (6x 0xFF + 16x MAC)
-    private func sendMagicPacket(macAddress: [UInt8], broadcast: String = "255.255.255.255") async -> Bool {
-        var packet = Data(repeating: 0xFF, count: 6)
-        for _ in 0..<16 {
-            packet.append(contentsOf: macAddress)
-        }
-        
-        let success1 = await sendUDPPacket(packet, to: broadcast, port: 9)
-        let success2 = await sendUDPPacket(packet, to: broadcast, port: ps4DiscoveryPort)
-        return success1 || success2
     }
     
     // MARK: - Private Methods
@@ -212,50 +162,5 @@ final class WakeOnLanService {
 
             connection.start(queue: DispatchQueue.global(qos: .utility))
         }
-    }
-    
-    /// Parse MAC address string like "00:11:22:33:44:55" to bytes
-    private func parseMACString(_ mac: String) -> [UInt8] {
-        let cleaned = mac.replacingOccurrences(of: ":", with: "")
-                         .replacingOccurrences(of: "-", with: "")
-        return parseHexString(cleaned)
-    }
-    
-    /// Parse hex string to bytes
-    private func parseHexString(_ hex: String) -> [UInt8] {
-        var bytes: [UInt8] = []
-        var index = hex.startIndex
-        
-        while index < hex.endIndex {
-            guard let endIndex = hex.index(index, offsetBy: 2, limitedBy: hex.endIndex) else { break }
-            if let byte = UInt8(hex[index..<endIndex], radix: 16) {
-                bytes.append(byte)
-            }
-            index = endIndex
-        }
-        
-        return bytes
-    }
-}
-
-// MARK: - Console Extension
-
-extension Console {
-    /// Check if console can be woken up
-    /// For PS5: requires registKey. For PS4: MAC address or registKey.
-    var canWakeUp: Bool {
-        // PS5 requires registration key
-        if type == .ps5 || type == .ps5Digital {
-            return registKey != nil && !registKey!.isEmpty
-        }
-        // PS4 can use either registKey or MAC
-        return (registKey != nil && !registKey!.isEmpty) ||
-               (serverMAC?.count == 6) ||
-               !macAddress.isEmpty
-    }
-    
-    /// Wake this console using appropriate method (PS5 protocol or traditional WoL)
-    func wake() async -> Bool {
-        await WakeOnLanService.shared.wakeConsole(self)
     }
 }

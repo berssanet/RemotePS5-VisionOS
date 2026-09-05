@@ -59,7 +59,7 @@ You MUST NEVER edit:
 - **NEVER** add new third-party dependencies (no SPM additions) without explicit user approval. The project deliberately minimizes dependencies (see `GEMINI.md` Minimalism rule).
 - **NEVER** call any function defined in `ChiakiCore.h` directly from a View or Model. Go through `ChiakiBridge.swift` or `ChiakiFullSession.swift` (delegate via `c-bridge-guardian` for those).
 - **NEVER** write `print(...)` for new code in production paths. Use `Logger` (`VisionRemotePS5/Services/Logger.swift`) or `DebugLog`. Existing `print(...)` calls may stay until Phase 4.1 cleanup.
-- **NEVER** edit `Info.plist` capabilities (`NSMicrophoneUsageDescription`, `NSLocalNetworkUsageDescription`, `NSHandTrackingUsageDescription`, `_psremoteplay._tcp` Bonjour service) without flagging it explicitly to the user. These map to ATS exceptions and entitlements.
+- **NEVER** edit `Info.plist` capabilities (`NSMicrophoneUsageDescription`, `NSLocalNetworkUsageDescription`, `NSHandTrackingUsageDescription`) without flagging it explicitly to the user. These map to ATS exceptions and entitlements.
 
 ## Required Patterns
 

@@ -47,7 +47,6 @@ actor DepthEstimationService {
     // Performance tracking (monotonic clock)
     private var frameCount: UInt64 = 0
     private var totalInferenceTime: Double = 0
-    private var lastInferenceTime: Double = 0
 
     // MARK: - Model loading
 
@@ -72,12 +71,6 @@ actor DepthEstimationService {
         } catch {
             DebugLog.error("DepthEstimation", "Model load failed: \(error)")
         }
-    }
-
-    /// True when the model is loaded and inference is possible.
-    var isReady: Bool {
-        loadModelIfNeeded()
-        return model != nil
     }
 
     // MARK: - Inference
@@ -119,7 +112,6 @@ actor DepthEstimationService {
         }
 
         let elapsed = (CACurrentMediaTime() - startTime) * 1000
-        lastInferenceTime = elapsed
         totalInferenceTime += elapsed
         frameCount += 1
         if frameCount % 120 == 0 {
@@ -156,9 +148,6 @@ actor DepthEstimationService {
         smoothedMin = nil
         smoothedMax = nil
     }
-
-    /// Last inference duration in milliseconds (diagnostics).
-    var lastInferenceMs: Double { lastInferenceTime }
 
     // MARK: - Depth range (normalization support)
 

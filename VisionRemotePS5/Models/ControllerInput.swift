@@ -18,24 +18,4 @@ struct ControllerInput {
     var leftTrigger: Float = 0
     var rightTrigger: Float = 0
     var buttons: UInt32 = 0
-
-    // Button bit masks (PlayStation layout)
-    static let buttonCross: UInt32    = 1 << 0
-    static let buttonCircle: UInt32   = 1 << 1
-    static let buttonSquare: UInt32   = 1 << 2
-    static let buttonTriangle: UInt32 = 1 << 3
-    static let buttonL1: UInt32       = 1 << 4
-    static let buttonR1: UInt32       = 1 << 5
-    static let buttonL2: UInt32       = 1 << 6
-    static let buttonR2: UInt32       = 1 << 7
-    static let buttonShare: UInt32    = 1 << 8
-    static let buttonOptions: UInt32  = 1 << 9
-    static let buttonL3: UInt32       = 1 << 10
-    static let buttonR3: UInt32       = 1 << 11
-    static let buttonPS: UInt32       = 1 << 12
-    static let buttonTouchpad: UInt32 = 1 << 13
-    static let dpadUp: UInt32         = 1 << 14
-    static let dpadDown: UInt32       = 1 << 15
-    static let dpadLeft: UInt32       = 1 << 16
-    static let dpadRight: UInt32      = 1 << 17
 }

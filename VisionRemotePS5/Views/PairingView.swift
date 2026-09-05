@@ -6,6 +6,10 @@ struct PairingView: View {
     @StateObject private var registrationService = RegistrationService()
     @State private var pinCode: String = ""
     @State private var ipAddress: String = ""
+    @State private var selectedConsole: Console?
+    @StateObject private var discovery = ConsoleDiscoveryService()
+    /// Base64 PSN Account ID. Prefilled from the value saved in Settings; saved back on pairing.
+    @State private var accountId: String = UserDefaults.standard.string(forKey: "psn_account_id") ?? ""
     @State private var errorMessage: String?
     @FocusState private var focusedField: Field?
     
@@ -14,13 +18,27 @@ struct PairingView: View {
         case pin
     }
     
-    @State private var showPSNConnection = false
+    /// PSN sign-in only resolves the Account ID here. The remote "Connect via PSN" (holepunch)
+    /// flow is not finished (PSNConnectionView TODO) and trips PSN's 403 retry-interval throttle,
+    /// so it is not offered from this screen.
+    @State private var showPSNLogin = false
+
+    init(navigationPath: Binding<NavigationPath>, console: Console? = nil) {
+        _navigationPath = navigationPath
+        _ipAddress = State(initialValue: console?.ipAddress ?? "")
+        _selectedConsole = State(initialValue: console)
+    }
     
     var body: some View {
         ScrollView {
             VStack(spacing: 20) {
                 // Instructions Section
                 VStack(alignment: .leading, spacing: 12) {
+                    Text("Local pairing — once for this app")
+                        .font(.title3.bold())
+                    Text("A PSN login does not transfer the official app's registration. The PIN below creates this app's own keys for direct local connections.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
                     Text("To pair your console:")
                         .font(.headline)
                     
@@ -35,35 +53,25 @@ struct PairingView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .glassBackgroundEffect()
                 
-                // PSN Connection Alternative
-                VStack(spacing: 12) {
-                    Text("— OR —")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                    
-                    Button {
-                        showPSNConnection = true
-                    } label: {
-                        HStack {
-                            Image(systemName: "wifi")
-                            Text("Connect via PSN")
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                    }
-                    .buttonStyle(.bordered)
-                    
-                    Text("Connect without PIN using your PSN account")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .padding()
-                .glassBackgroundEffect()
-                
+                // Consoles found on the local network (like the official app).
+                discoverySection
+
                 // Console Address Section
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Console Address")
-                        .font(.headline)
+                    HStack {
+                        Text("Console Address")
+                            .font(.headline)
+                        Spacer()
+                        Button {
+                            // The typed IP is probed directly too (works without broadcast).
+                            discovery.startDiscovery(unicastTargets: [ipAddress.trimmingCharacters(in: .whitespaces)])
+                        } label: {
+                            Label("Search", systemImage: "arrow.clockwise")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(discovery.isSearching)
+                    }
                     
                     TextField("IP Address (e.g., 192.168.1.100)", text: $ipAddress)
                         .keyboardType(.default)
@@ -74,6 +82,39 @@ struct PairingView: View {
                         .padding()
                         .background(Color.white.opacity(0.1))
                         .cornerRadius(10)
+                }
+                .padding()
+                .glassBackgroundEffect()
+                
+                // PSN Account ID Section (the PS5 requires it in the registration payload)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("PSN Account ID")
+                        .font(.headline)
+                    
+                    TextField("Base64 Account ID", text: $accountId)
+                        .keyboardType(.default)
+                        .textContentType(.none)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .padding()
+                        .background(Color.white.opacity(0.1))
+                        .cornerRadius(10)
+                    
+                    Button {
+                        showPSNLogin = true
+                    } label: {
+                        HStack {
+                            Image(systemName: "person.fill")
+                            Text(appState.psnAuthService.isAuthenticated ? "Refresh from PSN" : "Sign in to PSN")
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                    }
+                    .buttonStyle(.bordered)
+                    
+                    Text("Required by the PS5. Sign in to fill it automatically, or paste it from flipscreen.games/psn.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 .padding()
                 .glassBackgroundEffect()
@@ -152,11 +193,93 @@ struct PairingView: View {
                 }
             }
         }
-        .sheet(isPresented: $showPSNConnection) {
-            PSNConnectionView()
+        .sheet(isPresented: $showPSNLogin) {
+            PSNLoginSheet(authService: appState.psnAuthService)
+        }
+        .onAppear {
+            fillAccountIdFromProfile()
+            if discovery.discoveredConsoles.isEmpty {
+                discovery.startDiscovery(unicastTargets: ipAddress.isEmpty ? [] : [ipAddress])
+            }
+        }
+        .onDisappear { discovery.stopDiscovery() }
+        .onChange(of: showPSNLogin) { _, presented in
+            // exchangeCodeForToken awaits the account-info fetch before the sheet dismisses.
+            if !presented {
+                fillAccountIdFromProfile()
+            }
         }
     }
     
+    private func fillAccountIdFromProfile() {
+        guard let resolved = appState.psnAuthService.userProfile?.accountId,
+              !resolved.isEmpty else { return }
+        accountId = resolved
+    }
+
+    /// v14.0: list PS5/PS4 consoles discovered on the LAN via DDP broadcast. Tapping one
+    /// fills the IP so the user never types it — matching the official Remote Play app.
+    @ViewBuilder
+    private var discoverySection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "wifi")
+                Text("Consoles on this network")
+                    .font(.headline)
+                Spacer()
+                if discovery.isSearching {
+                    ProgressView()
+                }
+            }
+
+            if discovery.discoveredConsoles.isEmpty {
+                Text(discovery.isSearching
+                     ? "Searching…"
+                     : (discovery.statusMessage.isEmpty
+                        ? "None found yet. Make sure the PS5 is on (or in rest mode) with Remote Play enabled, then tap Search."
+                        : discovery.statusMessage))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(discovery.discoveredConsoles) { console in
+                    Button {
+                        selectDiscovered(console)
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "gamecontroller.fill")
+                                .foregroundStyle(.blue)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(console.name).font(.subheadline).bold()
+                                Text("\(console.ipAddress) • \(console.type.rawValue)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if ipAddress == console.ipAddress {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundStyle(.green)
+                            }
+                        }
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.white.opacity(ipAddress == console.ipAddress ? 0.12 : 0.05))
+                        .cornerRadius(10)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassBackgroundEffect()
+    }
+
+    private func selectDiscovered(_ console: Console) {
+        selectedConsole = console
+        ipAddress = console.ipAddress
+        errorMessage = nil
+    }
+
     private func goHome() {
         navigationPath = NavigationPath()
     }
@@ -167,49 +290,50 @@ struct PairingView: View {
     }
     
     private var isValidInput: Bool {
-        pinCode.count == 8 && isValidIPAddress(ipAddress)
+        pinCode.utf8.count == 8 && pinCode.utf8.allSatisfy { (48...57).contains($0) } && isValidIPAddress(ipAddress)
     }
     
     private func isValidIPAddress(_ ip: String) -> Bool {
-        let parts = ip.split(separator: ".")
-        guard parts.count == 4 else { return false }
-        return parts.allSatisfy { part in
-            guard let num = Int(part) else { return false }
-            return num >= 0 && num <= 255
-        }
+        LocalConsoleConnectionService.normalizedAddress(ip) != nil
     }
     
     private func pairConsole() {
         errorMessage = nil
         
-        // Create console object
-        let console = Console(
+        guard let host = LocalConsoleConnectionService.normalizedAddress(ipAddress) else {
+            errorMessage = LocalConsoleConnectionError.invalidAddress.localizedDescription
+            return
+        }
+        let console = selectedConsole.flatMap { $0.ipAddress == host ? $0 : nil } ?? Console(
             name: "PlayStation 5",
-            ipAddress: ipAddress,
+            ipAddress: host,
             type: .ps5,
             status: .online,
             isPaired: false
         )
         
-        // Clear any old RP-Key to force fresh registration
+        // Account ID precedence: the field on this screen, then the PSN sign-in profile.
+        let typedAccountId = accountId.trimmingCharacters(in: .whitespacesAndNewlines)
+        var resolvedAccountId: String? = typedAccountId.isEmpty ? nil : typedAccountId
+        if resolvedAccountId == nil,
+           let profileAccountId = appState.psnAuthService.userProfile?.accountId,
+           !profileAccountId.isEmpty {
+            resolvedAccountId = profileAccountId
+            DebugLog.print("[PairingView] Using PSN Account ID from the signed-in profile")
+        }
+        guard let candidate = resolvedAccountId, Data(base64Encoded: candidate)?.count == 8 else {
+            errorMessage = "Sign in to PSN or enter a Base64 Account ID containing exactly 8 bytes."
+            return
+        }
+        UserDefaults.standard.set(candidate, forKey: "psn_account_id")
         registrationService.clearRPKey(for: console)
         
-        // Get account ID from PSN auth service, or fallback to UserDefaults (set during login)
-        var accountId = appState.psnAuthService.userProfile?.accountId
-        
-        // Fallback: check UserDefaults (where we store it from NPSSO cookie)
-        if accountId == nil || accountId?.isEmpty == true {
-            accountId = UserDefaults.standard.string(forKey: "psn_account_id")
-            DebugLog.print("[PairingView] Using stored PSN Account ID from UserDefaults")
-        }
-        
-        DebugLog.print("[PairingView] Final PSN Account ID: \(accountId ?? "nil")")
-        
         Task {
-            let success = await registrationService.register(with: console, pin: pinCode, accountId: accountId)
+            let success = await registrationService.register(with: console, pin: pinCode, accountId: resolvedAccountId)
             
             await MainActor.run {
                 if success {
+                    UserDefaults.standard.set(console.ipAddress, forKey: "local_console_address")
                     // Update console to paired status
                     var pairedConsole = console
                     pairedConsole.isPaired = true

@@ -10,7 +10,6 @@ class PSNWebSocketService: NSObject, ObservableObject {
     static let shared = PSNWebSocketService()
     
     @Published var isConnected = false
-    @Published var error: String?
     
     private var connection: NWConnection?
     private var pushContextId: String = ""
@@ -35,7 +34,6 @@ class PSNWebSocketService: NSObject, ObservableObject {
     var onSessionCreated: ((String) -> Void)?
     var onMemberCreated: (() -> Void)?
     var onSessionMessage: (([String: Any]) -> Void)?
-    var onDisconnected: (() -> Void)?
     
     override init() {
         super.init()
@@ -325,7 +323,6 @@ class PSNWebSocketService: NSObject, ObservableObject {
                     DebugLog.print("[PSNWebSocket] Receive error: \(error)")
                     await MainActor.run {
                         self.isConnected = false
-                        self.onDisconnected?()
                     }
                     break
                 }
@@ -338,7 +335,6 @@ class PSNWebSocketService: NSObject, ObservableObject {
         // Read first 2 bytes for header
         let header = try await receiveBytes(connection: connection, count: 2)
         
-        let fin = (header[0] & 0x80) != 0
         let opcode = header[0] & 0x0F
         let masked = (header[1] & 0x80) != 0
         var payloadLength = Int(header[1] & 0x7F)
@@ -374,7 +370,7 @@ class PSNWebSocketService: NSObject, ObservableObject {
             }
         }
         
-        return WebSocketFrame(fin: fin, opcode: opcode, payload: payload)
+        return WebSocketFrame(opcode: opcode, payload: payload)
     }
     
     private func receiveBytes(connection: NWConnection, count: Int) async throws -> [UInt8] {
@@ -409,7 +405,6 @@ class PSNWebSocketService: NSObject, ObservableObject {
         case 0x8: // Close frame
             DebugLog.print("[PSNWebSocket] Received close frame")
             isConnected = false
-            onDisconnected?()
             
         case 0x9: // Ping frame
             DebugLog.print("[PSNWebSocket] Received ping, sending pong")
@@ -486,28 +481,11 @@ class PSNWebSocketService: NSObject, ObservableObject {
         }
         return nil
     }
-    
-    /// Send ping to keep connection alive
-    func sendPing() async {
-        guard let connection = connection else { return }
-        
-        // Build ping frame (0x89 = fin + ping opcode)
-        let frame: [UInt8] = [0x89, 0x00]
-        
-        connection.send(content: Data(frame), completion: .contentProcessed { error in
-            if let error = error {
-                DebugLog.print("[PSNWebSocket] Ping failed: \(error)")
-            } else {
-                DebugLog.print("[PSNWebSocket] Ping sent")
-            }
-        })
-    }
 }
 
 // MARK: - WebSocket Frame
 
 private struct WebSocketFrame {
-    let fin: Bool
     let opcode: UInt8
     let payload: [UInt8]
 }

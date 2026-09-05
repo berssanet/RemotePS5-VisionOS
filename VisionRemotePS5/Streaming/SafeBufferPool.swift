@@ -40,16 +40,6 @@ final class SafeBuffer {
         size = count
         return true
     }
-    
-    /// Get data as Swift Data (creates a copy for safety)
-    func asData() -> Data {
-        return Data(bytes: pointer, count: size)
-    }
-    
-    /// Get a non-copying view (only safe if buffer won't be reused during access)
-    func asDataView() -> Data {
-        return Data(bytesNoCopy: pointer, count: size, deallocator: .none)
-    }
 }
 
 /// Thread-safe pool of pre-allocated buffers for zero-copy video decoding

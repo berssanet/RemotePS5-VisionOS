@@ -12,6 +12,7 @@ import RealityKit
 struct StreamingVideoWindow: View {
     @EnvironmentObject var appState: AppState
     @ObservedObject private var upscalingPipeline = UpscalingPipeline.shared
+    @ObservedObject private var streamingService = StreamingService.shared
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
 
@@ -43,7 +44,7 @@ struct StreamingVideoWindow: View {
                 VStack(spacing: 20) {
                     ProgressView()
                         .scaleEffect(2)
-                    Text(appState.streamingViewModel.statusMessage)
+                    Text(connectionMessage)
                         .font(.headline)
                         .foregroundColor(.secondary)
                 }
@@ -60,12 +61,11 @@ struct StreamingVideoWindow: View {
             // v10.5.1: Only start streaming if not already connected
             // (e.g., when returning from VR mode, streaming is already active)
             if !appState.streamingViewModel.isConnected {
-                await appState.streamingViewModel.startStreaming(console: console)
+                await appState.streamingViewModel.startStreaming(console: console, auth: appState.psnAuthService)
             }
-
-            // v12.6: hand tracking needs an open immersive space — bring up
-            // the invisible mixed HoloPad space so gestures work in WINDOWED
-            // streaming too (full VR opens its own space instead).
+        }
+        .task(id: streamingService.isStreaming) {
+            guard !Task.isCancelled, streamingService.isStreaming else { return }
             if appState.controllerMode == .handGesture,
                !appState.isImmersiveActive, !appState.isHoloPadSpaceActive {
                 let result = await openImmersiveSpace(id: "HoloPadSpace")
@@ -88,6 +88,18 @@ struct StreamingVideoWindow: View {
                 }
             }
             // Note: Pipeline stays enabled for VR mode to continue processing frames
+        }
+    }
+
+    private var connectionMessage: String {
+        switch streamingService.state {
+        case .error(let reason):
+            return "Error: \(reason)"
+        case .connecting, .negotiating:
+            return streamingService.connectionStatusMessage.isEmpty
+                ? appState.streamingViewModel.statusMessage : streamingService.connectionStatusMessage
+        default:
+            return appState.streamingViewModel.statusMessage
         }
     }
 }
