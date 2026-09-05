@@ -2,19 +2,17 @@
 //  StreamingVideoWindow.swift
 //  VisionRemotePS5
 //
-//  v10.5: Separate window for video streaming display
-//  This window is hidden when VR mode is active
+//  The only window shown while connected: the PS5 video stream. Controller input
+//  comes from a Bluetooth gamepad paired with the Vision Pro (GameControllerManager,
+//  120 Hz polling into StreamingService). Closing the window ends the session.
 //
 
 import SwiftUI
-import RealityKit
 
 struct StreamingVideoWindow: View {
     @EnvironmentObject var appState: AppState
     @ObservedObject private var upscalingPipeline = UpscalingPipeline.shared
     @ObservedObject private var streamingService = StreamingService.shared
-    @Environment(\.openImmersiveSpace) private var openImmersiveSpace
-    @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
 
     let console: Console
     
@@ -58,36 +56,18 @@ struct StreamingVideoWindow: View {
             upscalingPipeline.initialize()
             upscalingPipeline.enable()
 
-            // v10.5.1: Only start streaming if not already connected
-            // (e.g., when returning from VR mode, streaming is already active)
             if !appState.streamingViewModel.isConnected {
                 await appState.streamingViewModel.startStreaming(console: console, auth: appState.psnAuthService)
             }
         }
-        .task(id: streamingService.isStreaming) {
-            guard !Task.isCancelled, streamingService.isStreaming else { return }
-            if appState.controllerMode == .handGesture,
-               !appState.isImmersiveActive, !appState.isHoloPadSpaceActive {
-                let result = await openImmersiveSpace(id: "HoloPadSpace")
-                if case .opened = result {
-                    appState.isHoloPadSpaceActive = true
-                    DebugLog.info("StreamingWindow", "🖐️ HoloPad space opened (windowed input)")
-                }
-            }
-        }
         .onDisappear {
-            // v10.5.1: Don't stop streaming or disable pipeline when entering VR mode
-            // Only stop when actually closing the window (not VR transition)
-            if !appState.isImmersiveActive {
-                appState.streamingViewModel.stopStreaming()
-                upscalingPipeline.disable()
-                // v12.6: tear down the companion HoloPad space with the window
-                if appState.isHoloPadSpaceActive {
-                    appState.isHoloPadSpaceActive = false
-                    Task { await dismissImmersiveSpace() }
-                }
-            }
-            // Note: Pipeline stays enabled for VR mode to continue processing frames
+            // Closing the window ends the session and brings the console list back.
+            appState.streamingViewModel.stopStreaming()
+            upscalingPipeline.disable()
+            appState.selectedConsole = nil
+            appState.isConnected = false
+            appState.connectionStatus = .disconnected
+            appState.isInStreamingSession = false
         }
     }
 

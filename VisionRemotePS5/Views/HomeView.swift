@@ -12,8 +12,6 @@ enum HomeRoute: Hashable {
 struct HomeView: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.openWindow) private var openWindow
-    @Environment(\.openImmersiveSpace) private var openImmersiveSpace
-    @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
 
     /// Owned by ContentView. PairingView resets it to NavigationPath() to come back here.
     @Binding var navigationPath: NavigationPath
@@ -46,9 +44,6 @@ struct HomeView: View {
                     startSession(console: console)
                 }
                 .disabled(appState.isInStreamingSession)
-
-                // v13.0: practice the controller before connecting to a PS5
-                testRangeCard
 
                 if isLoading {
                     loadingSection
@@ -124,41 +119,6 @@ struct HomeView: View {
         .padding(.vertical, 30)
     }
     
-    /// v13.0: entry point to the Controller Test Range immersive space.
-    /// Available with zero registered consoles — you can practice first.
-    private var testRangeCard: some View {
-        Button {
-            openTestRange()
-        } label: {
-            HStack(spacing: 16) {
-                Image(systemName: "figure.mixed.cardio")
-                    .font(.system(size: 34))
-                    .foregroundStyle(.purple)
-                    .frame(width: 60, height: 60)
-                    .background(Color.purple.opacity(0.12))
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Controller Test Range")
-                        .font(.headline)
-                    Text("Try, tune and calibrate the virtual controller with a test dummy — no PS5 needed.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                Spacer()
-
-                Image(systemName: "chevron.right")
-                    .foregroundStyle(.tertiary)
-            }
-            .padding(20)
-            .glassBackgroundEffect()
-        }
-        .buttonStyle(.plain)
-        .disabled(appState.isTrainingRangeActive)
-    }
-
     private var loadingSection: some View {
         VStack(spacing: 16) {
             ProgressView()
@@ -271,46 +231,8 @@ struct HomeView: View {
         connectingConsoleId = console.id
         appState.selectedConsole = console
         appState.isInStreamingSession = true
-
-        // v13.0: if the test range is open, FULLY close it before opening the
-        // streaming windows. StreamingVideoWindow opens the HoloPad companion
-        // space on appear, and visionOS allows only one immersive space at a
-        // time — an un-awaited dismissal would race that open and leave
-        // windowed hand tracking dead. Mirror MenuBarWindow.enterVRMode():
-        // await the dismissal, THEN open the windows.
-        if appState.isTrainingRangeActive {
-            Task {
-                await dismissImmersiveSpace()
-                appState.isTrainingRangeActive = false
-                openStreamingWindows(console: console)
-            }
-        } else {
-            openStreamingWindows(console: console)
-        }
-    }
-
-    private func openStreamingWindows(console: Console) {
+        // Only the stream window opens; closing it ends the session (StreamingVideoWindow).
         openWindow(id: "StreamingWindow", value: console)
-        openWindow(id: "MenuBarWindow")
-        openWindow(id: "ControllerWindow")
-    }
-
-    /// v13.0: open the Controller Test Range immersive space. Guarded so it
-    /// never stacks on another space (visionOS allows one at a time) or a
-    /// live streaming session.
-    private func openTestRange() {
-        guard !appState.isTrainingRangeActive,
-              !appState.isImmersiveActive,
-              !appState.isHoloPadSpaceActive,
-              !appState.isInStreamingSession else { return }
-        Task {
-            let result = await openImmersiveSpace(id: "TrainingRangeSpace")
-            if case .opened = result {
-                appState.isTrainingRangeActive = true
-            } else {
-                DebugLog.warning("TestRange", "Failed to open training space: \(result)")
-            }
-        }
     }
 }
 
