@@ -87,8 +87,8 @@ chiaki_session_generate_streaming_type_wrapper(char *out_streaming_type,
 // ===========================================
 
 // Callback types for Swift bridge (prefixed with Wrapper to avoid conflicts)
-typedef void (*ChiakiWrapperVideoCallback)(uint8_t *buf, size_t buf_size,
-                                           void *user);
+typedef bool (*ChiakiWrapperVideoCallback)(uint8_t *buf, size_t buf_size,
+                                           int32_t frames_lost, bool frame_recovered, void *user);
 typedef void (*ChiakiWrapperAudioCallback)(int16_t *buf, size_t samples_count,
                                            void *user);
 typedef void (*ChiakiWrapperEventCallback)(int event_type, const char *reason,

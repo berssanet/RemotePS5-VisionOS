@@ -25,7 +25,6 @@ final class EnhancedUpscaler {
     // MARK: - Metal Resources
     
     private let device: MTLDevice
-    private let commandQueue: MTLCommandQueue
     private var textureCache: CVMetalTextureCache?
     
     // MARK: - Compute Pipelines
@@ -113,17 +112,19 @@ final class EnhancedUpscaler {
     {
         if (gid.x >= output.get_width() || gid.y >= output.get_height()) return;
         
-        // Get 3x3 neighborhood
-        float4 a = input.read(uint2(gid.x - 1, gid.y - 1));
-        float4 b = input.read(uint2(gid.x,     gid.y - 1));
-        float4 c = input.read(uint2(gid.x + 1, gid.y - 1));
-        float4 d = input.read(uint2(gid.x - 1, gid.y));
-        float4 e = input.read(gid);  // Center
-        float4 f = input.read(uint2(gid.x + 1, gid.y));
-        float4 g = input.read(uint2(gid.x - 1, gid.y + 1));
-        float4 h = input.read(uint2(gid.x,     gid.y + 1));
-        float4 i = input.read(uint2(gid.x + 1, gid.y + 1));
-        
+        // Clamp border coordinates before converting to unsigned texture coordinates.
+        int2 p = int2(gid);
+        int2 limit = int2(input.get_width() - 1, input.get_height() - 1);
+        float4 a = input.read(uint2(clamp(p + int2(-1, -1), int2(0), limit)));
+        float4 b = input.read(uint2(clamp(p + int2( 0, -1), int2(0), limit)));
+        float4 c = input.read(uint2(clamp(p + int2( 1, -1), int2(0), limit)));
+        float4 d = input.read(uint2(clamp(p + int2(-1,  0), int2(0), limit)));
+        float4 e = input.read(gid);
+        float4 f = input.read(uint2(clamp(p + int2( 1,  0), int2(0), limit)));
+        float4 g = input.read(uint2(clamp(p + int2(-1,  1), int2(0), limit)));
+        float4 h = input.read(uint2(clamp(p + int2( 0,  1), int2(0), limit)));
+        float4 i = input.read(uint2(clamp(p + int2( 1,  1), int2(0), limit)));
+
         // Compute local contrast (simplified CAS)
         float4 minNeighbor = min(min(min(a, b), min(c, d)), min(min(f, g), min(h, i)));
         float4 maxNeighbor = max(max(max(a, b), max(c, d)), max(max(f, g), max(h, i)));
@@ -154,13 +155,9 @@ final class EnhancedUpscaler {
             return nil
         }
         
-        guard let commandQueue = device.makeCommandQueue() else {
-            DebugLog.print("[EnhancedUpscaler] ❌ Failed to create command queue")
-            return nil
-        }
+
         
         self.device = device
-        self.commandQueue = commandQueue
         
         // Create texture cache
         var cache: CVMetalTextureCache?
@@ -233,7 +230,7 @@ final class EnhancedUpscaler {
     
     // MARK: - Upscaling
     
-    func upscale(_ pixelBuffer: CVPixelBuffer) -> MTLTexture? {
+    func encode(_ pixelBuffer: CVPixelBuffer, commandBuffer: MTLCommandBuffer) -> MTLTexture? {
         guard let textureCache = textureCache,
               let lanczosUpscalePipeline = lanczosUpscalePipeline,
               let intermediateTexture = intermediateTexture,
@@ -262,9 +259,6 @@ final class EnhancedUpscaler {
             return nil
         }
         
-        guard let commandBuffer = commandQueue.makeCommandBuffer() else {
-            return nil
-        }
         
         // Pass 1: Lanczos upscaling
         if let encoder = commandBuffer.makeComputeCommandEncoder() {
@@ -306,8 +300,9 @@ final class EnhancedUpscaler {
             }
         }
         
-        commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
+        commandBuffer.addCompletedHandler { _ in
+            withExtendedLifetime((pixelBuffer, cvTexture)) {}
+        }
         
         if frameCount == 1 {
             DebugLog.print("[EnhancedUpscaler] ✅ First frame processed!")

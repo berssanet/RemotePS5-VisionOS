@@ -10,21 +10,17 @@ import GameController
 import SwiftUI
 import MetalKit
 import CoreGraphics
+import QuartzCore
 
 /// A SwiftUI view that renders an MTLTexture directly on GPU.
 /// Optimized for high-resolution content with minimal CPU overhead.
 struct MetalTextureView: UIViewRepresentable {
-    let texture: MTLTexture?
-    let frameId: UInt64  // Forces SwiftUI to update when frame changes
-    
-    init(texture: MTLTexture?, frameId: UInt64 = 0) {
-        self.texture = texture
-        self.frameId = frameId
-    }
-    
+    let frames: VideoFrameMailbox
+    var onFirstFrame: () -> Void = {}
+
     func makeUIView(context: Context) -> MTKView {
         let mtkView = MTKView()
-        mtkView.device = texture?.device ?? MTLCreateSystemDefaultDevice()
+        mtkView.device = MTLCreateSystemDefaultDevice()
         mtkView.delegate = context.coordinator
         mtkView.framebufferOnly = true
         
@@ -36,10 +32,14 @@ struct MetalTextureView: UIViewRepresentable {
         mtkView.clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
         DebugLog.print("[MetalTextureView] Using SDR pixel format: bgra8Unorm")
         
-        // Use continuous rendering at 60fps for smooth video playback
+        // Request the display cadence; submit GPU work only for a new decoded frame.
         mtkView.isPaused = false
         mtkView.enableSetNeedsDisplay = false
-        mtkView.preferredFramesPerSecond = 60
+        mtkView.preferredFramesPerSecond = 120
+        if let layer = mtkView.layer as? CAMetalLayer {
+            layer.maximumDrawableCount = 3
+            layer.allowsNextDrawableTimeout = true
+        }
         mtkView.autoResizeDrawable = true
         
         // High resolution for visionOS
@@ -52,39 +52,47 @@ struct MetalTextureView: UIViewRepresentable {
         gamepadInteraction.handledEventTypes = .gamepad
         mtkView.addInteraction(gamepadInteraction)
         
-        // Initialize render pipeline
-        if let device = mtkView.device {
-            context.coordinator.setupPipeline(device: device, pixelFormat: mtkView.colorPixelFormat)
-        }
-        
         return mtkView
     }
     
-    func updateUIView(_ mtkView: MTKView, context: Context) {
-        context.coordinator.texture = texture
-    }
-    
+    func updateUIView(_ mtkView: MTKView, context: Context) {}
+
     func makeCoordinator() -> Coordinator {
-        Coordinator(texture: texture)
+        Coordinator(frames: frames, onFirstFrame: onFirstFrame)
     }
-    
-    class Coordinator: NSObject, MTKViewDelegate {
-        var texture: MTLTexture?
+
+    class Coordinator: NSObject, MTKViewDelegate, @unchecked Sendable {
+        private let frames: VideoFrameMailbox
+        private let onFirstFrame: () -> Void
+        private let renderQueue = DispatchQueue(label: "video.render", qos: .userInteractive)
+        // Never wait on main for GPU capacity. At most two command buffers in flight.
+        private let capacity = DispatchSemaphore(value: 2)
         private var commandQueue: MTLCommandQueue?
         private var pipelineState: MTLRenderPipelineState?
         private var sampler: MTLSamplerState?
         private var vertexBuffer: MTLBuffer?
+        private var textureCache: CVMetalTextureCache?
+        private var metalFX: MetalFXUpscaler?
+        private var enhanced: EnhancedUpscaler?
+        private var attemptedMetalFX = false
+        private var attemptedEnhanced = false
         private var isSetup = false
-        
-        init(texture: MTLTexture?) {
-            self.texture = texture
+        private var lastFrameID: UInt64 = 0
+        private var lastTimingReport: Double = 0
+        private var lastDrawableWarning: Double = 0
+        private var announcedFirstFrame = false
+
+        init(frames: VideoFrameMailbox, onFirstFrame: @escaping () -> Void) {
+            self.frames = frames
+            self.onFirstFrame = onFirstFrame
             super.init()
         }
-        
+
         func setupPipeline(device: MTLDevice, pixelFormat: MTLPixelFormat = .bgra10_xr) {
             guard !isSetup else { return }
             
             commandQueue = device.makeCommandQueue()
+            CVMetalTextureCacheCreate(nil, nil, device, nil, &textureCache)
             
             // Create shader library from source
             // HDR-aware shader: handles both SDR and EDR textures
@@ -162,44 +170,111 @@ struct MetalTextureView: UIViewRepresentable {
         }
         
         func draw(in view: MTKView) {
-            // Skip if no texture
-            guard let texture = texture else {
-                // Present empty frame to avoid hang
-                guard let drawable = view.currentDrawable,
-                      let commandBuffer = commandQueue?.makeCommandBuffer(),
-                      let renderPassDesc = view.currentRenderPassDescriptor else { return }
-                
-                if let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDesc) {
-                    encoder.endEncoding()
-                }
-                commandBuffer.present(drawable)
-                commandBuffer.commit()
+            guard capacity.wait(timeout: .now()) == .success else { return }
+            guard let device = view.device,
+                  let layer = view.layer as? CAMetalLayer else {
+                capacity.signal()
                 return
             }
-            
-            guard let pipelineState = pipelineState,
-                  let sampler = sampler,
-                  let vertexBuffer = vertexBuffer,
-                  let drawable = view.currentDrawable,
-                  let commandBuffer = commandQueue?.makeCommandBuffer(),
-                  let renderPassDesc = view.currentRenderPassDescriptor else { return }
-            
-            guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDesc) else { return }
-            
-            encoder.setRenderPipelineState(pipelineState)
-            encoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
-            encoder.setFragmentTexture(texture, index: 0)
-            encoder.setFragmentSamplerState(sampler, index: 0)
-            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
-            encoder.endEncoding()
-            
-            commandBuffer.present(drawable)
-            commandBuffer.commit()
+            renderQueue.async { [self] in
+                autoreleasepool {
+                    setupPipeline(device: device, pixelFormat: .bgra8Unorm)
+                    let state = frames.snapshot()
+                    guard state.enabled, let frame = state.frame,
+                          frame.id != lastFrameID,
+                          let pipelineState, let sampler, let vertexBuffer,
+                          let commandBuffer = commandQueue?.makeCommandBuffer() else {
+                        capacity.signal()
+                        return
+                    }
+                    // Drawable acquisition may block; it belongs on the renderer queue too.
+                    guard let drawable = layer.nextDrawable() else {
+                        let now = CACurrentMediaTime()
+                        if now - lastDrawableWarning >= 2 {
+                            lastDrawableWarning = now
+                            DebugLog.print("[Video] No drawable available; latest decoded frame=\(frame.id)")
+                        }
+                        capacity.signal(); return
+                    }
+                    let reportTiming = CACurrentMediaTime() - lastTimingReport >= 2
+                    if reportTiming { lastTimingReport = CACurrentMediaTime() }
+                    let renderPass = MTLRenderPassDescriptor()
+                    renderPass.colorAttachments[0].texture = drawable.texture
+                    renderPass.colorAttachments[0].loadAction = .clear
+                    renderPass.colorAttachments[0].storeAction = .store
+                    renderPass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+                    let buffer = frame.pixelBuffer
+                    var cvTexture: CVMetalTexture?
+                    guard let textureCache,
+                          CVMetalTextureCacheCreateTextureFromImage(nil, textureCache, buffer, nil,
+                            .bgra8Unorm, CVPixelBufferGetWidth(buffer), CVPixelBufferGetHeight(buffer),
+                            0, &cvTexture) == kCVReturnSuccess,
+                          let cvTexture, let native = CVMetalTextureGetTexture(cvTexture) else {
+                        capacity.signal()
+                        return
+                    }
+                    var texture = native
+                    // Thermal pressure always falls back to native, never to the heavier Lanczos pass.
+                    let thermal = ProcessInfo.processInfo.thermalState
+                    let mode = thermal == .serious || thermal == .critical ? .native : state.mode
+                    if mode == .metalFX && CVPixelBufferGetWidth(buffer) == 1920 && CVPixelBufferGetHeight(buffer) == 1080 {
+                        if !attemptedMetalFX { attemptedMetalFX = true; metalFX = MetalFXUpscaler() }
+                        texture = metalFX?.encode(buffer, commandBuffer: commandBuffer) ?? native
+                    } else if mode == .enhanced {
+                        if !attemptedEnhanced { attemptedEnhanced = true; enhanced = EnhancedUpscaler() }
+                        enhanced?.sharpenStrength = state.sharpness
+                        texture = enhanced?.encode(buffer, commandBuffer: commandBuffer) ?? native
+                    }
+                    guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPass) else {
+                        capacity.signal()
+                        return
+                    }
+                    encoder.setRenderPipelineState(pipelineState)
+                    encoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
+                    encoder.setFragmentTexture(texture, index: 0)
+                    encoder.setFragmentSamplerState(sampler, index: 0)
+                    encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+                    encoder.endEncoding()
+                    let capacity = self.capacity
+                    commandBuffer.addCompletedHandler { completed in
+                        // Retain the decoder's IOSurface until the GPU has stopped reading it.
+                        withExtendedLifetime((buffer, cvTexture)) {}
+                        capacity.signal()
+                        if completed.status == .completed {
+                            self.renderQueue.async {
+                                if !self.announcedFirstFrame {
+                                    self.announcedFirstFrame = true
+                                    DispatchQueue.main.async(execute: self.onFirstFrame)
+                                }
+                            }
+                            if reportTiming {
+                                let age = CACurrentMediaTime() * 1000 - Double(frame.receivedAt) / 1000
+                                let gpu = (completed.gpuEndTime - completed.gpuStartTime) * 1000
+                                DebugLog.print("[Video] receive-to-GPU=\(String(format: "%.1f", age))ms GPU=\(String(format: "%.1f", gpu))ms")
+                            }
+                        } else {
+                            self.renderQueue.async {
+                                if self.lastFrameID == frame.id { self.lastFrameID = 0 }
+                            }
+                            DebugLog.print("[Video] GPU command failed: \(String(describing: completed.error))")
+                        }
+                    }
+                    lastFrameID = frame.id
+                    if reportTiming {
+                        drawable.addPresentedHandler { presented in
+                            let time = presented.presentedTime
+                            let received = Double(frame.receivedAt) / 1_000_000
+                            guard time > 0, time >= received else {
+                                DebugLog.print("[Video] Presentation timestamp unavailable; no latency sample")
+                                return
+                            }
+                            DebugLog.print("[Video] receive-to-present=\(String(format: "%.1f", (time - received) * 1000))ms (local pipeline only)")
+                        }
+                    }
+                    commandBuffer.present(drawable)
+                    commandBuffer.commit()
+                }
+            }
         }
     }
-}
-
-#Preview {
-    MetalTextureView(texture: nil, frameId: 0)
-        .frame(width: 400, height: 225)
 }

@@ -101,14 +101,8 @@ extension StreamingViewModel: StreamingServiceDelegate {
     }
     
     nonisolated func streamingService(_ service: StreamingService, didReceiveVideoFrame frame: CVPixelBuffer, timestamp: UInt64) {
-        // Video frames are processed via UpscalingPipeline
-        Task { @MainActor in
-            let upscalingPipeline = UpscalingPipeline.shared
-            if upscalingPipeline.isEnabled {
-                _ = upscalingPipeline.processFrame(frame)
-            }
-
-        }
+        // Already decoded; replace the mailbox directly, without a main-actor hop.
+        VideoDelivery.shared.submit(frame, timestamp: timestamp)
     }
     
     nonisolated func streamingService(_ service: StreamingService, didReceiveAudioData data: Data, sampleRate: Int, channels: Int) {

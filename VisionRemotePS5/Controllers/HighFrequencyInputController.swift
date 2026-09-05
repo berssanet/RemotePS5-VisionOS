@@ -3,9 +3,9 @@
 //  VisionRemotePS5
 //
 //  Dedicated 120 Hz input thread. It stays off the main actor on purpose: the tick
-//  ends in chiaki_session_set_controller_state, which takes the feedback sender's
-//  mutex while that thread may be inside a blocking UDP send. The main thread must
-//  never wait on that lock, and the cadence must not follow the display refresh.
+//  ends in chiaki_session_set_controller_state. The patched native sender holds
+//  its input mutex only to copy state; UDP sends happen outside it. Poll cadence
+//  stays independent of display refresh and complements immediate input events.
 //
 
 import Foundation

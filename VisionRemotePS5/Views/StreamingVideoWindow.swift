@@ -25,22 +25,30 @@ struct StreamingVideoWindow: View {
 
     let console: Console
 
-    private var hasVideo: Bool {
-        upscalingPipeline.isEnabled && upscalingPipeline.upscaledTexture != nil
-    }
+    @State private var hasVideo = false
 
     var body: some View {
         ZStack {
-            MetalTextureView(
-                texture: hasVideo ? upscalingPipeline.upscaledTexture : nil,
-                frameId: upscalingPipeline.textureFrameId
-            )
+            MetalTextureView(frames: upscalingPipeline.frames) {
+                hasVideo = true
+            }
             .aspectRatio(16/9, contentMode: .fit)
             .cornerRadius(16)
 
             if !hasVideo {
                 statusOverlay
             }
+        }
+        .ornament(attachmentAnchor: .scene(.bottom)) {
+            Picker("Video quality", selection: $upscalingPipeline.upscalerType) {
+                ForEach(UpscalerType.allCases, id: \.self) { mode in
+                    Text(mode.rawValue).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 320)
+            .padding()
+            .glassBackgroundEffect()
         }
         .focusable()
         .focusEffectDisabled()
@@ -59,6 +67,7 @@ struct StreamingVideoWindow: View {
         .task {
             // Initialize upscaling pipeline
             upscalingPipeline.initialize()
+            hasVideo = false
             upscalingPipeline.enable()
             streamHasFocus = true
 

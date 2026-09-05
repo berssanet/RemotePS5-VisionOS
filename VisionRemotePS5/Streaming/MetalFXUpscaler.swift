@@ -107,7 +107,6 @@ final class MetalFXUpscaler {
     // MARK: - Metal Resources
     
     private let device: MTLDevice
-    private let commandQueue: MTLCommandQueue
     private var textureCache: CVMetalTextureCache?
     
     // MARK: - MetalFX Scaler
@@ -148,13 +147,9 @@ final class MetalFXUpscaler {
         }
         DebugLog.info("MetalFXUpscaler", "✅ Metal device: \(device.name)")
         
-        guard let commandQueue = device.makeCommandQueue() else {
-            DebugLog.error("MetalFXUpscaler", "Failed to create command queue")
-            return nil
-        }
+
         
         self.device = device
-        self.commandQueue = commandQueue
         
         // Create texture cache for CVPixelBuffer conversion
         var cache: CVMetalTextureCache?
@@ -261,8 +256,8 @@ final class MetalFXUpscaler {
         return metadata
     }
     
-    /// Upscale a CVPixelBuffer from 1080p to 4K (synchronous)
-    func upscale(_ pixelBuffer: CVPixelBuffer) -> MTLTexture? {
+    /// Encode before the render pass on the renderer command buffer.
+    func encode(_ pixelBuffer: CVPixelBuffer, commandBuffer: MTLCommandBuffer) -> MTLTexture? {
         guard let spatialScaler = spatialScaler,
               let textureCache = textureCache,
               let outputTexture = self.outputTexture else {
@@ -305,9 +300,6 @@ final class MetalFXUpscaler {
         }
         
         // Create command buffer
-        guard let commandBuffer = commandQueue.makeCommandBuffer() else {
-            return nil
-        }
         
         // Apply Spatial Scaler
         spatialScaler.colorTexture = inputTexture
@@ -315,8 +307,9 @@ final class MetalFXUpscaler {
         spatialScaler.encode(commandBuffer: commandBuffer)
         
         let frameNum = frameCount
-        commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
+        commandBuffer.addCompletedHandler { _ in
+            withExtendedLifetime((pixelBuffer, cvTexture)) {}
+        }
         
         DebugLog.every(frameNum, interval: 60, "MetalFXUpscaler", "📊 Frame \(frameNum) processed (SPATIAL)")
         

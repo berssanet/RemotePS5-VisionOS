@@ -33,6 +33,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <fcntl.h>
 
 // ===========================================
 //  curl CA bundle (PSN holepunch over HTTPS/WSS)
@@ -86,6 +87,10 @@ static SessionCryptoState g_session_crypto = {0};
 
 CHIAKI_EXPORT ChiakiErrorCode chiaki_socket_set_nonblock(chiaki_socket_t sock,
                                                          bool nonblock) {
+  int flags = fcntl(sock, F_GETFL, 0);
+  if (flags == -1) return CHIAKI_ERR_UNKNOWN;
+  flags = nonblock ? (flags | O_NONBLOCK) : (flags & ~O_NONBLOCK);
+  if (fcntl(sock, F_SETFL, flags) == -1) return CHIAKI_ERR_UNKNOWN;
   return CHIAKI_ERR_SUCCESS;
 }
 
@@ -356,13 +361,13 @@ static bool session_video_sample_cb(uint8_t *buf, size_t buf_size,
   }
 
   if (wrapper->video_callback) {
-    wrapper->video_callback(buf, buf_size, wrapper->callback_user);
+    bool accepted = wrapper->video_callback(buf, buf_size, frames_lost, frame_recovered, wrapper->callback_user);
     if (g_video_frame_count <= 10) {
       fprintf(stderr,
               "[ChiakiSession] ✅ Forwarded frame #%d to Swift (%zu bytes)\n",
               g_video_frame_count, buf_size);
     }
-    return true;
+    return accepted;
   } else {
     if (g_video_frame_count <= 5) {
       fprintf(stderr, "[ChiakiSession] ⚠️ video_callback is NULL!\n");
