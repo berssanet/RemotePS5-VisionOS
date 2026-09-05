@@ -6,6 +6,7 @@
 //  Optimized for displaying upscaled 4K content from MetalFX.
 //
 
+import GameController
 import SwiftUI
 import MetalKit
 import CoreGraphics
@@ -43,6 +44,13 @@ struct MetalTextureView: UIViewRepresentable {
         
         // High resolution for visionOS
         mtkView.contentScaleFactor = 2.0
+        
+        // visionOS turns gamepad presses into gaze + pinch events unless the view
+        // hosting the CAMetalLayer declares that it handles them itself. Without
+        // this interaction GCExtendedGamepad values never change while streaming.
+        let gamepadInteraction = GCEventInteraction()
+        gamepadInteraction.handledEventTypes = .gamepad
+        mtkView.addInteraction(gamepadInteraction)
         
         // Initialize render pipeline
         if let device = mtkView.device {

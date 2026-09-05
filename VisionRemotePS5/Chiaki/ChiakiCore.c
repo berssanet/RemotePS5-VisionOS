@@ -28,9 +28,11 @@
 #include <chiaki/rpcrypt.h>
 
 #include <curl/curl.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 // ===========================================
 //  curl CA bundle (PSN holepunch over HTTPS/WSS)
@@ -467,7 +469,31 @@ static void session_event_cb(ChiakiEvent *event, void *user) {
 }
 
 // Custom log callback
+// "Takion dropping data" arrives thousands of times per minute once the DATA
+// reorder queue wedges; the callback runs on the takion/ctrl/stream threads, so
+// the limiter is atomic. One line per second plus a suppressed counter.
+static _Atomic time_t g_takion_drop_last_sec = 0;
+static _Atomic unsigned long long g_takion_drop_suppressed = 0;
+
+static bool chiaki_log_takion_drop_rate_limited(const char *msg) {
+  if (strncmp(msg, "Takion dropping data", 20) != 0)
+    return false;
+  struct timespec now;
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  time_t last = atomic_load(&g_takion_drop_last_sec);
+  if (now.tv_sec == last ||
+      !atomic_compare_exchange_strong(&g_takion_drop_last_sec, &last, now.tv_sec)) {
+    atomic_fetch_add(&g_takion_drop_suppressed, 1);
+    return true;
+  }
+  unsigned long long suppressed = atomic_exchange(&g_takion_drop_suppressed, 0);
+  fprintf(stderr, "[Chiaki/ERR] %s (+%llu suppressed this second)\n", msg, suppressed);
+  return true;
+}
+
 static void chiaki_log_cb(ChiakiLogLevel level, const char *msg, void *user) {
+  if (chiaki_log_takion_drop_rate_limited(msg))
+    return;
   const char *level_str;
   switch (level) {
   case CHIAKI_LOG_DEBUG:

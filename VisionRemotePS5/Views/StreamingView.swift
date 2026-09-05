@@ -107,9 +107,7 @@ extension StreamingViewModel: StreamingServiceDelegate {
             if upscalingPipeline.isEnabled {
                 _ = upscalingPipeline.processFrame(frame)
             }
-            
-            // v10.5: Post notification for immersive mode (VR)
-            NotificationCenter.default.post(name: .videoFrameReceived, object: frame)
+
         }
     }
     

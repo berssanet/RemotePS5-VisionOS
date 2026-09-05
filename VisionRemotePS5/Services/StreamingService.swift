@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import os
 import Network
 import VideoToolbox
 import AVFoundation
@@ -125,6 +126,12 @@ final class StreamingService: ObservableObject {
     
     // Controller manager for haptics
     private var controllerManager: GameControllerManager?
+    /// Read on the 120 Hz input thread: true only while the console has acked the session.
+    private let inputGate = OSAllocatedUnfairLock(initialState: false)
+    /// Latest decoded frame waiting for the main hop. One slot: if main falls behind,
+    /// older frames are released here instead of piling up in main's queue and
+    /// starving VideoToolbox's pool (which back-pressures the takion thread).
+    private let pendingFrame = OSAllocatedUnfairLock<(CVPixelBuffer, UInt64)?>(uncheckedState: nil)
     
     // Frame pacer for smooth 60fps on 90Hz display
     private var framePacer: FramePacer?
@@ -285,14 +292,18 @@ final class StreamingService: ObservableObject {
         
         // Initialize controller manager for haptic feedback
         // v10.1: Wire up 120Hz input callback for true decoupled input transmission
-        Task { @MainActor in
+        // startStreamingV2 already runs on the main actor: create the pad wiring
+        // inline so a synchronous start failure cannot outrun stopStreaming().
+        do {
+            self.controllerManager?.tearDown()
             self.controllerManager = GameControllerManager()
             
             // v10.1: TRUE 120Hz INPUT - Decoupled from video callback
             // The GameControllerManager polls at 120Hz (8.33ms) and directly sends
             // input to ChiakiFullSession on every poll cycle, bypassing Combine throttling
             self.controllerManager?.onInputReady = { [weak self] input in
-                guard let self = self, self.isStreaming else { return }
+                // Runs on the 120 Hz input thread: only lock-guarded state here.
+                guard let self = self, self.inputGate.withLock({ $0 }) else { return }
                 
                 // Send directly to ChiakiFullSession at 120Hz - no throttling!
                 ChiakiFullSession.shared.setControllerState(
@@ -432,10 +443,13 @@ final class StreamingService: ObservableObject {
                 return
             }
             
-            guard let decoder = self.videoDecoder else {
-                self.videoBufferPool.release(safeBuffer)
-                return
-            }
+            // decodeFromSafeBuffer() is synchronous and copies every NAL into its own
+            // CMBlockBuffer before VideoToolbox sees it, so the pool slot is free the
+            // moment it returns. The completion may run zero, one or N times per frame
+            // (no session yet, decode error, multi-slice frame): it must not own the slot.
+            defer { self.videoBufferPool.release(safeBuffer) }
+            
+            guard let decoder = self.videoDecoder else { return }
             
             // Track frame count for logging
             self.videoFrameCount += 1
@@ -445,19 +459,9 @@ final class StreamingService: ObservableObject {
                 self.videoBufferPool.logStats()
             }
             
-            // Now decode from the SAFE buffer
-            // The buffer won't be released until the completion handler runs
+            // Now decode from the SAFE buffer (released by the defer above)
             decoder.decodeFromSafeBuffer(safeBuffer) { [weak self] pixelBuffer, timestamp in
-                guard let self = self else {
-                    // Still need to release the buffer even if self is nil
-                    self?.videoBufferPool.release(safeBuffer)
-                    return
-                }
-                
-                // Release buffer back to pool AFTER decoding completes
-                self.videoBufferPool.release(safeBuffer)
-                
-                guard let pb = pixelBuffer else { return }
+                guard let self = self, let pb = pixelBuffer else { return }
                 
                 // v10.0: Calculate measured video latency (closed-loop A/V sync)
                 // This is the actual time from frame receive to decode completion
@@ -490,11 +494,22 @@ final class StreamingService: ObservableObject {
                     DebugLog.print("[StreamingService] 🎯 v10.0 Closed-loop sync: decode=\(String(format: "%.1f", decodeLatencyMs))ms, total=\(String(format: "%.0f", totalVideoLatencyMs))ms")
                 }
                 
-                // Phase 5.20: notify delegate on main via DispatchQueue.main.async
-                // (lighter than `Task { @MainActor in ... }` which allocates a
-                // Task object + isolation context per frame at 60-120fps).
-                DispatchQueue.main.async {
-                    self.delegate?.streamingService(self, didReceiveVideoFrame: pb, timestamp: timestamp)
+                // Latest-frame slot: only one main hop is ever in flight. A frame
+                // main has not consumed yet is replaced (and released) here.
+                let hopNeeded = self.pendingFrame.withLockUnchecked { slot -> Bool in
+                    let wasEmpty = slot == nil
+                    slot = (pb, timestamp)
+                    return wasEmpty
+                }
+                guard hopNeeded else { return }
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self else { return }
+                    let latest = self.pendingFrame.withLockUnchecked { slot -> (CVPixelBuffer, UInt64)? in
+                        defer { slot = nil }
+                        return slot
+                    }
+                    guard let (frame, frameTimestamp) = latest else { return }
+                    self.delegate?.streamingService(self, didReceiveVideoFrame: frame, timestamp: frameTimestamp)
                 }
             }
         }
@@ -523,12 +538,17 @@ final class StreamingService: ObservableObject {
                     guard !self.isStopping, self.state == .connecting || self.state == .negotiating else { return }
                     // Phase 5.21: state is the single source of truth; isStreaming derives from it.
                     self.state = .streaming
+                    self.inputGate.withLock { $0 = true }
                     self.delegate?.streamingService(self, didChangeState: .streaming)
                 }
 
             case .quit:
                 DebugLog.print("[StreamingService] ❌ Session quit: \(reason ?? "unknown")")
                 Task { @MainActor in
+                    self.inputGate.withLock { $0 = false }
+                    // The console never sends a final rumble-0 and the endless player
+                    // latches its last intensity: silence the pad ourselves.
+                    self.controllerManager?.triggerRumble(left: 0, right: 0)
                     guard !self.isStopping, self.state != .stopped else { return }
                     self.state = .error(reason ?? "The console ended the session")
                     self.delegate?.streamingService(self, didChangeState: self.state)
@@ -605,6 +625,12 @@ final class StreamingService: ObservableObject {
     func stopStreaming() {
         guard !isStopping else { return }
         isStopping = true
+        inputGate.withLock { $0 = false }
+        // The pad belongs to the session: stop the input thread and the haptic
+        // engine and hand PS / Create / Options back to the system.
+        controllerManager?.triggerRumble(left: 0, right: 0)
+        controllerManager?.tearDown()
+        controllerManager = nil
         DebugLog.info("StreamingService", "Stopping streaming...")
         
         // Stop ChiakiFullSession if active
@@ -910,8 +936,10 @@ class StreamVideoDecoder {
     }
     
     private func extractNALUnit(from data: Data, offset: Int) -> Data {
-        // Return NAL unit without start code
-        return data.suffix(from: offset)
+        // Return NAL unit without start code. `data` is a no-copy view of a pool
+        // slot that is released as soon as decodeFromSafeBuffer returns, so the
+        // stored parameter sets must own their bytes.
+        return Data(data.suffix(from: offset))
     }
     
     private func tryCreateHEVCSession() {
