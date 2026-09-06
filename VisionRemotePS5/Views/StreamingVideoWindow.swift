@@ -26,12 +26,13 @@ struct StreamingVideoWindow: View {
     let console: Console
 
     @State private var hasVideo = false
+    @State private var processingStatus = "Waiting for video…"
 
     var body: some View {
         ZStack {
-            MetalTextureView(frames: upscalingPipeline.frames) {
+            MetalTextureView(frames: upscalingPipeline.frames, onFirstFrame: {
                 hasVideo = true
-            }
+            }, onProcessingStatus: { processingStatus = $0 })
             .aspectRatio(16/9, contentMode: .fit)
             .cornerRadius(16)
 
@@ -40,13 +41,30 @@ struct StreamingVideoWindow: View {
             }
         }
         .ornament(attachmentAnchor: .scene(.bottom)) {
-            Picker("Video quality", selection: $upscalingPipeline.upscalerType) {
-                ForEach(UpscalerType.allCases, id: \.self) { mode in
-                    Text(mode.rawValue).tag(mode)
+            VStack(spacing: 8) {
+                Picker("Video quality", selection: $upscalingPipeline.upscalerType) {
+                    ForEach(UpscalerType.allCases, id: \.self) { mode in
+                        Text(mode.rawValue).tag(mode)
+                    }
                 }
+                .pickerStyle(.segmented)
+                if upscalingPipeline.upscalerType == .enhanced {
+                    HStack {
+                        Text("Sharpness")
+                        Slider(value: $upscalingPipeline.sharpenStrength, in: 0...1)
+                        Text(upscalingPipeline.sharpenStrength, format: .percent.precision(.fractionLength(0)))
+                            .monospacedDigit()
+                            .frame(width: 44)
+                    }
+                }
+                Text(processingStatus)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Upscaling changes image detail; the screen size stays the same.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
-            .pickerStyle(.segmented)
-            .frame(width: 320)
+            .frame(width: 480)
             .padding()
             .glassBackgroundEffect()
         }

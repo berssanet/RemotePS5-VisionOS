@@ -17,6 +17,7 @@ import QuartzCore
 struct MetalTextureView: UIViewRepresentable {
     let frames: VideoFrameMailbox
     var onFirstFrame: () -> Void = {}
+    var onProcessingStatus: (String) -> Void = { _ in }
 
     func makeUIView(context: Context) -> MTKView {
         let mtkView = MTKView()
@@ -58,12 +59,16 @@ struct MetalTextureView: UIViewRepresentable {
     func updateUIView(_ mtkView: MTKView, context: Context) {}
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(frames: frames, onFirstFrame: onFirstFrame)
+        Coordinator(frames: frames, onFirstFrame: onFirstFrame, onProcessingStatus: onProcessingStatus)
     }
 
     class Coordinator: NSObject, MTKViewDelegate, @unchecked Sendable {
         private let frames: VideoFrameMailbox
         private let onFirstFrame: () -> Void
+        private let onProcessingStatus: (String) -> Void
+        private var lastProcessingStatus: String?
+        private var lastMode: UpscalerType?
+        private var lastSharpness: Float?
         private let renderQueue = DispatchQueue(label: "video.render", qos: .userInteractive)
         // Never wait on main for GPU capacity. At most two command buffers in flight.
         private let capacity = DispatchSemaphore(value: 2)
@@ -82,9 +87,10 @@ struct MetalTextureView: UIViewRepresentable {
         private var lastDrawableWarning: Double = 0
         private var announcedFirstFrame = false
 
-        init(frames: VideoFrameMailbox, onFirstFrame: @escaping () -> Void) {
+        init(frames: VideoFrameMailbox, onFirstFrame: @escaping () -> Void, onProcessingStatus: @escaping (String) -> Void) {
             self.frames = frames
             self.onFirstFrame = onFirstFrame
+            self.onProcessingStatus = onProcessingStatus
             super.init()
         }
 
@@ -181,7 +187,7 @@ struct MetalTextureView: UIViewRepresentable {
                     setupPipeline(device: device, pixelFormat: .bgra8Unorm)
                     let state = frames.snapshot()
                     guard state.enabled, let frame = state.frame,
-                          frame.id != lastFrameID,
+                          (frame.id != lastFrameID || state.mode != lastMode || state.sharpness != lastSharpness),
                           let pipelineState, let sampler, let vertexBuffer,
                           let commandBuffer = commandQueue?.makeCommandBuffer() else {
                         capacity.signal()
@@ -214,17 +220,38 @@ struct MetalTextureView: UIViewRepresentable {
                         return
                     }
                     var texture = native
+                    var appliedMode: UpscalerType = .native
+                    var fallbackReason: String?
                     // Thermal pressure always falls back to native, never to the heavier Lanczos pass.
                     let thermal = ProcessInfo.processInfo.thermalState
                     let mode = thermal == .serious || thermal == .critical ? .native : state.mode
                     if mode == .metalFX && CVPixelBufferGetWidth(buffer) == 1920 && CVPixelBufferGetHeight(buffer) == 1080 {
                         if !attemptedMetalFX { attemptedMetalFX = true; metalFX = MetalFXUpscaler() }
-                        texture = metalFX?.encode(buffer, commandBuffer: commandBuffer) ?? native
+                        if let output = metalFX?.encode(buffer, commandBuffer: commandBuffer) {
+                            texture = output
+                            appliedMode = .metalFX
+                        } else {
+                            fallbackReason = "MetalFX unavailable"
+                        }
                     } else if mode == .enhanced {
                         if !attemptedEnhanced { attemptedEnhanced = true; enhanced = EnhancedUpscaler() }
                         enhanced?.sharpenStrength = state.sharpness
-                        texture = enhanced?.encode(buffer, commandBuffer: commandBuffer) ?? native
+                        if let output = enhanced?.encode(buffer, commandBuffer: commandBuffer) {
+                            texture = output
+                            appliedMode = .enhanced
+                        } else {
+                            fallbackReason = "Enhanced unavailable"
+                        }
                     }
+                    if mode != state.mode {
+                        fallbackReason = "Temperature protection"
+                    } else if mode == .metalFX && appliedMode == .native && fallbackReason == nil {
+                        fallbackReason = "MetalFX requires a 1080p stream"
+                    }
+                    let name = appliedMode == .native ? "Native" : appliedMode.rawValue
+                    var processingStatus = "\(name) · \(native.width)×\(native.height) → \(texture.width)×\(texture.height)"
+                    if let fallbackReason { processingStatus += " · \(fallbackReason)" }
+                    let status = processingStatus
                     guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPass) else {
                         capacity.signal()
                         return
@@ -242,6 +269,11 @@ struct MetalTextureView: UIViewRepresentable {
                         capacity.signal()
                         if completed.status == .completed {
                             self.renderQueue.async {
+                                if self.lastProcessingStatus != status {
+                                    self.lastProcessingStatus = status
+                                    DebugLog.print("[Video] Processing: \(status)")
+                                    DispatchQueue.main.async { self.onProcessingStatus(status) }
+                                }
                                 if !self.announcedFirstFrame {
                                     self.announcedFirstFrame = true
                                     DispatchQueue.main.async(execute: self.onFirstFrame)
@@ -260,6 +292,8 @@ struct MetalTextureView: UIViewRepresentable {
                         }
                     }
                     lastFrameID = frame.id
+                    lastMode = state.mode
+                    lastSharpness = state.sharpness
                     if reportTiming {
                         drawable.addPresentedHandler { presented in
                             let time = presented.presentedTime
