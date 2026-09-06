@@ -35,7 +35,6 @@ class AppState: ObservableObject {
     @Published var isInStreamingSession: Bool = false  // v10.5.2: Hide console selection when streaming
     @Published var selectedConsole: Console?
     @Published var discoveredConsoles: [Console] = []
-    @Published var streamQuality: StreamQuality = .hd720
     @Published var connectionStatus: ConnectionStatus = .disconnected
     
     // v10.5: Shared ViewModel for controller input
@@ -52,10 +51,4 @@ class AppState: ObservableObject {
         case error = "Error"
     }
     
-    enum StreamQuality: String, CaseIterable {
-        case sd540 = "540p"
-        case hd720 = "720p"
-        case hd1080 = "1080p"
-        case uhd4k = "4K"
-    }
 }

@@ -44,15 +44,7 @@ struct ConnectionStatusBar: View {
                     .font(.caption)
             }
             
-            if appState.isConnected {
-                Divider()
-                    .frame(height: 16)
-                
-                // Quality indicator
-                Text(appState.streamQuality.rawValue)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 12)

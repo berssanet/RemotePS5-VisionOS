@@ -3,6 +3,8 @@
 .AppleDouble
 .LSOverride
 ._*
+.env
+logs
 
 # ===== Xcode =====
 ## Build generated
@@ -42,7 +44,7 @@ opus-build/
 *.swo
 *~
 
-# Core ML depth model (48MB, local-only — re-download per TODO.md Spatial 3D notes)
+# Optional local model artifact (not loaded by the current app)
 VisionRemotePS5/Resources/DepthAnythingV2SmallF16.mlmodelc/
 
 # Reality Composer Pro per-user state
@@ -50,3 +52,16 @@ VisionRemotePS5/Resources/DepthAnythingV2SmallF16.mlmodelc/
 
 # Local planning document
 /TODO.md
+
+# Local agent configuration and instructions
+/.codex/
+/.claude/
+/.agents/
+/CLAUDE.md
+/GEMINI.md
+
+# Local planning analysis
+/docs/immersive_experience_analysis_2026_09.md
+
+# Temporary native rebuild snapshots (keep .orig/.backup maintenance inputs tracked)
+/VisionRemotePS5/Frameworks/Chiaki.xcframework/xros-arm64/libchiaki_full.a.pre-*

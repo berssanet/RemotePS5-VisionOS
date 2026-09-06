@@ -26,7 +26,6 @@
 		CHKFRM001 /* Chiaki.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = CHKFRMREF001 /* Chiaki.xcframework */; };
 		CHKFSES001 /* ChiakiFullSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = CHKFSESSRC001 /* ChiakiFullSession.swift */; };
 		CNSSTO001 /* ConsoleStorageService.swift in Sources */ = {isa = PBXBuildFile; fileRef = CNSSRC001 /* ConsoleStorageService.swift */; };
-		COLSPCCNVSRC001 /* ColorSpaceConverter.swift in Sources */ = {isa = PBXBuildFile; fileRef = COLSPCCNVREF001 /* ColorSpaceConverter.swift */; };
 		EF3CB6A92F29066A005E85E1 /* StreamingVideoWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF3CB6A62F29066A005E85E1 /* StreamingVideoWindow.swift */; };
 		EF48D8DA2F0FD3F8009C702E /* ChiakiCore.c in Sources */ = {isa = PBXBuildFile; fileRef = EF48D8D92F0FD3F8009C702E /* ChiakiCore.c */; };
 		UPNPSTUB001 /* miniupnpc_stub.c in Sources */ = {isa = PBXBuildFile; fileRef = UPNPSTUBREF001 /* miniupnpc_stub.c */; };
@@ -40,13 +39,11 @@
 		EF5C41992F0645D2007A7B67 /* PSNConnectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF5C41982F0645D2007A7B67 /* PSNConnectionView.swift */; };
 		EF5C419B2F0645E0007A7B67 /* PSNWebSocketService.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF5C419A2F0645E0007A7B67 /* PSNWebSocketService.swift */; };
 		ENHUPSRC001 /* EnhancedUpscaler.swift in Sources */ = {isa = PBXBuildFile; fileRef = ENHUPREF001 /* EnhancedUpscaler.swift */; };
-		FRMPCRSRC001 /* FramePacer.swift in Sources */ = {isa = PBXBuildFile; fileRef = FRMPCRREF001 /* FramePacer.swift */; };
 		CACERT001 /* cacert.pem in Resources */ = {isa = PBXBuildFile; fileRef = CACERTREF001 /* cacert.pem */; };
 		LOGGERSRC001 /* Logger.swift in Sources */ = {isa = PBXBuildFile; fileRef = LOGGERREF001 /* Logger.swift */; };
 		LOWLATAUDSRC001 /* LowLatencyAudioPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = LOWLATAUDREF001 /* LowLatencyAudioPlayer.swift */; };
 		MFXUPSRC001 /* MetalFXUpscaler.swift in Sources */ = {isa = PBXBuildFile; fileRef = MFXUPREF001 /* MetalFXUpscaler.swift */; };
 		MTLTEXVIEWSRC001 /* MetalTextureView.swift in Sources */ = {isa = PBXBuildFile; fileRef = MTLTEXVIEWREF001 /* MetalTextureView.swift */; };
-		SAFEBUFPOOLSRC001 /* SafeBufferPool.swift in Sources */ = {isa = PBXBuildFile; fileRef = SAFEBUFPOOLREF001 /* SafeBufferPool.swift */; };
 		STRMSVC001 /* StreamingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = STRMSRCSVC001 /* StreamingService.swift */; };
 		STRMVIEW001 /* StreamingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = STRMSRCVIEW001 /* StreamingView.swift */; };
 		TST003 /* RegistrationServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TSTSRC003 /* RegistrationServiceTests.swift */; };
@@ -72,7 +69,6 @@
 		CHKFRMREF001 /* Chiaki.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Chiaki.xcframework; path = VisionRemotePS5/Frameworks/Chiaki.xcframework; sourceTree = SOURCE_ROOT; };
 		CHKFSESSRC001 /* ChiakiFullSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChiakiFullSession.swift; sourceTree = "<group>"; };
 		CNSSRC001 /* ConsoleStorageService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConsoleStorageService.swift; sourceTree = "<group>"; };
-		COLSPCCNVREF001 /* ColorSpaceConverter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ColorSpaceConverter.swift; sourceTree = "<group>"; };
 		EF3CB6A62F29066A005E85E1 /* StreamingVideoWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamingVideoWindow.swift; sourceTree = "<group>"; };
 		EF48D8D92F0FD3F8009C702E /* ChiakiCore.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = ChiakiCore.c; sourceTree = "<group>"; };
 		UPNPSTUBREF001 /* miniupnpc_stub.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = miniupnpc_stub.c; sourceTree = "<group>"; };
@@ -86,7 +82,6 @@
 		EF5C41982F0645D2007A7B67 /* PSNConnectionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PSNConnectionView.swift; sourceTree = "<group>"; };
 		EF5C419A2F0645E0007A7B67 /* PSNWebSocketService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PSNWebSocketService.swift; sourceTree = "<group>"; };
 		ENHUPREF001 /* EnhancedUpscaler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnhancedUpscaler.swift; sourceTree = "<group>"; };
-		FRMPCRREF001 /* FramePacer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FramePacer.swift; sourceTree = "<group>"; };
 		CACERTREF001 /* cacert.pem */ = {isa = PBXFileReference; lastKnownFileType = text; path = cacert.pem; sourceTree = "<group>"; };
 		LOCALXC001 /* Local.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Local.xcconfig; sourceTree = "<group>"; };
 		LOGGERREF001 /* Logger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Logger.swift; sourceTree = "<group>"; };
@@ -97,7 +92,6 @@
 		PRD002 /* VisionRemotePS5Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = VisionRemotePS5Tests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		RES001 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		RES002 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
-		SAFEBUFPOOLREF001 /* SafeBufferPool.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SafeBufferPool.swift; sourceTree = "<group>"; };
 		SRC001 /* VisionRemotePS5App.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisionRemotePS5App.swift; sourceTree = "<group>"; };
 		SRC002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		SRC003 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
@@ -139,13 +133,6 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		EF9426EB2F1456F5006C689C /* Shaders */ = {
-			isa = PBXGroup;
-			children = (
-			);
-			path = Shaders;
-			sourceTree = "<group>";
-		};
 		GRP001 = {
 			isa = PBXGroup;
 			children = (
@@ -159,7 +146,6 @@
 		GRP002 /* VisionRemotePS5 */ = {
 			isa = PBXGroup;
 			children = (
-				EF9426EB2F1456F5006C689C /* Shaders */,
 				SRC001 /* VisionRemotePS5App.swift */,
 				GRP003 /* Views */,
 				GRP004 /* Models */,
@@ -244,12 +230,9 @@
 			children = (
 				UPSPIPEREF001 /* UpscalingPipeline.swift */,
 				MFXUPREF001 /* MetalFXUpscaler.swift */,
-				FRMPCRREF001 /* FramePacer.swift */,
 				ENHUPREF001 /* EnhancedUpscaler.swift */,
-				COLSPCCNVREF001 /* ColorSpaceConverter.swift */,
 				AUDRINGBUFREF001 /* AudioRingBuffer.swift */,
 				LOWLATAUDREF001 /* LowLatencyAudioPlayer.swift */,
-				SAFEBUFPOOLREF001 /* SafeBufferPool.swift */,
 			);
 			path = Streaming;
 			sourceTree = "<group>";
@@ -411,12 +394,9 @@
 				UPSPIPESRC001 /* UpscalingPipeline.swift in Sources */,
 				MTLTEXVIEWSRC001 /* MetalTextureView.swift in Sources */,
 				EF3CB6A92F29066A005E85E1 /* StreamingVideoWindow.swift in Sources */,
-				FRMPCRSRC001 /* FramePacer.swift in Sources */,
 				ENHUPSRC001 /* EnhancedUpscaler.swift in Sources */,
-				COLSPCCNVSRC001 /* ColorSpaceConverter.swift in Sources */,
 				AUDRINGBUFSRC001 /* AudioRingBuffer.swift in Sources */,
 				LOWLATAUDSRC001 /* LowLatencyAudioPlayer.swift in Sources */,
-				SAFEBUFPOOLSRC001 /* SafeBufferPool.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

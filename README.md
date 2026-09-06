@@ -1,262 +1,144 @@
 # VisionRemotePS5
 
-PlayStation Remote Play client for Apple Vision Pro (visionOS).
+A native PlayStation Remote Play client for Apple Vision Pro. The current app displays a PS5 stream in a SwiftUI window backed by Metal and uses a Bluetooth gamepad paired with the headset.
 
-## 📦 Project Structure
+## Current behavior
 
+- **Video:** requests 1920×1080 at 60 fps with a configured bitrate of 15,000 kbps. VideoToolbox decodes HEVC/H.264 to BGRA; the active presentation path is SDR.
+- **Processing:** native 1080p is the default. The streaming window also offers MetalFX spatial upscaling and Enhanced Lanczos upscaling with adjustable sharpening. Both upscalers produce a 3840×2160 texture from a 1080p source; this is not a native 4K stream.
+- **Processing feedback:** the window reports the applied processing mode and input/output texture sizes. Thermal pressure or unavailable processing can cause a reported fallback to native video.
+- **Rendering:** a latest-frame mailbox feeds an MTKView renderer on a dedicated serial queue, with at most two GPU command buffers in flight. Requesting a high display cadence does not turn the 60 fps source into 120 fps video.
+- **Audio:** Chiaki decodes Opus; an AVAudioSourceNode plays direct stereo through a bounded ring buffer with backlog recovery.
+- **Input:** GameController reads buttons, sticks, and analog triggers on an independent 120 Hz input thread. DualSense touchpad **button clicks** are mapped; full touch-surface gestures and adaptive-trigger resistance are not implemented by this path. Rumble uses the controller's haptic engine when supported/enabled.
+- **Session UI:** connecting opens the streaming window and minimizes the home content. Closing the streaming window ends the session.
+- **Connectivity:** local discovery, direct-IP connection, stored registration keys, PIN pairing, wake requests, PSN authentication, and a separate PSN remote connection/registration flow are present.
+
+Immersive spaces, hand controls, a virtual steering wheel, stereo depth conversion, neural restoration, spatialized audio, HDR/P010 playback, and frame interpolation are not current app features. The UI no longer exposes placeholder resolution, spatial-audio, auto-connect, controller-mapping, or simulated network-diagnostic controls.
+
+## Requirements and build
+
+- A Mac with Xcode and the visionOS SDK. The locally verified toolchain for this cleanup is **Xcode 26.6**; the project deployment target remains **visionOS 2.0**.
+- A physical Apple Vision Pro for playback and controller validation. The bundled Chiaki XCFramework contains an **xros arm64 device slice**, not a simulator slice.
+- A PS5 with Remote Play enabled and a compatible Bluetooth gamepad paired with the Vision Pro.
+- A signing team/provisioning configuration for installation on the headset.
+- PSN OAuth client configuration if using browser authentication or PSN connection features.
+
+The planned device validation target is visionOS 27 beta 8. This does not mean the app uses SDK 27 APIs or has been validated on that beta. Confirm a compatible Xcode/device-debugging combination before installation.
+
+1. Clone the repository and open `VisionRemotePS5.xcodeproj`.
+2. Copy the configuration template if a local configuration does not already exist:
+
+   ```sh
+   cp -n Local.xcconfig.example Local.xcconfig
+   ```
+
+3. Fill in `PSN_CLIENT_ID` and `PSN_CLIENT_SECRET` in the ignored local file when PSN features are needed. Placeholder values allow configuration of the project but do not provide working authentication. The project already references `Local.xcconfig` for Debug and Release.
+4. Set your development team and signing configuration in Xcode. Do not overwrite another developer's local credentials.
+5. Select the `VisionRemotePS5` scheme and a physical Apple Vision Pro, then build and run.
+
+For a device-targeted compilation check without signing:
+
+```sh
+xcodebuild -project VisionRemotePS5.xcodeproj \
+  -scheme VisionRemotePS5 \
+  -configuration Release \
+  -destination 'generic/platform=visionOS' \
+  -derivedDataPath /tmp/VisionRemotePS5-build \
+  CODE_SIGNING_ALLOWED=NO build
 ```
+
+The precompiled native libraries are tracked in this repository; a normal app build does not require cloning or recompiling Chiaki. Some maintenance scripts and host tests have additional source dependencies described below.
+
+## Connect over the local network
+
+1. Enable Remote Play on the PS5. Keep the console reachable from the headset's network and allow Local Network access when the app requests it.
+2. On the home screen, use **Local Network**, enter the console IP, and choose **Connect locally**.
+3. If this app has valid registration keys for the matching console/account, the app uses them for a direct LAN session. Console identity is checked using the discovery MAC, not just a name or IP.
+4. Otherwise, complete PIN pairing. On the PS5, open **Settings > System > Remote Play > Link Device** and enter the displayed PIN in the app. Use PSN sign-in or the supported manual Account ID entry to supply the account information required by pairing.
+5. Return to the local connection action after pairing. Registration information is retained for subsequent sessions.
+6. Use the paired Bluetooth gamepad during playback. Select image processing in the ornament below the video; the Enhanced mode exposes sharpening strength.
+
+Registration performed in Sony's official app is not shared with this client. PSN authentication alone does not provide local registration keys. Wake requests also depend on console standby settings and network reachability.
+
+## PSN connections
+
+The home screen includes PSN console access, and the code contains session coordination, WebSocket signaling, registration, and native holepunch support. This path has different requirements and failure modes from direct LAN streaming.
+
+Successful compilation or LAN playback does not establish reliable end-to-end internet streaming across arbitrary NATs. Validate the PSN path on the intended networks before relying on it. The app ships a certificate bundle used by the native TLS path; it is an active resource, not an unused download.
+
+## Project layout
+
+```text
 VisionRemotePS5/
-├── VisionRemotePS5App.swift              # App entry point with WindowGroup and ImmersiveSpace
-├── Controllers/
-│   ├── GameControllerManager.swift       # DualSense/DualShock controller support
-│   ├── HighFrequencyInputController.swift # 120Hz dedicated input polling thread
-│   └── PS5HapticFeedbackParser.swift     # PS5 rumble/adaptive trigger parser
-├── Models/
-│   ├── Console.swift                     # PlayStation console model
-│   └── WheelButtonHotspots.swift         # 3D wheel button hit zones
-├── Resources/
-│   ├── Assets.xcassets/                  # App icons and colors
-│   ├── MercedesF1Wheel.usdz             # 3D F1 steering wheel model (22MB)
-│   └── Localizable.xcstrings            # Localization (EN, PT-BR)
-├── Services/
-│   ├── ChiakiCrypto.swift               # AES-GCM encryption for RP protocol
-│   ├── ChiakiFullSession.swift          # Native bridge to Chiaki streaming core
-│   ├── ConsoleDiscoveryService.swift     # UDP broadcast console discovery
-│   ├── ConsoleStorageService.swift       # Console persistence (Keychain/UserDefaults)
-│   ├── HolepunchService.swift           # NAT traversal for remote connections
-│   ├── Logger.swift                     # Centralized logging utility
-│   ├── PSNAuthService.swift             # PlayStation Network OAuth2 authentication
-│   ├── PSNSessionManager.swift          # PSN session lifecycle management
-│   ├── PSNWebSocketService.swift        # WebSocket signaling for holepunch
-│   ├── RegistrationService.swift        # Console registration protocol
-│   ├── StreamingService.swift           # High-level streaming orchestration
-│   ├── StreamingSession.swift           # Connection lifecycle & encryption
-│   ├── VirtualSteeringWheelService.swift # Hand tracking → steering/throttle/brake
-│   ├── WakeOnLanService.swift           # Wake-on-LAN for sleeping consoles
-│   └── WheelButtonMappingService.swift  # PS5 button bitmask mapping for wheel
-├── Streaming/
-│   ├── AESGCMDecryptor.swift            # Hardware-accelerated AES decryption
-│   ├── AudioDecoder.swift               # Opus audio decoding with spatial audio
-│   ├── AudioRingBuffer.swift            # Lock-free SPSC ring buffer for audio
-│   ├── AudioVideoSyncController.swift   # PTS-based A/V drift correction
-│   ├── ColorSpaceConverter.swift        # BT.601/709/2020 color space conversion
-│   ├── EnhancedUpscaler.swift           # Advanced upscaling with sharpening
-│   ├── FramePacer.swift                 # Frame delivery timing (60/120Hz)
-│   ├── LowLatencyAudioPlayer.swift      # Stereo Emitter Array audio player
-│   ├── MetalFXUpscaler.swift            # 1080p→4K upscaling with MetalFX + HDR
-│   ├── MotionEstimator.swift            # Motion-adaptive processing
-│   ├── NetworkBufferPool.swift          # Pre-allocated network buffer management
-│   ├── SafeBufferPool.swift             # Thread-safe buffer pool
-│   ├── StreamingBufferPool.swift        # Streaming-optimized buffer allocation
-│   ├── TripleBufferPool.swift           # Triple buffering for tear-free rendering
-│   ├── UpscalingPipeline.swift          # GPU pipeline: decode → upscale → display
-│   └── VideoDecoder.swift               # H.264/H.265 hardware decoding (VideoToolbox)
-├── Shaders/
-│   └── YUVToRGB.metal                   # GPU color space conversion shader
-└── Views/
-    ├── ContentView.swift                 # Main navigation with sidebar
-    ├── ControllerOverlayView.swift       # On-screen controller touch overlay
-    ├── ControllerWindow.swift            # Dedicated controller window
-    ├── HomeView.swift                    # Console list and connection UI
-    ├── LoginView.swift                   # PSN WebView authentication
-    ├── MenuBarWindow.swift               # Floating menu bar for immersive mode
-    ├── MetalTextureView.swift            # Metal texture rendering view
-    ├── PSNConnectionView.swift           # Remote connection via PSN holepunch
-    ├── PairingView.swift                 # Manual console pairing via PIN
-    ├── RealityKitVideoView.swift         # Video rendering with LowLevelTexture
-    ├── SettingsView.swift                # App settings
-    ├── StreamingImmersiveView.swift      # Immersive streaming + 3D wheel + HUD
-    ├── StreamingVideoWindow.swift        # Windowed streaming mode
-    ├── StreamingView.swift               # Streaming session coordinator
-    └── WheelConfigurationView.swift      # Wheel sensitivity/position settings
+  VisionRemotePS5App.swift        App state and home/streaming windows
+  Views/                         Console, pairing, settings, and Metal video UI
+  Models/                        Console and controller data
+  Controllers/                   Bluetooth gamepad, input thread, rumble
+  Services/                      Connection/authentication and stream orchestration
+    StreamingService.swift       Active StreamVideoDecoder implementation
+  Streaming/                     Frame mailbox, upscalers, stereo audio, ring buffer
+  Chiaki/                        Project-owned C bridge and native helpers
+  Frameworks/                    Tracked Chiaki XCFramework and json-c library
+  Resources/                     App assets and native TLS certificate bundle
+VisionRemotePS5Tests/             XCTest sources and host-test harnesses
+scripts/                         Native maintenance and focused regression tests
+docs/performance_fixes_2026_09.md Historical regression findings and test context
+Local.xcconfig.example           Local credential/signing configuration template
 ```
 
-## 🚀 Features
+The former quarantine directory, 3D reference assets, unreferenced video classes, disconnected localization catalog, old Android/VR architecture documents, and experimental model conversion scripts have been removed. Their earlier versions remain available in Git history. `TODO.md` is a local, ignored planning file and is not required to build or run the app.
 
-### Video Pipeline
-- **MetalFX Upscaling** — 1080p→4K spatial upscaling with HDR support
-- **LowLevelTexture** — Direct GPU texture updates via RealityKit (visionOS 2.0)
-- **Zero-Copy Pipeline** — CVPixelBuffer → IOSurface → Metal → RealityKit
-- **HDR/EDR Support** — `.bgra10_xr` Extended Range format for values > 1.0
-- **MTLEvent Sync** — GPU-GPU synchronization without CPU waits
-- **Frame Pacing** — Adaptive 60/120Hz delivery with triple buffering
+## Native dependencies and maintenance
 
-### Audio Pipeline
-- **Spatial Audio** — Stereo Emitter Array with HRTF or Direct Stereo mode
-- **Lock-Free Ring Buffer** — SPSC buffer for decoder → player communication
-- **A/V Drift Correction** — PTS-based synchronization with 20ms threshold
-- **Adaptive Latency** — Emergency drop for buffer overflow (>100ms)
+The app links:
 
-### Input System
-- **High-Frequency Polling** — 120Hz dedicated thread (off-MainActor)
-- **DualSense Full Support** — Buttons, analog sticks, triggers, touchpad
-- **Haptic Feedback** — Rumble motors from PS5 via `GCHaptics`
-- **Adaptive Triggers** — L2/R2 resistance effects via `GCDualSenseAdaptiveTrigger`
+- `VisionRemotePS5/Frameworks/Chiaki.xcframework/xros-arm64/libchiaki_full.a`
+- `VisionRemotePS5/Frameworks/json-c/libjson-c.a`
 
-### 🏎️ Virtual F1 Steering Wheel (Hand Tracking)
-- **3D Mercedes F1 Wheel** — High-fidelity USDZ model rendered in RealityKit
-- **Hand Tracking Steering** — Steering via hand position (VirtualSteeringWheelService)
-- **Pinch Triggers** — L2 (brake) and R2 (throttle) via pinch gestures
-- **120Hz Input Loop** — Steering, throttle, and brake sent at 120Hz to PS5
-- **Button Panel** — On-screen face buttons (✕○□△), D-pad, Options, PS button
-- **Button Panel as 3D Attachment** — Rendered via RealityView `attachments:` for immersive space
-- **Cockpit Tilt** — Wheel angled at 20° for natural ergonomics
+`chiaki-ng/` is a separate, ignored checkout whose upstream is `streetpea/chiaki-ng`; it is not a submodule of this repository. Local upstream edits are not automatically included in app commits. The app uses the tracked static archive, not source files from that checkout.
 
-### Connectivity
-- **PSN Authentication** — OAuth2 browser login and Account ID resolution
-- **Console Discovery** — UDP broadcast to find PS5 on network
-- **Local Connection** — Direct IP discovery and reuse of this app's registration keys
-- **Remote Registration** — Separate PSN holepunch path; not a verified end-to-end internet streaming flow
-- **Manual Pairing** — One-time 8-digit Link Device PIN for local registration
-- **Wake-on-LAN** — Wake sleeping consoles remotely
-- **Encryption** — AES-GCM session encryption
+Preserve the adjacent `.orig` and `.backup` archives: `merge_chiaki_opus.sh` reads them as input when rebuilding the merged library. These are maintenance dependencies even though the app does not link them. Do not substitute a minimal crypto-only Chiaki archive for the merged library or infer native struct layouts from headers alone; the C bridge has compatibility safeguards for the shipped archive.
 
-### visionOS Integration
-- **Immersive Mode** — RealityKit cinema-style 6m × 3.375m display at 4m distance
-- **Floating Control Panel** — Glass-material panel with session controls
-- **Controller Modes** — DualSense, on-screen overlay, or virtual F1 wheel
-- **visionOS Native UI** — Full SwiftUI interface
-- **Localization** — English and Portuguese-BR
+Maintenance scripts retained for the current native stack:
 
-## 🛠️ Requirements
+| Script | Purpose |
+|---|---|
+| `build_opus_visionos.sh` | Build the Opus dependency used by native audio maintenance |
+| `merge_chiaki_opus.sh` | Merge existing Chiaki/Opus artifacts into the library |
+| `build_jsonc_visionos.sh` | Build json-c for the holepunch path |
+| `build_ca_bundle.sh` | Refresh the certificate resource used by native TLS |
+| `rebuild_video_modules.sh` | Recompile video receiver/frame processor modules |
+| `rebuild_feedback_module.sh` | Apply the pinned feedback-sender fix in a temporary source copy |
+| `rebuild_takion_module.sh` | Rebuild Takion with the transport/reordering changes |
+| `rebuild_holepunch_module.sh` | Rebuild native holepunch with its project-specific fixes |
 
-- Xcode 16.0+
-- visionOS SDK 2.0+
-- Apple Vision Pro
-- PlayStation 5 on same local network (or PSN account for remote play)
+These are maintenance tools, not an automatic clean-room rebuild of every native dependency. Inspect their prerequisites and source revisions before running them. Do not run them merely to build the Swift app; some replace native artifacts or access the network.
 
-## 📱 Build & Run
+## Validation
 
-1. Open `VisionRemotePS5.xcodeproj` in Xcode
-2. Select "Apple Vision Pro" device
-3. Build and Run (⌘R)
+Run these focused harnesses from the repository root:
 
-### Connect on the same local network
-
-1. On the home screen, use **Local Network**, enter the console's IP address,
-   and choose **Connect locally**. Allow Local Network access when prompted.
-2. If this app already has valid keys for that console and account, it starts
-   direct LAN streaming without creating a PSN session. Hardware identity is
-   checked using the discovery MAC; a matching name or IP alone is not enough.
-3. Otherwise, the local pairing screen opens with the console address filled.
-   PSN sign-in fills the Account ID. On the PS5, open **Settings > System > Remote
-   Play > Link Device**, then enter the displayed PIN in this app.
-4. After pairing, return to **Connect locally**. The app remembers the address
-   and reuses its own keys on subsequent connections.
-
-The official app's registration is not shared with this app. PSN login alone
-does not supply local registration keys. **Try PSN registration** is a separate
-path and is not required for the LAN workflow. Do not share the PIN or pairing
-keys in logs or screenshots.
-
-## ⚙️ Configuration
-
-### Info.plist Capabilities
-- **Microphone** — Voice chat
-- **Local Network** — Streaming to consoles on the local network (Remote Play over UDP/TCP)
-- **Background Audio** — Streaming audio
-- **Hand Tracking** — Virtual steering wheel input
-
-### App Transport Security
-Exceptions configured for:
-- `*.playstation.net`
-- `*.sonyentertainmentnetwork.com`
-
-## 🎮 Controller Mapping
-
-### DualSense / On-Screen Controller
-
-| DualSense | visionOS |
-|-----------|----------|
-| △○✕□ | Face buttons |
-| L1/R1 | Shoulders |
-| L2/R2 | Triggers (with Adaptive Trigger feedback) |
-| D-Pad | Directional |
-| L3/R3 | Thumbstick press |
-| Options | Menu button |
-| Share | Options button |
-| PS | Home button |
-| Rumble | Haptic feedback (L/R motors) |
-
-### Virtual F1 Wheel (Hand Tracking)
-
-| Gesture | Action |
-|---------|--------|
-| Hand position (left-right) | Steering (left stick X) |
-| Left pinch | L2 Brake |
-| Right pinch | R2 Throttle |
-| Button panel tap | Face buttons, D-pad, Options, PS |
-
-## 🔧 Architecture Highlights
-
-### Video Rendering (Zero-Copy)
-
-```
-CVPixelBuffer (VideoToolbox)
-      │ IOSurface-backed
-      ▼
-CVMetalTexture (Zero-Copy)
-      │
-      ▼
-MetalFX Spatial Upscaler (1080p→4K)
-      │ MTLEvent sync
-      ▼
-UpscalingPipeline (ColorSpace + HDR)
-      │
-      ▼
-LowLevelTexture.replace()
-      │
-      ▼
-RealityKit UnlitMaterial (HDR/EDR)
+```sh
+bash scripts/test_video_decoder.sh
+bash scripts/test_audio_buffer.sh
+bash scripts/test_video_gpu.sh
+bash scripts/test_feedback_sender.sh
+bash scripts/test_socket_mode.sh
+bash scripts/test_psn_customdata.sh
 ```
 
-### Audio/Video Sync
+- Decoder tests use real host VideoToolbox H.264/HEVC decoding, dependent frames, and recovery/backpressure cases.
+- Audio tests check bounded buffering, channel alignment, recovery, and concurrent access.
+- GPU tests run MetalFX and Enhanced on the **Mac GPU**, checking asynchronous texture reuse and border/center pixels.
+- Feedback tests simulate a blocked sender and verify input progress and button transitions. They require the local Chiaki checkout and pinned source commit referenced by the script.
+- Socket tests check nonblocking flags and error handling. PSN custom-data tests require the Chiaki source files referenced by their script.
 
-```
-┌─────────────────────────────────────────┐
-│     AudioVideoSyncController            │
-│  ├─ VideoMasterClock (PTS-based)       │
-│  └─ AudioDriftCorrector                │
-│        ├─ < 20ms: No action            │
-│        ├─ 20-50ms: Rate adjust (±0.5%) │
-│        ├─ > 50ms: Skip/duplicate       │
-│        └─ > 100ms: Emergency drop      │
-└─────────────────────────────────────────┘
-```
+The `*HostTests.swift` files are standalone harnesses invoked by scripts, not XCTest target members. XCTest source files also exist, but the shared scheme currently does not explicitly list a testable target; the shell harnesses above are the directly reproducible checks documented here.
 
-### Input Pipeline (120Hz)
+A successful host test or Release build does not prove PS5/Vision Pro latency or visual quality. On the headset, test connection, sustained gameplay, processing switches, audio, rumble, controller reconnection, and closing/reopening the stream. The detailed regression record is in [performance fixes](docs/performance_fixes_2026_09.md).
 
-```
-HighFrequencyInputController (Thread dedicada)
-      │ QoS: .userInteractive
-      │ threadPriority: 1.0
-      ▼
-InputPacket (28 bytes)
-      │
-      ▼
-StreamingSession → UDP → PS5
-```
+Debug video logs measure reception-to-GPU and reception-to-presentation in the local pipeline. They exclude earlier PS5 capture/encoding, network transit before reception, and Bluetooth input latency. Most noncritical Swift logs are disabled in Release; native diagnostics and errors can still be emitted. Do not share credentials, pairing keys, or unreviewed raw logs.
 
-### Virtual Steering Wheel Pipeline
+## Development scope
 
-```
-VirtualSteeringWheelService (ARKit Hand Tracking)
-      │ 120Hz Timer
-      ├─ steeringValue (-1.0 ... +1.0)
-      ├─ leftTrigger (0.0 ... 1.0) → L2 brake
-      └─ rightTrigger (0.0 ... 1.0) → R2 throttle
-      │
-      ▼
-ChiakiFullSession.setControllerState()
-      │ buttons | leftX | l2 | r2
-      ▼
-PS5 (via Remote Play protocol)
-```
-
-## ⚠️ Legal Notice
-
-This project is for **educational purposes only**. PlayStation Remote Play protocol is proprietary to Sony. Use at your own risk.
-
-## 📄 License
-
-MIT License
+This branch prepares the existing windowed client for future work. It does not implement the local immersion roadmap or claim benchmark results on visionOS 27 beta 8. Keep future rendering/ML experiments isolated from the active decoder, direct-stereo audio, and independent input path.
