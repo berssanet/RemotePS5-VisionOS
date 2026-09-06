@@ -47,3 +47,6 @@ VisionRemotePS5/Resources/DepthAnythingV2SmallF16.mlmodelc/
 
 # Reality Composer Pro per-user state
 *.rcuserdata
+
+# Local planning document
+/TODO.md
