@@ -157,6 +157,20 @@ check(!videoRecorder.snapshot()!.samples.contains { $0.interval.metric == .recei
 for invalid: Double in [0, .nan, .infinity, 0.99] {
     check(timing.presented(atHostSeconds: invalid) == nil, "Reject unavailable/invalid presentation")
 }
+let beforeRejectedPresentation = videoRecorder.snapshot()!.samples
+for (seconds, expected): (Double, PresentationMetricError) in [
+    (0, .unavailableTimestamp), (-0.0, .unavailableTimestamp),
+    (.nan, .invalidTimestamp), (.infinity, .invalidTimestamp),
+    (-1, .invalidTimestamp), (0.0000005, .invalidTimestamp),
+    (.greatestFiniteMagnitude, .invalidTimestamp), (0.99, .beforeReceipt)
+] {
+    switch timing.presentationResult(atHostSeconds: seconds) {
+    case .failure(let error): check(error == expected, "Specific presentation rejection reason")
+    case .success: fatalError("Invalid presentation accepted")
+    }
+}
+check(videoRecorder.snapshot()!.samples == beforeRejectedPresentation,
+      "Diagnostic rejection must not add synthetic presentation samples")
 check(timing.presented(atHostSeconds: 1.04)?.microseconds == 40_000, "Actual presentation endpoint")
 let videoSamples = videoRecorder.snapshot()!.samples
 check(videoSamples.map { $0.interval.metric } == [.receiveToDecode, .gpuExecution, .receiveToGPUCompletion, .receiveToPresentation],
@@ -174,6 +188,9 @@ let nextVideoSession = videoRecorder.beginSession()
 check(capturedFrame.metrics?.decoded(at: end) == nil, "Late decoder after reconnect")
 check(capturedFrame.metrics?.gpuCompleted(success: true, startSeconds: 1.02, endSeconds: 1.03) == nil, "Late GPU after reconnect")
 check(capturedFrame.metrics?.presented(atHostSeconds: 1.04) == nil, "Late presentation after reconnect")
+if case .failure(.inactiveSession) = timing.presentationResult(atHostSeconds: 1.04) {} else {
+    fatalError("Valid timestamp from old session must report inactive session")
+}
 check(videoRecorder.snapshot()!.samples.isEmpty, "Old mailbox frame cannot contaminate new session")
 let nextTiming = VideoFrameMetrics(recorder: videoRecorder, session: nextVideoSession, receivedAt: start)!
 mailbox.submit(pixel!, timestamp: start.microseconds, metrics: nextTiming)

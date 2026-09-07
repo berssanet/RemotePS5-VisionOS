@@ -116,6 +116,10 @@ final class MetalFXUpscaler {
     // MARK: - Output Texture (Private - GPU only, used directly for rendering)
     
     private var outputTexture: MTLTexture?
+
+    /// Persistent textures owned here; excludes input wrappers and MetalFX internals.
+    var ownedTextureCount: Int { outputTexture == nil ? 0 : 1 }
+    var ownedTextureBytes: Int { outputTexture?.allocatedSize ?? 0 }
     
     // MARK: - Mode Selection
     

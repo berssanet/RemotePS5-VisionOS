@@ -10,6 +10,10 @@ let metrics = StreamingMetricsRecorder()
 let session = metrics.beginSession()
 for mode in ["MetalFX", "Enhanced"] {
     var submissions: [(MTLCommandBuffer, MTLBuffer, UInt8, VideoFrameMetrics)] = []
+    let expectedOwnedCount = mode == "MetalFX" ? 1 : 2
+    let initialOwnedBytes = mode == "MetalFX" ? metalFX.ownedTextureBytes : enhanced.ownedTextureBytes
+    precondition(initialOwnedBytes > 0, "\(mode) must report allocated persistent texture bytes")
+    var firstOutput: ObjectIdentifier?
     // Reuse each upscaler's output across command buffers, as in the renderer.
     // Each readback must contain its own input, never the following frame.
     for value: UInt8 in [32, 128, 224] {
@@ -31,6 +35,16 @@ for mode in ["MetalFX", "Enhanced"] {
         CVPixelBufferUnlockBaseAddress(buffer, [])
         let command = queue.makeCommandBuffer()!
         let texture = (mode == "MetalFX" ? metalFX.encode(buffer, commandBuffer: command) : enhanced.encode(buffer, commandBuffer: command))!
+        let outputIdentity = ObjectIdentifier(texture)
+        if let firstOutput {
+            precondition(outputIdentity == firstOutput, "\(mode) must reuse its persistent output texture")
+        } else {
+            firstOutput = outputIdentity
+        }
+        let ownedCount = mode == "MetalFX" ? metalFX.ownedTextureCount : enhanced.ownedTextureCount
+        let ownedBytes = mode == "MetalFX" ? metalFX.ownedTextureBytes : enhanced.ownedTextureBytes
+        precondition(ownedCount == expectedOwnedCount, "\(mode) persistent texture count must remain bounded")
+        precondition(ownedBytes == initialOwnedBytes, "\(mode) persistent texture bytes must remain stable")
         let readback = device.makeBuffer(length: 3840 * 2160 * 4, options: .storageModeShared)!
         let blit = command.makeBlitCommandEncoder()!
         blit.copy(from: texture, sourceSlice: 0, sourceLevel: 0, sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
@@ -52,7 +66,12 @@ for mode in ["MetalFX", "Enhanced"] {
             precondition(abs(actual - Int(expected)) <= 3, "\(mode) frame/border corruption: \(actual) != \(expected)")
         }
     }
+    let completedOwnedCount = mode == "MetalFX" ? metalFX.ownedTextureCount : enhanced.ownedTextureCount
+    let completedOwnedBytes = mode == "MetalFX" ? metalFX.ownedTextureBytes : enhanced.ownedTextureBytes
+    precondition(completedOwnedCount == expectedOwnedCount && completedOwnedBytes == initialOwnedBytes,
+        "\(mode) persistent texture accounting must remain stable after GPU completion")
     print("PASS: \(mode) asynchronous encode, shared-queue texture reuse, center and border pixels")
+    print("PASS: \(mode) output identity reused, ownedTextures=\(completedOwnedCount), stableOwnedBytes=\(completedOwnedBytes)")
 }
 let samples = metrics.snapshot()!.samples
 precondition(samples.count == 12)

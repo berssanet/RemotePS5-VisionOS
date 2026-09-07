@@ -88,6 +88,13 @@ struct MetricSessionID: Hashable, Sendable {
     var logIdentifier: String { value.uuidString }
 }
 
+enum PresentationMetricError: String, Error, Sendable {
+    case unavailableTimestamp
+    case invalidTimestamp
+    case beforeReceipt
+    case inactiveSession
+}
+
 /// Captured at encoded-video callback entry and carried with the decoded buffer.
 /// It keeps its original identity even after the recorder starts another session.
 struct VideoFrameMetrics: Sendable {
@@ -125,7 +132,23 @@ struct VideoFrameMetrics: Sendable {
     /// invalid presentation times never become latency samples.
     @discardableResult
     func presented(atHostSeconds seconds: Double) -> MetricDuration? {
-        record(.receiveToPresentation, start: receivedAt, end: MetricTimestamp(hostSeconds: seconds))
+        try? presentationResult(atHostSeconds: seconds).get()
+    }
+
+    /// Diagnose the endpoint without replacing it with callback arrival time.
+    /// Session acceptance is checked atomically by record, not by a snapshot.
+    func presentationResult(atHostSeconds seconds: Double) -> Result<MetricDuration, PresentationMetricError> {
+        guard seconds != 0 else { return .failure(.unavailableTimestamp) }
+        guard let end = MetricTimestamp(hostSeconds: seconds) else {
+            return .failure(.invalidTimestamp)
+        }
+        guard let interval = try? MetricInterval(metric: .receiveToPresentation, start: receivedAt, end: end) else {
+            return .failure(.beforeReceipt)
+        }
+        guard recorder.record(interval, session: frame.session, frame: frame) else {
+            return .failure(.inactiveSession)
+        }
+        return .success(interval.duration)
     }
 
     private func record(_ metric: StreamingMetric, start: MetricTimestamp?,

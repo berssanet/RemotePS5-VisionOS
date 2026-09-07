@@ -36,6 +36,14 @@ final class EnhancedUpscaler {
     
     private var intermediateTexture: MTLTexture?  // After Lanczos, before CAS
     private var outputTexture: MTLTexture?         // Final output
+
+    /// Persistent textures owned here; excludes input CVMetalTexture wrappers.
+    var ownedTextureCount: Int {
+        (intermediateTexture == nil ? 0 : 1) + (outputTexture == nil ? 0 : 1)
+    }
+    var ownedTextureBytes: Int {
+        (intermediateTexture?.allocatedSize ?? 0) + (outputTexture?.allocatedSize ?? 0)
+    }
     
     // MARK: - Settings
     

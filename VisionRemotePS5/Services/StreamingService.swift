@@ -11,6 +11,7 @@ import Network
 import VideoToolbox
 import AVFoundation
 import QuartzCore  // v10.1: For CACurrentMediaTime monotonic clock
+import Metal
 
 // MARK: - Streaming Configuration
 
@@ -98,6 +99,15 @@ final class StreamingService: ObservableObject {
     private var configuration: StreamingConfiguration?
     nonisolated let metrics = StreamingMetricsRecorder()
     private var metricsSession: MetricSessionID?
+    private(set) var inputMetrics: InputMetricsRecorder?
+    private var inputMetricsReportTask: Task<Void, Never>?
+    private var videoQueueReportTask: Task<Void, Never>?
+    private(set) var audioThermalMetrics: AudioThermalMetrics?
+    private var thermalObserver: NSObjectProtocol?
+    #if DEBUG
+    private var inputMetricsLoadTask: Task<Void, Never>?
+    private var inputMetricsLoad: InputMetricsVideoLoad?
+    #endif
     private var psnStartTask: Task<Void, Error>?
     private var isStopping = false
     @Published private(set) var connectionStatusMessage = ""
@@ -133,7 +143,12 @@ final class StreamingService: ObservableObject {
         }
         
         self.configuration = configuration
-        metricsSession = metrics.beginSession()
+        let session = metrics.beginSession()
+        metricsSession = session
+        VideoDelivery.shared.beginSession(session)
+        VideoQueueMetrics.shared.beginSession(session)
+        inputMetrics = InputMetricsRecorder(session: session)
+        startThermalMonitoring(session: session)
         connectionStatusMessage = configuration.psnConnection == nil
             ? "Connecting on the local network…" : "Connecting through PlayStation Network…"
         
@@ -274,7 +289,8 @@ final class StreamingService: ObservableObject {
         // inline so a synchronous start failure cannot outrun stopStreaming().
         do {
             self.controllerManager?.tearDown()
-            self.controllerManager = GameControllerManager()
+            let inputMetrics = self.inputMetrics
+            self.controllerManager = GameControllerManager(inputMetrics: inputMetrics)
             
             // v10.1: TRUE 120Hz INPUT - Decoupled from video callback
             // The GameControllerManager polls at 120Hz (8.33ms) and directly sends
@@ -284,7 +300,8 @@ final class StreamingService: ObservableObject {
                 guard let self = self, self.inputGate.withLock({ $0 }) else { return }
                 
                 // Send directly to ChiakiFullSession at 120Hz - no throttling!
-                ChiakiFullSession.shared.setControllerState(
+                let started = inputMetrics == nil ? nil : StreamingMetricsClock.now()
+                let outcome = ChiakiFullSession.shared.setControllerState(
                     buttons: input.buttons,
                     leftX: Int16(input.leftStickX * 32767),
                     leftY: Int16(input.leftStickY * 32767),
@@ -293,8 +310,9 @@ final class StreamingService: ObservableObject {
                     l2: UInt8(input.leftTrigger * 255),
                     r2: UInt8(input.rightTrigger * 255)
                 )
+                inputMetrics?.recordSend(start: started, end: StreamingMetricsClock.now(), outcome: outcome)
             }
-            
+            startInputMetricsReporting()
 
         }
         
@@ -394,6 +412,8 @@ final class StreamingService: ObservableObject {
         let decoder = videoDecoder
         let recorder = metrics
         let session = metricsSession
+        let inputMetrics = self.inputMetrics
+        let audioThermalMetrics = self.audioThermalMetrics
         ChiakiFullSession.shared.onVideoFramePointer = { pointer, size, lost, recovered in
             let receivedAt = StreamingMetricsClock.now()
             let timing = session.flatMap {
@@ -401,7 +421,7 @@ final class StreamingService: ObservableObject {
             }
             return decoder?.submit(pointer: pointer, size: size, framesLost: lost, recovered: recovered) { buffer, timestamp in
                 timing?.decoded(at: StreamingMetricsClock.now())
-                VideoDelivery.shared.submit(buffer, timestamp: timestamp, metrics: timing)
+                VideoDelivery.shared.submit(buffer, timestamp: timestamp, metrics: timing, session: session)
             } ?? false
         }
 
@@ -426,18 +446,36 @@ final class StreamingService: ObservableObject {
             case .connected:
                 DebugLog.info("StreamingService", "✅ Connected via ChiakiFullSession!")
                 Task { @MainActor in
-                    guard !self.isStopping, self.state == .connecting || self.state == .negotiating else { return }
+                    guard self.metricsSession == session, !self.isStopping,
+                          self.state == .connecting || self.state == .negotiating else { return }
                     // Phase 5.21: state is the single source of truth; isStreaming derives from it.
                     self.state = .streaming
                     self.inputGate.withLock { $0 = true }
+                    if self.metricsSession == session {
+                        self.startInputMetricsLoadIfRequested()
+                        self.startVideoQueueReporting()
+                    }
                     self.delegate?.streamingService(self, didChangeState: .streaming)
                 }
 
             case .quit:
-                if let session { recorder.endSession(session) }
+                if let session {
+                    recorder.endSession(session)
+                    VideoDelivery.shared.endSession(session)
+                    VideoQueueMetrics.shared.endSession(session)
+                }
+                inputMetrics?.end()
+                audioThermalMetrics?.end()
                 DebugLog.print("[StreamingService] ❌ Session quit: \(reason ?? "unknown")")
                 Task { @MainActor in
+                    guard self.metricsSession == session else { return }
                     self.inputGate.withLock { $0 = false }
+                    if self.metricsSession == session {
+                        self.stopInputMetricsLoad()
+                        self.videoQueueReportTask?.cancel()
+                        self.videoQueueReportTask = nil
+                        self.stopThermalMonitoring()
+                    }
                     // The console never sends a final rumble-0 and the endless player
                     // latches its last intensity: silence the pad ourselves.
                     self.controllerManager?.triggerRumble(left: 0, right: 0)
@@ -517,7 +555,18 @@ final class StreamingService: ObservableObject {
     func stopStreaming() {
         guard !isStopping else { return }
         isStopping = true
-        if let session = metricsSession { metrics.endSession(session) }
+        if let session = metricsSession {
+            metrics.endSession(session)
+            VideoDelivery.shared.endSession(session)
+            VideoQueueMetrics.shared.endSession(session)
+        }
+        videoQueueReportTask?.cancel()
+        videoQueueReportTask = nil
+        stopThermalMonitoring()
+        inputMetrics?.end()
+        inputMetricsReportTask?.cancel()
+        inputMetricsReportTask = nil
+        stopInputMetricsLoad()
         metricsSession = nil
         inputGate.withLock { $0 = false }
         // The pad belongs to the session: stop the input thread and the haptic
@@ -554,7 +603,172 @@ final class StreamingService: ObservableObject {
         DebugLog.info("StreamingService", "Streaming stopped")
     }
     
+    private func startThermalMonitoring(session: MetricSessionID) {
+        stopThermalMonitoring()
+        let recorder = AudioThermalMetrics(session: session)
+        audioThermalMetrics = recorder
+        let process = ProcessInfo.processInfo
+        // Required by NSProcessInfo.h before registering for thermal changes.
+        let initial = ThermalReading(process.thermalState)
+        recorder.observeThermal(initial, at: StreamingMetricsClock.now(), source: .initial)
+        thermalObserver = NotificationCenter.default.addObserver(
+            forName: ProcessInfo.thermalStateDidChangeNotification, object: process, queue: nil
+        ) { _ in
+            // Posted on a global queue. Capture only this session's recorder;
+            // no actor access, formatting, or I/O from the notification callback.
+            let reading = ThermalReading(ProcessInfo.processInfo.thermalState)
+            recorder.observeThermal(reading, at: StreamingMetricsClock.now(), source: .notification)
+        }
+        // Reconcile a possible change between the initial read and registration.
+        recorder.observeThermal(ThermalReading(process.thermalState),
+                                at: StreamingMetricsClock.now(), source: .poll)
+    }
+
+    private func stopThermalMonitoring() {
+        audioThermalMetrics?.end()
+        if let thermalObserver { NotificationCenter.default.removeObserver(thermalObserver) }
+        thermalObserver = nil
+    }
+
+    /// Five-second process/device samples. Copies and console formatting stay
+    /// outside producer, renderer and controller callbacks.
+    private func startVideoQueueReporting() {
+        videoQueueReportTask?.cancel()
+        #if DEBUG
+        guard let session = metricsSession, let decoder = videoDecoder,
+              let audioPlayer, let audioRecorder = audioThermalMetrics,
+              let device = MTLCreateSystemDefaultDevice() else { return }
+        videoQueueReportTask = Task { @MainActor in
+            var previousThermalEvent: UInt64 = 0
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(5)) } catch { return }
+                let mailbox = VideoDelivery.shared.diagnostics
+                let renderer = VideoQueueMetrics.shared.snapshot()
+                guard renderer.isActive, renderer.session == session, mailbox.session == session else { return }
+                let queue = decoder.queueDiagnostics
+                let decode = decoder.diagnostics
+                var correlation = "session=\(session.logIdentifier) hostUs=unavailable"
+                if let now = StreamingMetricsClock.now() {
+                    let audio = audioPlayer.diagnostics
+                    let thermal = ThermalReading(ProcessInfo.processInfo.thermalState)
+                    guard let sample = audioRecorder.recordSample(audio: .init(
+                        sampleRate: audio.sampleRate, channels: audio.channels,
+                        targetSamples: audio.targetSamples, buffer: audio.buffer,
+                        oversizedRenderRequests: audio.oversizedRenderRequests), thermal: thermal, at: now) else { continue }
+                    correlation = "session=\(session.logIdentifier) sample=\(sample.sequence) intervalStartUs=\(sample.intervalStart.map { String($0.microseconds) } ?? "unavailable") hostUs=\(now.microseconds)"
+                    let audioHistory = audioRecorder.snapshot()
+                    let memory = VideoQueueMetrics.MemorySample(hostUs: now.microseconds,
+                        physicalFootprint: VideoQueueMetrics.physicalFootprint(),
+                        deviceAllocatedBytes: device.currentAllocatedSize,
+                        ownedTextureCount: renderer.ownedTextureCount,
+                        ownedTextureBytes: renderer.ownedTextureBytes,
+                        decoderSubmissions: queue.admittedSubmissions,
+                        decoderPayloadBytes: queue.admittedBytes,
+                        mailboxPixelBytes: mailbox.retainedPixelBytes)
+                    VideoQueueMetrics.shared.recordMemory(memory, session: session)
+                    let history = VideoQueueMetrics.shared.snapshot()
+                    let footprints = history.memorySamples.compactMap(\.physicalFootprint)
+                    let delta = footprints.first.flatMap { first in footprints.last.map { Int64($0) - Int64(first) } }
+                    let pcm = audio.buffer
+                    DebugLog.print("[AudioMetrics] \(correlation) sampleRate=\(audio.sampleRate) channels=\(audio.channels) queuedSamples=\(pcm.availableSamples) queuedMs=\(String(format: "%.3f", sample.audio.queuedMilliseconds)) peakQueuedMs=\(String(format: "%.3f", sample.audio.peakMilliseconds)) capacitySamples=\(pcm.capacity) targetSamples=\(audio.targetSamples) writtenSamples=\(pcm.writtenSamples) readSamples=\(pcm.readSamples) overflowSamples=\(pcm.overflowDiscardedSamples) catchUpSamples=\(pcm.catchUpDiscardedSamples) catchUpEvents=\(pcm.catchUpEvents) readCalls=\(pcm.readCalls) underflowReads=\(pcm.underflowReads) missingSamples=\(pcm.missingSamples) prePCMUnderflowReads=\(pcm.prePCMUnderflowReads) prePCMMissingSamples=\(pcm.prePCMMissingSamples) underflowEpisodes=\(pcm.underflowEpisodes) recoveries=\(pcm.recoveryEvents) contentionReads=\(pcm.contentionReads) contentionRequestedSamples=\(pcm.contentionRequestedSamples) oversizedRenderRequests=\(audio.oversizedRenderRequests)")
+                    DebugLog.print("[ThermalMetrics] \(correlation) state=\(thermal.label) rawState=\(thermal.rawValue) changes=\(audioHistory.thermalChanges) notifications=\(audioHistory.notificationsReceived) rejectedObservations=\(audioHistory.rejectedThermalObservations) invalidSamples=\(audioHistory.invalidSamples) retainedSamples=\(audioHistory.samples.count) overwrittenSamples=\(audioHistory.overwrittenSamples) retainedEvents=\(audioHistory.thermalEvents.count) overwrittenEvents=\(audioHistory.overwrittenThermalEvents)")
+                    for event in audioHistory.thermalEvents where event.sequence > previousThermalEvent {
+                        DebugLog.print("[ThermalEvent] session=\(session.logIdentifier) event=\(event.sequence) hostUs=\(event.at.microseconds) state=\(event.state.label) rawState=\(event.state.rawValue) source=\(event.source.rawValue) initial=\(event.isInitial) (local observation time)")
+                    }
+                    previousThermalEvent = audioHistory.thermalEventCount
+                    DebugLog.print("[VideoMemory] \(correlation) footprintBytes=\(memory.physicalFootprint.map(String.init) ?? "unavailable") windowDeltaBytes=\(delta.map(String.init) ?? "unavailable") windowPeakBytes=\(footprints.max().map(String.init) ?? "unavailable") deviceAllocatedBytes=\(memory.deviceAllocatedBytes) renderer=\(renderer.rendererID?.uuidString ?? "unavailable") ownedTextures=\(memory.ownedTextureCount) ownedTextureBytes=\(memory.ownedTextureBytes) retainedSamples=\(history.memorySamples.count) overwrittenSamples=\(history.overwrittenMemorySamples) (overlapping scopes; no leak verdict)")
+                }
+                DebugLog.print("[VideoQueues] \(correlation) decoderSlots=\(queue.admittedSubmissions) peakSlots=\(queue.peakAdmittedSubmissions) payloadBytes=\(queue.admittedBytes) peakPayloadBytes=\(queue.peakAdmittedBytes) rejectedNew=\(decode.rejected) invalid=\(queue.rejectInvalid) stopped=\(queue.rejectStopped) cancelled=\(queue.cancelledBeforeDecode) mailbox=\(mailbox.occupancy) peakMailbox=\(mailbox.peakOccupancy) mailboxBytes=\(mailbox.retainedPixelBytes) published=\(mailbox.published) overwrittenBeforeAcquire=\(mailbox.overwrittenBeforeAcquire) acquired=\(mailbox.acquiredFrames) cleared=\(mailbox.clearedBeforeAcquire) disabled=\(mailbox.disabledSubmissions) stale=\(mailbox.staleSubmissions) busyDraw=\(renderer.busyDraws) idleDraw=\(renderer.idleDraws) throttledDraw=\(renderer.throttledDraws) drawableUnavailable=\(renderer.drawableUnavailable) encodeFailed=\(renderer.encodeFailures) submitted=\(renderer.submitted) completed=\(renderer.completed) gpuFailed=\(renderer.gpuFailures) inFlight=\(renderer.inFlight) peakInFlight=\(renderer.peakInFlight) reusedOutputs=\(renderer.reusedOutputs)")
+            }
+        }
+        #endif
+    }
+
     // MARK: - Controller Input
+
+    /// An explicit Debug launch argument enables one finite GPU/memory load test.
+    /// Source stream configuration and the controller tick remain unchanged.
+    private func startInputMetricsLoadIfRequested() {
+        #if DEBUG
+        guard ProcessInfo.processInfo.arguments.contains("-InputMetricsVideoLoad"),
+              let recorder = inputMetrics, inputMetricsLoadTask == nil else { return }
+        guard let load = InputMetricsVideoLoad() else {
+            DebugLog.print("[InputMetricsLoad] unavailable"); return
+        }
+        inputMetricsLoad = load
+        inputMetricsLoadTask = Task { @MainActor in
+            func phase(_ name: String) {
+                DebugLog.print("[InputMetricsLoad] session=\(recorder.session.logIdentifier) phase=\(name) hostUs=\(StreamingMetricsClock.now()?.microseconds ?? 0)")
+            }
+            phase("baseline")
+            do { try await Task.sleep(for: .seconds(15)) } catch { return }
+            guard !Task.isCancelled else { return }
+            load.start()
+            phase("syntheticGPU")
+            do { try await Task.sleep(for: .seconds(15)) } catch { return }
+            load.stop()
+            let result = load.snapshot()
+            DebugLog.print("[InputMetricsLoad] submitted=\(result.submitted) completed=\(result.completed) failed=\(result.failed) skipped=\(result.skipped) (in-flight completions may follow)")
+            phase("recovery")
+            do { try await Task.sleep(for: .seconds(15)) } catch { return }
+            let final = load.snapshot()
+            DebugLog.print("[InputMetricsLoad] final submitted=\(final.submitted) completed=\(final.completed) failed=\(final.failed) skipped=\(final.skipped)")
+            phase("complete")
+        }
+        #endif
+    }
+
+    private func stopInputMetricsLoad() {
+        #if DEBUG
+        inputMetricsLoadTask?.cancel()
+        inputMetricsLoadTask = nil
+        inputMetricsLoad?.stop()
+        inputMetricsLoad = nil
+        #endif
+    }
+
+    /// Snapshot/formatting/I/O run on the main actor, never on the input thread.
+    /// The input recorder has its own try-lock and counts missed observations.
+    private func startInputMetricsReporting() {
+        inputMetricsReportTask?.cancel()
+        #if DEBUG
+        guard let recorder = inputMetrics else { return }
+        inputMetricsReportTask = Task { @MainActor in
+            var previousAcceptedCount: UInt64 = 0
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(5)) } catch { return }
+                let report = recorder.snapshot()
+                guard report.isActive else { return }
+                var intervals: [Double] = []
+                var work: [Double] = []
+                var handoffs: [Double] = []
+                var oldestStart: UInt64 = .max
+                var newestEnd: UInt64 = 0
+                let batch = report.samplesRecorded(after: previousAcceptedCount)
+                previousAcceptedCount = report.acceptedSampleCount
+                for sample in batch {
+                    switch sample {
+                    case .tick(let start, let end, let interval, let duration):
+                        oldestStart = min(oldestStart, start.microseconds)
+                        newestEnd = max(newestEnd, end.microseconds)
+                        if let interval { intervals.append(interval.milliseconds) }
+                        work.append(duration.milliseconds)
+                    case .send(let start, let end, let duration, _):
+                        oldestStart = min(oldestStart, start.microseconds)
+                        newestEnd = max(newestEnd, end.microseconds)
+                        handoffs.append(duration.milliseconds)
+                    }
+                }
+                func p95(_ values: [Double]) -> String {
+                    guard !values.isEmpty else { return "unavailable" }
+                    let sorted = values.sorted()
+                    return String(format: "%.3f", sorted[Int(ceil(Double(sorted.count) * 0.95)) - 1])
+                }
+                DebugLog.print("[InputMetrics] session=\(report.session.logIdentifier) ticks=\(report.ticks) calls=\(report.calls) slowCalls=\(report.slowCalls) errors=\(report.errors) busy=\(report.busy) inactive=\(report.inactive) missed=\(report.missedSamples) invalid=\(report.invalidSamples) overwritten=\(report.overwrittenSamples) retained=\(report.samples.count) batch=\(batch.count) oldestStartUs=\(batch.isEmpty ? 0 : oldestStart) newestEndUs=\(newestEnd) intervalSamples=\(intervals.count) tickWorkSamples=\(work.count) handoffSamples=\(handoffs.count) tickIntervalP95Ms=\(p95(intervals)) tickWorkP95Ms=\(p95(work)) handoffP95Ms=\(p95(handoffs)) (newly retained local samples; not delivery latency)")
+            }
+        }
+        #endif
+    }
     
     func pressButton(_ button: ControllerButton) {
         controllerState.buttons.insert(button)
@@ -645,6 +859,17 @@ struct ControllerState {
 // MARK: - Stream Video Decoder
 
 final class StreamVideoDecoder: @unchecked Sendable {
+    /// CPU submissions admitted by the semaphore, including their copied input.
+    /// These gauges end when decodeAccessUnit returns, not when VT emits output.
+    struct QueueDiagnostics: Sendable {
+        var admittedSubmissions = 0
+        var peakAdmittedSubmissions = 0
+        var admittedBytes = 0
+        var peakAdmittedBytes = 0
+        var rejectInvalid: UInt64 = 0
+        var rejectStopped: UInt64 = 0
+        var cancelledBeforeDecode: UInt64 = 0
+    }
     private let queue: DispatchQueue
     // Bound CPU submissions only. An asynchronous VT output must never hold an
     // admission slot: some streams need further input before producing output.
@@ -660,6 +885,7 @@ final class StreamVideoDecoder: @unchecked Sendable {
         var repairedReferences: UInt64 = 0
         var lastReport: Double = 0
         var epoch: UInt64 = 0
+        var queues = QueueDiagnostics()
     }
     private let lifecycle = OSAllocatedUnfairLock(initialState: Lifecycle())
     private var decompressionSession: VTDecompressionSession?
@@ -677,6 +903,7 @@ final class StreamVideoDecoder: @unchecked Sendable {
     var diagnostics: (accepted: UInt64, rejected: UInt64, outputs: UInt64, errors: UInt64, sessions: UInt64) {
         lifecycle.withLock { ($0.accepted, $0.rejected, $0.outputs, $0.errors, $0.sessions) }
     }
+    var queueDiagnostics: QueueDiagnostics { lifecycle.withLock { $0.queues } }
 
     func start() { lifecycle.withLock { $0.running = true } }
     func stop() {
@@ -711,9 +938,15 @@ final class StreamVideoDecoder: @unchecked Sendable {
     /// Chiaki uses this result to decide which frames may be used as references.
     func submit(pointer: UnsafeRawPointer, size: Int, framesLost: Int32, recovered: Bool,
                 completion: @escaping (CVPixelBuffer, UInt64) -> Void) -> Bool {
-        guard size > 4, size <= 10_000_000 else { return false }
+        guard size > 4, size <= 10_000_000 else {
+            lifecycle.withLock { $0.queues.rejectInvalid &+= 1 }
+            return false
+        }
         let state = lifecycle.withLock { $0 }
-        guard state.running else { return false }
+        guard state.running else {
+            lifecycle.withLock { $0.queues.rejectStopped &+= 1 }
+            return false
+        }
         guard capacity.wait(timeout: .now()) == .success else {
             let count = lifecycle.withLock { $0.rejected &+= 1; return $0.rejected }
             if count <= 3 || count % 60 == 0 {
@@ -722,13 +955,28 @@ final class StreamVideoDecoder: @unchecked Sendable {
             // Keep existing references so Chiaki can remap the next P frame to them.
             return false
         }
+        lifecycle.withLock {
+            $0.queues.admittedSubmissions += 1
+            $0.queues.admittedBytes += size
+            $0.queues.peakAdmittedSubmissions = max($0.queues.peakAdmittedSubmissions, $0.queues.admittedSubmissions)
+            $0.queues.peakAdmittedBytes = max($0.queues.peakAdmittedBytes, $0.queues.admittedBytes)
+        }
         let data = Data(bytes: pointer, count: size)
         let receivedAt = UInt64(CACurrentMediaTime() * 1_000_000)
         lifecycle.withLock { $0.accepted &+= 1; if recovered { $0.repairedReferences &+= 1 } }
         queue.async {
-            defer { self.capacity.signal() }
+            defer {
+                self.lifecycle.withLock {
+                    $0.queues.admittedSubmissions -= 1
+                    $0.queues.admittedBytes -= size
+                }
+                self.capacity.signal()
+            }
             let current = self.lifecycle.withLock { $0 }
-            guard current.running, current.generation == state.generation else { return }
+            guard current.running, current.generation == state.generation else {
+                self.lifecycle.withLock { $0.queues.cancelledBeforeDecode &+= 1 }
+                return
+            }
             // recovered is a reference remap, NOT FEC. framesLost is metadata,
             // not an instruction to erase VideoToolbox's surviving references.
             let finished = ContinuationGate()

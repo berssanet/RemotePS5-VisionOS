@@ -411,31 +411,28 @@ final class ChiakiFullSession: ObservableObject {
     }
 
     /// Update controller state
+    @discardableResult
     func setControllerState(
         buttons: UInt32,
         leftX: Int16, leftY: Int16,
         rightX: Int16, rightY: Int16,
         l2: UInt8, r2: UInt8
-    ) {
+    ) -> InputSendOutcome {
         // Never park the 120 Hz thread behind a teardown: skip the tick instead.
-        guard controllerCallLock.lockIfAvailable() else { return }
+        guard controllerCallLock.lockIfAvailable() else { return .busy }
         defer { controllerCallLock.unlock() }
         // The C side is the truth for "started": a PSN start still in its holepunch
         // phase holds a zeroed ChiakiSession whose mutexes are not initialized yet.
-        guard isActive, chiaki_fullsession_is_started_wrapper() else { return }
+        guard isActive, chiaki_fullsession_is_started_wrapper() else { return .inactive }
         
-        let startedAt = ProcessInfo.processInfo.systemUptime
         let result = chiaki_fullsession_set_controller_wrapper(
             buttons,
             leftX, leftY,
             rightX, rightY,
             l2, r2
         )
-        let elapsed = (ProcessInfo.processInfo.systemUptime - startedAt) * 1000
-        if elapsed > 8.33 || result != CHIAKI_ERR_SUCCESS {
-            DebugLog.print("[Input] native update=\(String(format: "%.2f", elapsed))ms status=\(result.rawValue)")
-        }
-
+        // This is acceptance by the native state setter, not a UDP delivery ack.
+        return result == CHIAKI_ERR_SUCCESS ? .submitted : .failed(Int32(result.rawValue))
     }
 }
 

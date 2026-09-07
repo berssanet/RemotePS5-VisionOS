@@ -3,8 +3,12 @@
 Task 01.01 adds a validated timing schema in
 [StreamingMetrics.swift](../VisionRemotePS5/Services/StreamingMetrics.swift).
 Task 01.02 subsequently added [session/frame isolation](metrics_session_identity_2026_09.md).
-Task 01.03 now integrates [video collection](video_metrics_instrumentation_2026_09.md),
-with physical timestamp validation pending. Input collection remains separate.
+Task 01.03 integrates [video collection](video_metrics_instrumentation_2026_09.md);
+the user waived its unavailable physical presentation endpoint validation.
+Completed task 01.04 uses a [dedicated bounded input recorder](input_metrics_2026_09.md).
+Task 01.05 adds [queue, reuse and memory observations](video_queue_metrics_2026_09.md)
+with the same captured session identity. Task01.06 adds [audio and thermal observations](audio_thermal_metrics_2026_09.md)
+with matching video reporting timestamps and intervals.
 
 ## Contract
 

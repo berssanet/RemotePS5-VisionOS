@@ -7,6 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		AUDTHERMALBUILD001 /* AudioThermalMetrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = AUDTHERMALREF001 /* AudioThermalMetrics.swift */; };
+		QUEUEBUILD001 /* VideoQueueMetrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = QUEUEREF001 /* VideoQueueMetrics.swift */; };
+		INPUTLOADBUILD001 /* InputMetricsVideoLoad.swift in Sources */ = {isa = PBXBuildFile; fileRef = INPUTLOADREF001 /* InputMetricsVideoLoad.swift */; };
+		INPUTMETRICBUILD001 /* InputMetrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = INPUTMETRICREF001 /* InputMetrics.swift */; };
 		METRICBUILD001 /* StreamingMetrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = METRICREF001 /* StreamingMetrics.swift */; };
 		APP001 /* VisionRemotePS5App.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC001 /* VisionRemotePS5App.swift */; };
 		APP002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC002 /* ContentView.swift */; };
@@ -65,6 +69,10 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		AUDTHERMALREF001 /* AudioThermalMetrics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioThermalMetrics.swift; sourceTree = "<group>"; };
+		QUEUEREF001 /* VideoQueueMetrics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoQueueMetrics.swift; sourceTree = "<group>"; };
+		INPUTLOADREF001 /* InputMetricsVideoLoad.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputMetricsVideoLoad.swift; sourceTree = "<group>"; };
+		INPUTMETRICREF001 /* InputMetrics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputMetrics.swift; sourceTree = "<group>"; };
 		METRICREF001 /* StreamingMetrics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamingMetrics.swift; sourceTree = "<group>"; };
 		AUDRINGBUFREF001 /* AudioRingBuffer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRingBuffer.swift; sourceTree = "<group>"; };
 		CGATESRC001 /* ContinuationGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContinuationGate.swift; sourceTree = "<group>"; };
@@ -203,6 +211,10 @@
 				CNSSRC001 /* ConsoleStorageService.swift */,
 				CGATESRC001 /* ContinuationGate.swift */,
 				METRICREF001 /* StreamingMetrics.swift */,
+				QUEUEREF001 /* VideoQueueMetrics.swift */,
+				AUDTHERMALREF001 /* AudioThermalMetrics.swift */,
+				INPUTMETRICREF001 /* InputMetrics.swift */,
+				INPUTLOADREF001 /* InputMetricsVideoLoad.swift */,
 				CHKFSESSRC001 /* ChiakiFullSession.swift */,
 				WOLSRCSVC001 /* WakeOnLanService.swift */,
 				LOGGERREF001 /* Logger.swift */,
@@ -391,6 +403,10 @@
 				CNSSTO001 /* ConsoleStorageService.swift in Sources */,
 				CGATE001 /* ContinuationGate.swift in Sources */,
 				METRICBUILD001 /* StreamingMetrics.swift in Sources */,
+				QUEUEBUILD001 /* VideoQueueMetrics.swift in Sources */,
+				AUDTHERMALBUILD001 /* AudioThermalMetrics.swift in Sources */,
+				INPUTMETRICBUILD001 /* InputMetrics.swift in Sources */,
+				INPUTLOADBUILD001 /* InputMetricsVideoLoad.swift in Sources */,
 				CHKFSES001 /* ChiakiFullSession.swift in Sources */,
 				WOLSVC001 /* WakeOnLanService.swift in Sources */,
 				LOGGERSRC001 /* Logger.swift in Sources */,

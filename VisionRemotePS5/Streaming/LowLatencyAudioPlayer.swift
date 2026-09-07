@@ -1,8 +1,16 @@
 import Foundation
 import AVFoundation
+import Synchronization
 
 /// One stereo source keeps both channels aligned, including overload recovery.
 final class LowLatencyAudioPlayer {
+    struct Diagnostics: Sendable {
+        let sampleRate: Int
+        let channels: Int
+        let targetSamples: Int
+        let buffer: AudioRingBuffer.Diagnostics
+        let oversizedRenderRequests: UInt64
+    }
     private let sampleRate: Int
     private let channels: Int
     private let ring: AudioRingBuffer
@@ -11,7 +19,14 @@ final class LowLatencyAudioPlayer {
     private var targetSamples: Int
     private let maximumRenderFrames = 8192
     private let scratch: UnsafeMutablePointer<Int16>
-    private var receivedSamples = 0
+    private let oversizedRenderRequests = Atomic<UInt64>(0)
+
+    /// Reporting/configuration stays off the audio render and native input callbacks.
+    var diagnostics: Diagnostics {
+        Diagnostics(sampleRate: sampleRate, channels: channels, targetSamples: targetSamples,
+            buffer: ring.diagnostics,
+            oversizedRenderRequests: oversizedRenderRequests.load(ordering: .relaxed))
+    }
 
     init(sampleRate: Int, channels: Int) {
         precondition(channels == 2)
@@ -44,6 +59,7 @@ final class LowLatencyAudioPlayer {
                 guard let self else { return noErr }
                 let output = UnsafeMutableAudioBufferListPointer(buffers)
                 guard frames <= self.maximumRenderFrames else {
+                    self.oversizedRenderRequests.wrappingAdd(1, ordering: .relaxed)
                     for buffer in output { if let data = buffer.mData { memset(data, 0, Int(buffer.mDataByteSize)) } }
                     silence.pointee = true
                     return noErr
@@ -79,16 +95,11 @@ final class LowLatencyAudioPlayer {
             guard let base = raw.baseAddress else { return }
             ring.write(base.assumingMemoryBound(to: Int16.self), count: sampleCount)
         }
-        receivedSamples += sampleCount
-        if receivedSamples >= sampleRate * channels * 2 {
-            receivedSamples = 0
-            let milliseconds = Double(ring.availableSamples) * 1000 / Double(sampleRate * channels)
-            DebugLog.print("[Audio] queued=\(String(format: "%.1f", milliseconds))ms discardedStereoFrames=\(ring.discardedSamples / channels)")
-        }
     }
     /// The session joins native callbacks before calling stop.
     func stop() {
         engine?.stop(); engine = nil; source = nil
         ring.reset()
+        oversizedRenderRequests.store(0, ordering: .relaxed)
     }
 }

@@ -1,8 +1,9 @@
 # Video metrics instrumentation — 2026-09-07
 
-Task 01.03 implementation and host/GPU tests are ready. **Physical presentation
-timestamp validation is pending**; do not mark the task complete from compilation,
-installation, or the earlier functional smoke test.
+Task 01.03 was **waived by the user on 2026-09-07** after the device probe.
+Implementation and host/GPU tests remain available, but physical presentation
+timestamps were not validated. Investigation is closed at the user’s request;
+this waiver is not a passed test and no longer blocks further tasks.
 
 ## Live path
 
@@ -96,3 +97,52 @@ minute, then close/reopen the PS5 session. Required evidence before completion:
 If the platform supplies only zero/unavailable presentation times, keep those
 samples rejected and record the limitation; do not substitute GPU completion.
 This is a functional instrumentation check, not p95 latency or overhead approval.
+
+### Follow-up: Xcode console and rejection diagnostics
+
+The `devicectl --console` connection failed; it did not capture the user's run.
+The Xcode 27 beta console was subsequently read directly through the UI while
+the Native PS5 session was running. Matching frame logs included GPU intervals
+of 7.190 ms (frame 16856) and 13.715 ms (frame 18306), each accompanied by the
+old generic presentation-rejection message. These are individual local samples,
+not percentiles or end-to-end latency. No valid presentation endpoint or
+reconnect identity was established by this observation.
+
+The generic message did not identify whether the endpoint was zero, invalid,
+before receipt, or rejected by session lifetime. The updated instrumentation
+reports `unavailableTimestamp`, `invalidTimestamp`, `beforeReceipt`, or
+`inactiveSession`, alongside the raw `presentedSeconds` and `receivedUs`.
+Recording and classification use one validation path and atomic recorder
+acceptance. The two-second log cadence is retained; invalid values never produce
+synthetic intervals. A zero value alone cannot distinguish a skipped drawable
+from a platform timing limitation.
+
+Host tests cover each rejection reason, unchanged storage on rejection, valid
+presentation recording, and stale-session callbacks. The diagnostics test run
+passed (`/tmp/VisionRemotePS5-0103-diagnostics-tests.log`), and the signed Debug
+build passed with no compiler warnings/errors (`/tmp/VisionRemotePS5-sdk27-build.log`).
+The new build was launched from Xcode and the PS5 stream resumed with a new
+metrics session identity. Direct console reads confirmed `unavailableTimestamp`
+and `presentedSeconds=0.0` for frames 5, 123, 243, 364, 486 and later frames
+through 2513 (about 42 seconds between the first and last receipt timestamps).
+For example, frame 123 had receive-to-GPU=6.204 ms with receivedUs=43608146816;
+frame 2513 had receive-to-GPU=6.589 ms with receivedUs=43648446406. Both presentation
+endpoints were zero. These observations establish unavailable endpoints in this
+run, not a reversed clock or recorder rejection. They do not prove every frame
+was dropped, nor establish a general visionOS limitation. The user confirmed visible moving video and normal gameplay after this restart.
+This rules out a completely absent/frozen stream in this run, but does not prove
+that each sampled drawable reached the display. Audio and haptics were not
+separately reconfirmed. At that checkpoint, 01.03 remained open because a valid physical
+presentation timestamp was missing; the user subsequently waived the task.
+
+The subsequent [standalone physical probe](../Diagnostics/PresentationProbe/device-result-2026-09-07.md)
+reproduced zero timestamps in both the standard MTKView path and queued layer
+acquisition, including a bounded 100-ms reread of one drawable. The probe links
+no streaming code. The user confirmed changing colors in both modes; the report preserves
+the exact observed checkpoints and limits. Do not treat callback arrival, GPU
+completion, or predicted display time as a measured presentation endpoint.
+
+The handler placement follows Apple's
+[addPresentedHandler documentation](https://developer.apple.com/documentation/metal/mtldrawable/addpresentedhandler(_:));
+the installed SDK header documents zero for an unpresented or skipped drawable.
+Neither fact establishes the cause of the rejected samples on this device.

@@ -56,22 +56,16 @@ class GameControllerManager: ObservableObject {
         var onInputReady: ((ControllerInput) -> Void)?
     }
 
-    /// Owned by the input thread; the lock keeps the access exclusive.
-    private struct InputDiagnostics {
-        var lastButtons: UInt32 = 0
-        var ticks: UInt64 = 0
-        var lastReportTime: TimeInterval = 0
-    }
-
     private let inputShared = OSAllocatedUnfairLock(uncheckedState: InputShared())
-    private let inputDiagnostics = OSAllocatedUnfairLock(initialState: InputDiagnostics())
+    private let inputMetrics: InputMetricsRecorder?
     private let inputLoop = HighFrequencyInputController()
     private let handlerQueue = DispatchQueue(label: "controller.events", qos: .userInteractive)
     private let samplingLock = NSLock()
 
     private let rumble = ControllerRumbleWorker()
 
-    init() {
+    init(inputMetrics: InputMetricsRecorder? = nil) {
+        self.inputMetrics = inputMetrics
         setupNotifications()
         checkForConnectedControllers()
     }
@@ -88,7 +82,7 @@ class GameControllerManager: ObservableObject {
     /// Start the 120 Hz input thread. Independent of the display refresh rate.
     func startPolling() {
         inputLoop.onInputReady = { [weak self] in self?.inputTick() }
-        inputLoop.start()
+        inputLoop.start(metrics: inputMetrics)
         DebugLog.print("[Controller] ✅ 120 Hz input thread started")
     }
 
@@ -117,43 +111,14 @@ class GameControllerManager: ObservableObject {
 
     // MARK: - Input thread
 
-    /// Runs on the input thread: read the pad, log transitions, forward the snapshot.
+    /// Runs on the input/event thread: read the pad and forward without console I/O.
     nonisolated private func inputTick() {
         samplingLock.lock()
         defer { samplingLock.unlock() }
         let shared = inputShared.withLockUnchecked { ($0.gamepad, $0.onInputReady) }
         guard let gamepad = shared.0 else { return }
         let input = Self.readGamepadState(gamepad)
-        logInputDiagnostics(input, gamepad: gamepad)
         shared.1?(input)
-    }
-
-    /// Rate-limited: one line per button transition, one stats line every 5 s.
-    nonisolated private func logInputDiagnostics(_ input: ControllerInput, gamepad: GCExtendedGamepad) {
-        #if DEBUG
-        let now = ProcessInfo.processInfo.systemUptime
-        let report = inputDiagnostics.withLock { diagnostics -> (buttonsChanged: Bool, rate: Double?) in
-            diagnostics.ticks += 1
-            let changed = input.buttons != diagnostics.lastButtons
-            diagnostics.lastButtons = input.buttons
-            var rate: Double?
-            if diagnostics.lastReportTime == 0 {
-                diagnostics.lastReportTime = now
-                diagnostics.ticks = 0
-            } else if now - diagnostics.lastReportTime >= 5 {
-                rate = Double(diagnostics.ticks) / (now - diagnostics.lastReportTime)
-                diagnostics.lastReportTime = now
-                diagnostics.ticks = 0
-            }
-            return (changed, rate)
-        }
-        if report.buttonsChanged {
-            DebugLog.print("[Controller] 🎮 buttons=0x\(String(input.buttons, radix: 16)) L(\(input.leftStickX),\(input.leftStickY)) R(\(input.rightStickX),\(input.rightStickY))")
-        }
-        if let rate = report.rate {
-            DebugLog.print("[Controller] 📊 Input thread \(String(format: "%.1f", rate)) Hz, lastEvent=\(String(format: "%.3f", gamepad.lastEventTimestamp))")
-        }
-        #endif
     }
 
     /// Pure read of the whole gamepad into one snapshot (any thread).
