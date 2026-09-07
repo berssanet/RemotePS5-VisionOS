@@ -562,7 +562,7 @@
 					"$(inherited)",
 					"$(SRCROOT)/VisionRemotePS5/Frameworks/Chiaki.xcframework/xros-arm64/Headers",
 					"$(SRCROOT)/VisionRemotePS5/Chiaki",
-					"$(SRCROOT)/chiaki-ng/third-party/curl/include",
+					"$(SRCROOT)/VisionRemotePS5/ThirdParty/curl/include",
 				);
 				INFOPLIST_FILE = VisionRemotePS5/Info.plist;
 				LIBRARY_SEARCH_PATHS = (
@@ -609,7 +609,7 @@
 					"$(inherited)",
 					"$(SRCROOT)/VisionRemotePS5/Frameworks/Chiaki.xcframework/xros-arm64/Headers",
 					"$(SRCROOT)/VisionRemotePS5/Chiaki",
-					"$(SRCROOT)/chiaki-ng/third-party/curl/include",
+					"$(SRCROOT)/VisionRemotePS5/ThirdParty/curl/include",
 				);
 				INFOPLIST_FILE = VisionRemotePS5/Info.plist;
 				LIBRARY_SEARCH_PATHS = (

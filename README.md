@@ -49,6 +49,8 @@ xcodebuild -project VisionRemotePS5.xcodeproj \
 
 The precompiled native libraries are tracked in this repository; a normal app build does not require cloning or recompiling Chiaki. Some maintenance scripts and host tests have additional source dependencies described below.
 
+The isolated Release build was verified with Xcode 27 and SDK visionOS 27 after including the curl public headers used by the C bridge. See the [clean-build artifact record](docs/clean_build_artifacts_2026_09.md) for the tested configuration, dependency hashes, and reproduction steps.
+
 ## Connect over the local network
 
 1. Enable Remote Play on the PS5. Keep the console reachable from the headset's network and allow Local Network access when the app requests it.
@@ -96,6 +98,8 @@ The app links:
 - `VisionRemotePS5/Frameworks/json-c/libjson-c.a`
 
 `chiaki-ng/` is a separate, ignored checkout whose upstream is `streetpea/chiaki-ng`; it is not a submodule of this repository. Local upstream edits are not automatically included in app commits. The app uses the tracked static archive, not source files from that checkout.
+
+`VisionRemotePS5/ThirdParty/curl/` contains the unmodified public curl headers and license needed to compile `ChiakiCore.c`. Debug and Release use this project-local include path. The [header provenance record](VisionRemotePS5/ThirdParty/curl/README.md) pins the revision and checksums; the curl implementation remains inside the existing Chiaki archive.
 
 Preserve the adjacent `.orig` and `.backup` archives: `merge_chiaki_opus.sh` reads them as input when rebuilding the merged library. These are maintenance dependencies even though the app does not link them. Do not substitute a minimal crypto-only Chiaki archive for the merged library or infer native struct layouts from headers alone; the C bridge has compatibility safeguards for the shipped archive.
 
