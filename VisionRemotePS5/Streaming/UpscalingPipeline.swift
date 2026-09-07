@@ -17,6 +17,7 @@ final class VideoFrameMailbox: @unchecked Sendable {
         let pixelBuffer: CVPixelBuffer
         let receivedAt: UInt64
         let id: UInt64
+        let metrics: VideoFrameMetrics?
     }
     struct State {
         var enabled = false
@@ -26,11 +27,11 @@ final class VideoFrameMailbox: @unchecked Sendable {
         var sharpness: Float = 0.5
     }
     private let state = OSAllocatedUnfairLock(uncheckedState: State())
-    func submit(_ buffer: CVPixelBuffer, timestamp: UInt64) {
+    func submit(_ buffer: CVPixelBuffer, timestamp: UInt64, metrics: VideoFrameMetrics? = nil) {
         state.withLockUnchecked {
             guard $0.enabled else { return }
             $0.nextID &+= 1
-            $0.frame = Frame(pixelBuffer: buffer, receivedAt: timestamp, id: $0.nextID)
+            $0.frame = Frame(pixelBuffer: buffer, receivedAt: timestamp, id: $0.nextID, metrics: metrics)
         }
     }
     func snapshot() -> State { state.withLockUnchecked { $0 } }

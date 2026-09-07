@@ -6,11 +6,14 @@ let device = MTLCreateSystemDefaultDevice()!
 let queue = device.makeCommandQueue()!
 let metalFX = MetalFXUpscaler()!
 let enhanced = EnhancedUpscaler()!
+let metrics = StreamingMetricsRecorder()
+let session = metrics.beginSession()
 for mode in ["MetalFX", "Enhanced"] {
-    var submissions: [(MTLCommandBuffer, MTLBuffer, UInt8)] = []
+    var submissions: [(MTLCommandBuffer, MTLBuffer, UInt8, VideoFrameMetrics)] = []
     // Reuse each upscaler's output across command buffers, as in the renderer.
     // Each readback must contain its own input, never the following frame.
     for value: UInt8 in [32, 128, 224] {
+        let timing = VideoFrameMetrics(recorder: metrics, session: session, receivedAt: StreamingMetricsClock.now())!
         var pixel: CVPixelBuffer?
         precondition(CVPixelBufferCreate(nil, 1920, 1080, kCVPixelFormatType_32BGRA,
             [kCVPixelBufferMetalCompatibilityKey: true, kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary,
@@ -35,11 +38,14 @@ for mode in ["MetalFX", "Enhanced"] {
             destinationOffset: 0, destinationBytesPerRow: 3840 * 4, destinationBytesPerImage: 3840 * 2160 * 4)
         blit.endEncoding()
         command.commit()
-        submissions.append((command, readback, value))
+        submissions.append((command, readback, value, timing))
     }
-    for (command, readback, expected) in submissions {
+    for (command, readback, expected, timing) in submissions {
         command.waitUntilCompleted() // Test-only CPU readback, never in app playback.
         precondition(command.status == .completed, "GPU error: \(String(describing: command.error))")
+        precondition(timing.gpuCompleted(success: command.status == .completed,
+            startSeconds: command.gpuStartTime, endSeconds: command.gpuEndTime) != nil,
+            "GPU host timestamps must yield a valid correlated interval")
         let bytes = readback.contents().assumingMemoryBound(to: UInt8.self)
         for (x, y) in [(0,0), (1920,1080), (3839,2159)] {
             let actual = Int(bytes[(y * 3840 + x) * 4])
@@ -48,3 +54,8 @@ for mode in ["MetalFX", "Enhanced"] {
     }
     print("PASS: \(mode) asynchronous encode, shared-queue texture reuse, center and border pixels")
 }
+let samples = metrics.snapshot()!.samples
+precondition(samples.count == 12)
+precondition(Set(samples.compactMap(\.frame)).count == 6)
+precondition(!samples.contains { $0.interval.metric == .receiveToPresentation })
+print("PASS: actual Metal GPU timestamps correlated to six frames; no presentation inferred")

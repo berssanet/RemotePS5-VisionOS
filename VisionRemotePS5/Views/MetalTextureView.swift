@@ -267,6 +267,8 @@ struct MetalTextureView: UIViewRepresentable {
                         // Retain the decoder's IOSurface until the GPU has stopped reading it.
                         withExtendedLifetime((buffer, cvTexture)) {}
                         capacity.signal()
+                        let gpuLatency = frame.metrics?.gpuCompleted(success: completed.status == .completed,
+                            startSeconds: completed.gpuStartTime, endSeconds: completed.gpuEndTime)
                         if completed.status == .completed {
                             self.renderQueue.async {
                                 if self.lastProcessingStatus != status {
@@ -279,10 +281,8 @@ struct MetalTextureView: UIViewRepresentable {
                                     DispatchQueue.main.async(execute: self.onFirstFrame)
                                 }
                             }
-                            if reportTiming {
-                                let age = CACurrentMediaTime() * 1000 - Double(frame.receivedAt) / 1000
-                                let gpu = (completed.gpuEndTime - completed.gpuStartTime) * 1000
-                                DebugLog.print("[Video] receive-to-GPU=\(String(format: "%.1f", age))ms GPU=\(String(format: "%.1f", gpu))ms")
+                            if reportTiming, let timing = frame.metrics, let gpuLatency {
+                                DebugLog.print("[VideoMetrics] \(timing.logIdentifier) receive-to-GPU=\(String(format: "%.3f", gpuLatency.milliseconds))ms")
                             }
                         } else {
                             self.renderQueue.async {
@@ -294,15 +294,14 @@ struct MetalTextureView: UIViewRepresentable {
                     lastFrameID = frame.id
                     lastMode = state.mode
                     lastSharpness = state.sharpness
-                    if reportTiming {
-                        drawable.addPresentedHandler { presented in
-                            let time = presented.presentedTime
-                            let received = Double(frame.receivedAt) / 1_000_000
-                            guard time > 0, time >= received else {
-                                DebugLog.print("[Video] Presentation timestamp unavailable; no latency sample")
-                                return
+                    drawable.addPresentedHandler { presented in
+                        let latency = frame.metrics?.presented(atHostSeconds: presented.presentedTime)
+                        if reportTiming, let timing = frame.metrics {
+                            if let latency {
+                                DebugLog.print("[VideoMetrics] \(timing.logIdentifier) receive-to-present=\(String(format: "%.3f", latency.milliseconds))ms (local pipeline only)")
+                            } else {
+                                DebugLog.print("[VideoMetrics] \(timing.logIdentifier) presentation sample rejected (unavailable, invalid, or inactive session)")
                             }
-                            DebugLog.print("[Video] receive-to-present=\(String(format: "%.1f", (time - received) * 1000))ms (local pipeline only)")
                         }
                     }
                     commandBuffer.present(drawable)

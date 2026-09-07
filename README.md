@@ -129,6 +129,7 @@ bash scripts/test_video_gpu.sh
 bash scripts/test_feedback_sender.sh
 bash scripts/test_socket_mode.sh
 bash scripts/test_psn_customdata.sh
+bash scripts/test_streaming_metrics.sh
 ```
 
 - Decoder tests use real host VideoToolbox H.264/HEVC decoding, dependent frames, and recovery/backpressure cases.
@@ -136,6 +137,7 @@ bash scripts/test_psn_customdata.sh
 - GPU tests run MetalFX and Enhanced on the **Mac GPU**, checking asynchronous texture reuse and border/center pixels.
 - Feedback tests simulate a blocked sender and verify input progress and button transitions. They require the local Chiaki checkout and pinned source commit referenced by the script.
 - Socket tests check nonblocking flags and error handling. PSN custom-data tests require the Chiaki source files referenced by their script.
+- Metrics tests check monotonic timestamps, units, invalid intervals, integer boundaries, and [session/frame isolation across late callbacks](docs/metrics_session_identity_2026_09.md). [Video instrumentation](docs/video_metrics_instrumentation_2026_09.md) records bounded, session-scoped decode/GPU/presentation intervals; physical timestamp validation remains pending.
 
 The `*HostTests.swift` files are standalone harnesses invoked by scripts, not XCTest target members. XCTest source files also exist, but the shared scheme currently does not explicitly list a testable target; the shell harnesses above are the directly reproducible checks documented here.
 

@@ -96,6 +96,8 @@ final class StreamingService: ObservableObject {
     weak var delegate: StreamingServiceDelegate?
     
     private var configuration: StreamingConfiguration?
+    nonisolated let metrics = StreamingMetricsRecorder()
+    private var metricsSession: MetricSessionID?
     private var psnStartTask: Task<Void, Error>?
     private var isStopping = false
     @Published private(set) var connectionStatusMessage = ""
@@ -131,6 +133,7 @@ final class StreamingService: ObservableObject {
         }
         
         self.configuration = configuration
+        metricsSession = metrics.beginSession()
         connectionStatusMessage = configuration.psnConnection == nil
             ? "Connecting on the local network…" : "Connecting through PlayStation Network…"
         
@@ -389,9 +392,16 @@ final class StreamingService: ObservableObject {
     private func setupChiakiCallbacks() {
         // Capture session-owned decoder, never read actor state from the network thread.
         let decoder = videoDecoder
+        let recorder = metrics
+        let session = metricsSession
         ChiakiFullSession.shared.onVideoFramePointer = { pointer, size, lost, recovered in
-            decoder?.submit(pointer: pointer, size: size, framesLost: lost, recovered: recovered) { buffer, timestamp in
-                VideoDelivery.shared.submit(buffer, timestamp: timestamp)
+            let receivedAt = StreamingMetricsClock.now()
+            let timing = session.flatMap {
+                VideoFrameMetrics(recorder: recorder, session: $0, receivedAt: receivedAt)
+            }
+            return decoder?.submit(pointer: pointer, size: size, framesLost: lost, recovered: recovered) { buffer, timestamp in
+                timing?.decoded(at: StreamingMetricsClock.now())
+                VideoDelivery.shared.submit(buffer, timestamp: timestamp, metrics: timing)
             } ?? false
         }
 
@@ -424,6 +434,7 @@ final class StreamingService: ObservableObject {
                 }
 
             case .quit:
+                if let session { recorder.endSession(session) }
                 DebugLog.print("[StreamingService] ❌ Session quit: \(reason ?? "unknown")")
                 Task { @MainActor in
                     self.inputGate.withLock { $0 = false }
@@ -506,6 +517,8 @@ final class StreamingService: ObservableObject {
     func stopStreaming() {
         guard !isStopping else { return }
         isStopping = true
+        if let session = metricsSession { metrics.endSession(session) }
+        metricsSession = nil
         inputGate.withLock { $0 = false }
         // The pad belongs to the session: stop the input thread and the haptic
         // engine and hand PS / Create / Options back to the system.

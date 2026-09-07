@@ -14,6 +14,7 @@ enum DebugLog {
 SWIFT
 cp "$PROJECT_DIR/VisionRemotePS5Tests/VideoGPUHostTests.swift" "$TEMP_DIR/main.swift"
 xcrun swiftc -module-cache-path "$TEMP_DIR/cache" \
+ "$PROJECT_DIR/VisionRemotePS5/Services/StreamingMetrics.swift" \
  "$PROJECT_DIR/VisionRemotePS5/Streaming/MetalFXUpscaler.swift" \
  "$PROJECT_DIR/VisionRemotePS5/Streaming/EnhancedUpscaler.swift" \
  "$TEMP_DIR/DebugLog.swift" "$TEMP_DIR/main.swift" -o "$TEMP_DIR/test"
