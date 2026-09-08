@@ -1,6 +1,8 @@
 import Foundation
 import AVFoundation
+#if !DISABLE_PERFORMANCE_COLLECTION
 import Synchronization
+#endif
 
 /// One stereo source keeps both channels aligned, including overload recovery.
 final class LowLatencyAudioPlayer {
@@ -19,13 +21,19 @@ final class LowLatencyAudioPlayer {
     private var targetSamples: Int
     private let maximumRenderFrames = 8192
     private let scratch: UnsafeMutablePointer<Int16>
+    #if !DISABLE_PERFORMANCE_COLLECTION
     private let oversizedRenderRequests = Atomic<UInt64>(0)
+    #endif
 
     /// Reporting/configuration stays off the audio render and native input callbacks.
     var diagnostics: Diagnostics {
-        Diagnostics(sampleRate: sampleRate, channels: channels, targetSamples: targetSamples,
-            buffer: ring.diagnostics,
-            oversizedRenderRequests: oversizedRenderRequests.load(ordering: .relaxed))
+        #if DISABLE_PERFORMANCE_COLLECTION
+        let oversized: UInt64 = 0
+        #else
+        let oversized = oversizedRenderRequests.load(ordering: .relaxed)
+        #endif
+        return Diagnostics(sampleRate: sampleRate, channels: channels, targetSamples: targetSamples,
+            buffer: ring.diagnostics, oversizedRenderRequests: oversized)
     }
 
     init(sampleRate: Int, channels: Int) {
@@ -59,7 +67,9 @@ final class LowLatencyAudioPlayer {
                 guard let self else { return noErr }
                 let output = UnsafeMutableAudioBufferListPointer(buffers)
                 guard frames <= self.maximumRenderFrames else {
+                    #if !DISABLE_PERFORMANCE_COLLECTION
                     self.oversizedRenderRequests.wrappingAdd(1, ordering: .relaxed)
+                    #endif
                     for buffer in output { if let data = buffer.mData { memset(data, 0, Int(buffer.mDataByteSize)) } }
                     silence.pointee = true
                     return noErr
@@ -100,6 +110,8 @@ final class LowLatencyAudioPlayer {
     func stop() {
         engine?.stop(); engine = nil; source = nil
         ring.reset()
+        #if !DISABLE_PERFORMANCE_COLLECTION
         oversizedRenderRequests.store(0, ordering: .relaxed)
+        #endif
     }
 }

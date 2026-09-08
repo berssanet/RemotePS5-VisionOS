@@ -7,6 +7,12 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		SUSTAINBASEBUILD001 /* SustainedBaselineCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = SUSTAINBASEREF001 /* SustainedBaselineCapture.swift */; };
+		COLLECTORBENCHBUILD001 /* InstrumentationCollectorBenchmark.swift in Sources */ = {isa = PBXBuildFile; fileRef = COLLECTORBENCHREF001 /* InstrumentationCollectorBenchmark.swift */; };
+		OVERHEADPROBEBUILD001 /* InstrumentationOverheadProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = OVERHEADPROBEREF001 /* InstrumentationOverheadProbe.swift */; };
+		REPORTEXPORTBUILD001 /* PerformanceReportExportButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = REPORTEXPORTREF001 /* PerformanceReportExportButton.swift */; };
+		REPORTFORMATBUILD001 /* PerformanceReportFormatter.swift in Sources */ = {isa = PBXBuildFile; fileRef = REPORTFORMATREF001 /* PerformanceReportFormatter.swift */; };
+		REPORTSNAPBUILD001 /* PerformanceReportSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = REPORTSNAPREF001 /* PerformanceReportSnapshot.swift */; };
 		AUDTHERMALBUILD001 /* AudioThermalMetrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = AUDTHERMALREF001 /* AudioThermalMetrics.swift */; };
 		QUEUEBUILD001 /* VideoQueueMetrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = QUEUEREF001 /* VideoQueueMetrics.swift */; };
 		INPUTLOADBUILD001 /* InputMetricsVideoLoad.swift in Sources */ = {isa = PBXBuildFile; fileRef = INPUTLOADREF001 /* InputMetricsVideoLoad.swift */; };
@@ -69,6 +75,12 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		SUSTAINBASEREF001 /* SustainedBaselineCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SustainedBaselineCapture.swift; sourceTree = "<group>"; };
+		COLLECTORBENCHREF001 /* InstrumentationCollectorBenchmark.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstrumentationCollectorBenchmark.swift; sourceTree = "<group>"; };
+		OVERHEADPROBEREF001 /* InstrumentationOverheadProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstrumentationOverheadProbe.swift; sourceTree = "<group>"; };
+		REPORTEXPORTREF001 /* PerformanceReportExportButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PerformanceReportExportButton.swift; sourceTree = "<group>"; };
+		REPORTFORMATREF001 /* PerformanceReportFormatter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PerformanceReportFormatter.swift; sourceTree = "<group>"; };
+		REPORTSNAPREF001 /* PerformanceReportSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PerformanceReportSnapshot.swift; sourceTree = "<group>"; };
 		AUDTHERMALREF001 /* AudioThermalMetrics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioThermalMetrics.swift; sourceTree = "<group>"; };
 		QUEUEREF001 /* VideoQueueMetrics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoQueueMetrics.swift; sourceTree = "<group>"; };
 		INPUTLOADREF001 /* InputMetricsVideoLoad.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputMetricsVideoLoad.swift; sourceTree = "<group>"; };
@@ -179,6 +191,7 @@
 				PSNSECTREF001 /* PSNConsolesSection.swift */,
 				LANVIEWREF001 /* LocalConsoleConnectionView.swift */,
 				SRC004 /* SettingsView.swift */,
+				REPORTEXPORTREF001 /* PerformanceReportExportButton.swift */,
 				SRC006 /* PairingView.swift */,
 				STRMSRCVIEW001 /* StreamingView.swift */,
 				MTLTEXVIEWREF001 /* MetalTextureView.swift */,
@@ -213,6 +226,11 @@
 				METRICREF001 /* StreamingMetrics.swift */,
 				QUEUEREF001 /* VideoQueueMetrics.swift */,
 				AUDTHERMALREF001 /* AudioThermalMetrics.swift */,
+				REPORTFORMATREF001 /* PerformanceReportFormatter.swift */,
+				REPORTSNAPREF001 /* PerformanceReportSnapshot.swift */,
+				OVERHEADPROBEREF001 /* InstrumentationOverheadProbe.swift */,
+				SUSTAINBASEREF001 /* SustainedBaselineCapture.swift */,
+				COLLECTORBENCHREF001 /* InstrumentationCollectorBenchmark.swift */,
 				INPUTMETRICREF001 /* InputMetrics.swift */,
 				INPUTLOADREF001 /* InputMetricsVideoLoad.swift */,
 				CHKFSESSRC001 /* ChiakiFullSession.swift */,
@@ -380,6 +398,7 @@
 				EF5C41992F0645D2007A7B67 /* PSNConnectionView.swift in Sources */,
 				APP003 /* HomeView.swift in Sources */,
 				APP004 /* SettingsView.swift in Sources */,
+				REPORTEXPORTBUILD001 /* PerformanceReportExportButton.swift in Sources */,
 				APP006 /* PairingView.swift in Sources */,
 				APP008 /* Console.swift in Sources */,
 				APP070 /* ControllerInput.swift in Sources */,
@@ -405,6 +424,11 @@
 				METRICBUILD001 /* StreamingMetrics.swift in Sources */,
 				QUEUEBUILD001 /* VideoQueueMetrics.swift in Sources */,
 				AUDTHERMALBUILD001 /* AudioThermalMetrics.swift in Sources */,
+				REPORTFORMATBUILD001 /* PerformanceReportFormatter.swift in Sources */,
+				REPORTSNAPBUILD001 /* PerformanceReportSnapshot.swift in Sources */,
+				OVERHEADPROBEBUILD001 /* InstrumentationOverheadProbe.swift in Sources */,
+				SUSTAINBASEBUILD001 /* SustainedBaselineCapture.swift in Sources */,
+				COLLECTORBENCHBUILD001 /* InstrumentationCollectorBenchmark.swift in Sources */,
 				INPUTMETRICBUILD001 /* InputMetrics.swift in Sources */,
 				INPUTLOADBUILD001 /* InputMetricsVideoLoad.swift in Sources */,
 				CHKFSES001 /* ChiakiFullSession.swift in Sources */,

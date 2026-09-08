@@ -60,6 +60,9 @@ struct StreamingVideoWindow: View {
                 Text(processingStatus)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                PerformanceReportExportButton(compact: true) {
+                    streamHasFocus = true
+                }
                 Text("Upscaling changes image detail; the screen size stays the same.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)

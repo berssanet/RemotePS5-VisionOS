@@ -51,13 +51,15 @@ final class VideoFrameMailbox: @unchecked Sendable {
         var frameWasAcquired = false
 
         mutating func clearFrame() {
+            #if !DISABLE_PERFORMANCE_COLLECTION
             if value.frame != nil && !frameWasAcquired {
                 diagnostics.clearedBeforeAcquire &+= 1
             }
-            value.frame = nil
             frameWasAcquired = false
             diagnostics.occupancy = 0
             diagnostics.retainedPixelBytes = 0
+            #endif
+            value.frame = nil
         }
     }
 
@@ -90,21 +92,28 @@ final class VideoFrameMailbox: @unchecked Sendable {
                 let submittedSession = session ?? metrics?.frame.session
                 guard current.diagnostics.isActive, submittedSession == activeSession,
                       metrics == nil || metrics?.frame.session == activeSession else {
+                    #if !DISABLE_PERFORMANCE_COLLECTION
                     current.diagnostics.staleSubmissions &+= 1
+                    #endif
                     return
                 }
             }
             guard current.value.enabled else {
+                #if !DISABLE_PERFORMANCE_COLLECTION
                 current.diagnostics.disabledSubmissions &+= 1
+                #endif
                 return
             }
+            #if !DISABLE_PERFORMANCE_COLLECTION
             if current.value.frame != nil && !current.frameWasAcquired {
                 current.diagnostics.overwrittenBeforeAcquire &+= 1
             }
+            #endif
             current.value.nextID &+= 1
             current.value.frame = Frame(pixelBuffer: buffer, receivedAt: timestamp,
                                         id: current.value.nextID, metrics: metrics,
                                         session: session ?? metrics?.frame.session)
+            #if !DISABLE_PERFORMANCE_COLLECTION
             current.frameWasAcquired = false
             current.diagnostics.published &+= 1
             current.diagnostics.occupancy = 1
@@ -113,6 +122,7 @@ final class VideoFrameMailbox: @unchecked Sendable {
             current.diagnostics.peakRetainedPixelBytes = max(
                 current.diagnostics.peakRetainedPixelBytes,
                 current.diagnostics.retainedPixelBytes)
+            #endif
         }
     }
 
@@ -125,10 +135,12 @@ final class VideoFrameMailbox: @unchecked Sendable {
     /// The last frame remains available for redraw without another acquisition.
     func acquireForRendering() -> State {
         state.withLockUnchecked { current in
+            #if !DISABLE_PERFORMANCE_COLLECTION
             if current.value.frame != nil && !current.frameWasAcquired {
                 current.frameWasAcquired = true
                 current.diagnostics.acquiredFrames &+= 1
             }
+            #endif
             return current.value
         }
     }

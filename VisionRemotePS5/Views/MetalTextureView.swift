@@ -83,13 +83,15 @@ struct MetalTextureView: UIViewRepresentable {
         private var attemptedEnhanced = false
         private var isSetup = false
         private var lastFrameID: UInt64 = 0
+        #if !DISABLE_PERFORMANCE_COLLECTION
         private var lastTimingReport: Double = 0
-        private var lastDrawableWarning: Double = 0
-        private var announcedFirstFrame = false
         private let rendererID = UUID()
         private var lastMetalFXOutput: ObjectIdentifier?
         private var lastEnhancedOutput: ObjectIdentifier?
-        #if DEBUG
+        #endif
+        private var lastDrawableWarning: Double = 0
+        private var announcedFirstFrame = false
+        #if DEBUG && !DISABLE_PERFORMANCE_COLLECTION
         private var queueStress = VideoQueueStress()
         private var queueStressSession: MetricSessionID?
         private let queueStressEnabled = ProcessInfo.processInfo.arguments.contains("-VideoQueueMetricsStress")
@@ -185,9 +187,11 @@ struct MetalTextureView: UIViewRepresentable {
         
         func draw(in view: MTKView) {
             guard capacity.wait(timeout: .now()) == .success else {
+                #if !DISABLE_PERFORMANCE_COLLECTION
                 if let session = frames.diagnostics.session {
                     VideoQueueMetrics.shared.record(.busyDraw, session: session)
                 }
+                #endif
                 return
             }
             guard let device = view.device,
@@ -198,7 +202,7 @@ struct MetalTextureView: UIViewRepresentable {
             renderQueue.async { [self] in
                 autoreleasepool {
                     setupPipeline(device: device, pixelFormat: .bgra8Unorm)
-                    #if DEBUG
+                    #if DEBUG && !DISABLE_PERFORMANCE_COLLECTION
                     if queueStressEnabled, let session = frames.snapshot().frame?.session {
                         if queueStressSession != session {
                             queueStressSession = session
@@ -218,17 +222,25 @@ struct MetalTextureView: UIViewRepresentable {
                     let state = frames.acquireForRendering()
                     guard state.enabled, let frame = state.frame,
                           (frame.id != lastFrameID || state.mode != lastMode || state.sharpness != lastSharpness) else {
+                        #if !DISABLE_PERFORMANCE_COLLECTION
                         if let session = state.frame?.session {
                             VideoQueueMetrics.shared.record(.idleDraw, session: session)
                         }
+                        #endif
                         capacity.signal()
                         return
                     }
+                    #if !DISABLE_PERFORMANCE_COLLECTION
                     let session = frame.session
+                    #endif
                     @discardableResult
                     func record(_ event: VideoQueueMetrics.Event) -> Bool {
+                        #if DISABLE_PERFORMANCE_COLLECTION
+                        return false
+                        #else
                         guard let session else { return false }
                         return VideoQueueMetrics.shared.record(event, session: session)
+                        #endif
                     }
                     guard let pipelineState, let sampler, let vertexBuffer,
                           let commandBuffer = commandQueue?.makeCommandBuffer() else {
@@ -246,8 +258,10 @@ struct MetalTextureView: UIViewRepresentable {
                         }
                         capacity.signal(); return
                     }
+                    #if !DISABLE_PERFORMANCE_COLLECTION
                     let reportTiming = CACurrentMediaTime() - lastTimingReport >= 2
                     if reportTiming { lastTimingReport = CACurrentMediaTime() }
+                    #endif
                     let renderPass = MTLRenderPassDescriptor()
                     renderPass.colorAttachments[0].texture = drawable.texture
                     renderPass.colorAttachments[0].loadAction = .clear
@@ -273,9 +287,11 @@ struct MetalTextureView: UIViewRepresentable {
                     if mode == .metalFX && CVPixelBufferGetWidth(buffer) == 1920 && CVPixelBufferGetHeight(buffer) == 1080 {
                         if !attemptedMetalFX { attemptedMetalFX = true; metalFX = MetalFXUpscaler() }
                         if let output = metalFX?.encode(buffer, commandBuffer: commandBuffer) {
+                            #if !DISABLE_PERFORMANCE_COLLECTION
                             let identity = ObjectIdentifier(output)
                             if identity == lastMetalFXOutput { record(.reusedOutput) }
                             lastMetalFXOutput = identity
+                            #endif
                             texture = output
                             appliedMode = .metalFX
                         } else {
@@ -285,9 +301,11 @@ struct MetalTextureView: UIViewRepresentable {
                         if !attemptedEnhanced { attemptedEnhanced = true; enhanced = EnhancedUpscaler() }
                         enhanced?.sharpenStrength = state.sharpness
                         if let output = enhanced?.encode(buffer, commandBuffer: commandBuffer) {
+                            #if !DISABLE_PERFORMANCE_COLLECTION
                             let identity = ObjectIdentifier(output)
                             if identity == lastEnhancedOutput { record(.reusedOutput) }
                             lastEnhancedOutput = identity
+                            #endif
                             texture = output
                             appliedMode = .enhanced
                         } else {
@@ -300,11 +318,13 @@ struct MetalTextureView: UIViewRepresentable {
                         fallbackReason = "MetalFX requires a 1080p stream"
                     }
                     let name = appliedMode == .native ? "Native" : appliedMode.rawValue
+                    #if !DISABLE_PERFORMANCE_COLLECTION
                     if let session {
                         VideoQueueMetrics.shared.resources(session: session, renderer: rendererID,
                             count: (metalFX?.ownedTextureCount ?? 0) + (enhanced?.ownedTextureCount ?? 0),
                             bytes: (metalFX?.ownedTextureBytes ?? 0) + (enhanced?.ownedTextureBytes ?? 0))
                     }
+                    #endif
                     var processingStatus = "\(name) · \(native.width)×\(native.height) → \(texture.width)×\(texture.height)"
                     if let fallbackReason { processingStatus += " · \(fallbackReason)" }
                     let status = processingStatus
@@ -320,17 +340,23 @@ struct MetalTextureView: UIViewRepresentable {
                     encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
                     encoder.endEncoding()
                     let capacity = self.capacity
+                    #if !DISABLE_PERFORMANCE_COLLECTION
                     let recordedSubmission = record(.submitted)
+                    #endif
                     commandBuffer.addCompletedHandler { completed in
                         // Retain the decoder's IOSurface until the GPU has stopped reading it.
                         withExtendedLifetime((buffer, cvTexture)) {}
+                        #if !DISABLE_PERFORMANCE_COLLECTION
                         if recordedSubmission, let session {
                             VideoQueueMetrics.shared.record(completed.status == .completed ? .completed : .gpuFailed,
                                                             session: session)
                         }
+                        #endif
                         capacity.signal()
+                        #if !DISABLE_PERFORMANCE_COLLECTION
                         let gpuLatency = frame.metrics?.gpuCompleted(success: completed.status == .completed,
                             startSeconds: completed.gpuStartTime, endSeconds: completed.gpuEndTime)
+                        #endif
                         if completed.status == .completed {
                             self.renderQueue.async {
                                 if self.lastProcessingStatus != status {
@@ -343,9 +369,11 @@ struct MetalTextureView: UIViewRepresentable {
                                     DispatchQueue.main.async(execute: self.onFirstFrame)
                                 }
                             }
+                            #if !DISABLE_PERFORMANCE_COLLECTION
                             if reportTiming, let timing = frame.metrics, let gpuLatency {
                                 DebugLog.print("[VideoMetrics] \(timing.logIdentifier) receive-to-GPU=\(String(format: "%.3f", gpuLatency.milliseconds))ms")
                             }
+                            #endif
                         } else {
                             self.renderQueue.async {
                                 if self.lastFrameID == frame.id { self.lastFrameID = 0 }
@@ -356,6 +384,7 @@ struct MetalTextureView: UIViewRepresentable {
                     lastFrameID = frame.id
                     lastMode = state.mode
                     lastSharpness = state.sharpness
+                    #if !DISABLE_PERFORMANCE_COLLECTION
                     drawable.addPresentedHandler { presented in
                         guard let timing = frame.metrics else { return }
                         let presentedSeconds = presented.presentedTime
@@ -369,6 +398,7 @@ struct MetalTextureView: UIViewRepresentable {
                             }
                         }
                     }
+                    #endif
                     commandBuffer.present(drawable)
                     commandBuffer.commit()
                 }

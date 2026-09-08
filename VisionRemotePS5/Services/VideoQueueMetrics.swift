@@ -56,16 +56,22 @@ final class VideoQueueMetrics: @unchecked Sendable {
 
     init(memoryCapacity: Int = 64) {
         precondition(memoryCapacity > 0)
+        #if DISABLE_PERFORMANCE_COLLECTION
+        state = OSAllocatedUnfairLock(initialState: Storage(samples: []))
+        #else
         state = OSAllocatedUnfairLock(initialState: Storage(
             samples: Array(repeating: nil, count: memoryCapacity)))
+        #endif
     }
 
     func beginSession(_ session: MetricSessionID) {
         state.withLock { storage in
             storage.value = Snapshot(session: session, isActive: true)
+            #if !DISABLE_PERFORMANCE_COLLECTION
             storage.samples = Array(repeating: nil, count: storage.samples.count)
             storage.next = 0
             storage.count = 0
+            #endif
         }
     }
 
@@ -75,6 +81,9 @@ final class VideoQueueMetrics: @unchecked Sendable {
 
     @discardableResult
     func record(_ event: Event, session: MetricSessionID) -> Bool {
+        #if DISABLE_PERFORMANCE_COLLECTION
+        return false
+        #else
         state.withLock { storage in
             guard storage.value.session == session else { return false }
             // Terminal callbacks may drain this session after end; they never
@@ -105,18 +114,22 @@ final class VideoQueueMetrics: @unchecked Sendable {
             }
             return true
         }
+        #endif
     }
 
     func resources(session: MetricSessionID, renderer: UUID, count: Int, bytes: Int) {
+        #if !DISABLE_PERFORMANCE_COLLECTION
         state.withLock { storage in
             guard storage.value.isActive, storage.value.session == session else { return }
             storage.value.rendererID = renderer
             storage.value.ownedTextureCount = count
             storage.value.ownedTextureBytes = bytes
         }
+        #endif
     }
 
     func recordMemory(_ sample: MemorySample, session: MetricSessionID) {
+        #if !DISABLE_PERFORMANCE_COLLECTION
         state.withLock { storage in
             guard storage.value.isActive, storage.value.session == session else { return }
             if storage.count == storage.samples.count { storage.value.overwrittenMemorySamples &+= 1 }
@@ -124,9 +137,13 @@ final class VideoQueueMetrics: @unchecked Sendable {
             storage.next = (storage.next + 1) % storage.samples.count
             storage.count = min(storage.count + 1, storage.samples.count)
         }
+        #endif
     }
 
     func snapshot() -> Snapshot {
+        #if DISABLE_PERFORMANCE_COLLECTION
+        return state.withLock { $0.value }
+        #else
         state.withLock { storage in
             var result = storage.value
             let start = (storage.next + storage.samples.count - storage.count) % storage.samples.count
@@ -135,11 +152,15 @@ final class VideoQueueMetrics: @unchecked Sendable {
             }
             return result
         }
+        #endif
     }
 
     /// Process physical footprint, sampled off video/input callbacks. A failure
     /// is unavailable, never zero. This includes more than video resources.
     static func physicalFootprint() -> UInt64? {
+        #if DISABLE_PERFORMANCE_COLLECTION
+        return nil
+        #else
         var info = task_vm_info_data_t()
         var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
         let result = withUnsafeMutablePointer(to: &info) { pointer in
@@ -148,6 +169,7 @@ final class VideoQueueMetrics: @unchecked Sendable {
             }
         }
         return result == KERN_SUCCESS ? info.phys_footprint : nil
+        #endif
     }
 }
 

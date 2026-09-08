@@ -200,7 +200,12 @@ final class StreamingMetricsRecorder: Sendable {
 
     init(capacity: Int = 256) {
         precondition(capacity > 0)
+        #if DISABLE_PERFORMANCE_COLLECTION
+        // Keep functional connection identity without allocating sample storage.
+        state = OSAllocatedUnfairLock(initialState: State(slots: []))
+        #else
         state = OSAllocatedUnfairLock(initialState: State(slots: Array(repeating: nil, count: capacity)))
+        #endif
     }
 
     @discardableResult
@@ -219,11 +224,15 @@ final class StreamingMetricsRecorder: Sendable {
     }
 
     func nextFrame(in session: MetricSessionID) -> MetricFrameID? {
+        #if DISABLE_PERFORMANCE_COLLECTION
+        return nil
+        #else
         state.withLock {
             guard $0.active, $0.session == session, $0.lastFrame < UInt64.max else { return nil }
             $0.lastFrame += 1
             return MetricFrameID(session: session, sequence: $0.lastFrame)
         }
+        #endif
     }
 
     /// Rejects stale sessions and mismatched frame identities without changing
@@ -231,6 +240,9 @@ final class StreamingMetricsRecorder: Sendable {
     @discardableResult
     func record(_ interval: MetricInterval, session: MetricSessionID,
                 frame: MetricFrameID? = nil) -> Bool {
+        #if DISABLE_PERFORMANCE_COLLECTION
+        return false
+        #else
         state.withLock {
             guard $0.active, $0.session == session else { return false }
             guard (frame != nil) == interval.metric.requiresFrame else { return false }
@@ -244,6 +256,7 @@ final class StreamingMetricsRecorder: Sendable {
             else if $0.overwritten < UInt64.max { $0.overwritten += 1 }
             return true
         }
+        #endif
     }
 
     /// Copies are explicit, for inspection/export; never call on each input tick.

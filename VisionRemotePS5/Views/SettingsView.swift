@@ -53,6 +53,14 @@ struct SettingsView: View {
                     }
                 }
                 
+                Section {
+                    PerformanceReportExportButton()
+                } header: {
+                    Text("Performance")
+                } footer: {
+                    Text("Save a report of the current or most recent session.")
+                }
+
                 // About Section
                 Section("About") {
                     LabeledContent("Version", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Unknown")

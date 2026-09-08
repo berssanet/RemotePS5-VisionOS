@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import Combine
 import os
 import Network
 import VideoToolbox
@@ -104,6 +105,12 @@ final class StreamingService: ObservableObject {
     private var videoQueueReportTask: Task<Void, Never>?
     private(set) var audioThermalMetrics: AudioThermalMetrics?
     private var thermalObserver: NSObjectProtocol?
+    private var reportConfiguration: PerformanceReportConfiguration?
+    private var lastDecoderReport: PerformanceDecoderSnapshot?
+    private var overheadProbe: InstrumentationOverheadProbe?
+    private var collectorBenchmark: InstrumentationCollectorBenchmark?
+    private var sustainedBaselineCapture: SustainedBaselineCapture?
+    private var baselineModeObserver: AnyCancellable?
     #if DEBUG
     private var inputMetricsLoadTask: Task<Void, Never>?
     private var inputMetricsLoad: InputMetricsVideoLoad?
@@ -145,10 +152,18 @@ final class StreamingService: ObservableObject {
         self.configuration = configuration
         let session = metrics.beginSession()
         metricsSession = session
+        #if !DISABLE_PERFORMANCE_COLLECTION
+        reportConfiguration = PerformanceReportConfiguration(session: session,
+            width: configuration.width, height: configuration.height,
+            framesPerSecond: configuration.fps, bitrateKbps: configuration.bitrate)
+        #endif
+        lastDecoderReport = nil
         VideoDelivery.shared.beginSession(session)
+        #if !DISABLE_PERFORMANCE_COLLECTION
         VideoQueueMetrics.shared.beginSession(session)
         inputMetrics = InputMetricsRecorder(session: session)
         startThermalMonitoring(session: session)
+        #endif
         connectionStatusMessage = configuration.psnConnection == nil
             ? "Connecting on the local network…" : "Connecting through PlayStation Network…"
         
@@ -300,7 +315,9 @@ final class StreamingService: ObservableObject {
                 guard let self = self, self.inputGate.withLock({ $0 }) else { return }
                 
                 // Send directly to ChiakiFullSession at 120Hz - no throttling!
+                #if !DISABLE_PERFORMANCE_COLLECTION
                 let started = inputMetrics == nil ? nil : StreamingMetricsClock.now()
+                #endif
                 let outcome = ChiakiFullSession.shared.setControllerState(
                     buttons: input.buttons,
                     leftX: Int16(input.leftStickX * 32767),
@@ -310,7 +327,11 @@ final class StreamingService: ObservableObject {
                     l2: UInt8(input.leftTrigger * 255),
                     r2: UInt8(input.rightTrigger * 255)
                 )
+                #if !DISABLE_PERFORMANCE_COLLECTION
                 inputMetrics?.recordSend(start: started, end: StreamingMetricsClock.now(), outcome: outcome)
+                #else
+                _ = outcome
+                #endif
             }
             startInputMetricsReporting()
 
@@ -415,12 +436,18 @@ final class StreamingService: ObservableObject {
         let inputMetrics = self.inputMetrics
         let audioThermalMetrics = self.audioThermalMetrics
         ChiakiFullSession.shared.onVideoFramePointer = { pointer, size, lost, recovered in
+            #if DISABLE_PERFORMANCE_COLLECTION
+            let timing: VideoFrameMetrics? = nil
+            #else
             let receivedAt = StreamingMetricsClock.now()
             let timing = session.flatMap {
                 VideoFrameMetrics(recorder: recorder, session: $0, receivedAt: receivedAt)
             }
+            #endif
             return decoder?.submit(pointer: pointer, size: size, framesLost: lost, recovered: recovered) { buffer, timestamp in
+                #if !DISABLE_PERFORMANCE_COLLECTION
                 timing?.decoded(at: StreamingMetricsClock.now())
+                #endif
                 VideoDelivery.shared.submit(buffer, timestamp: timestamp, metrics: timing, session: session)
             } ?? false
         }
@@ -454,6 +481,10 @@ final class StreamingService: ObservableObject {
                     if self.metricsSession == session {
                         self.startInputMetricsLoadIfRequested()
                         self.startVideoQueueReporting()
+                        if let session {
+                            self.startOverheadProbeIfRequested(session: session)
+                            self.startSustainedBaselineIfRequested(session: session)
+                        }
                     }
                     self.delegate?.streamingService(self, didChangeState: .streaming)
                 }
@@ -462,7 +493,9 @@ final class StreamingService: ObservableObject {
                 if let session {
                     recorder.endSession(session)
                     VideoDelivery.shared.endSession(session)
+                    #if !DISABLE_PERFORMANCE_COLLECTION
                     VideoQueueMetrics.shared.endSession(session)
+                    #endif
                 }
                 inputMetrics?.end()
                 audioThermalMetrics?.end()
@@ -475,6 +508,11 @@ final class StreamingService: ObservableObject {
                         self.videoQueueReportTask?.cancel()
                         self.videoQueueReportTask = nil
                         self.stopThermalMonitoring()
+                        self.overheadProbe?.stop()
+                        self.overheadProbe = nil
+                        self.collectorBenchmark?.stop()
+                        self.collectorBenchmark = nil
+                        self.stopSustainedBaseline()
                     }
                     // The console never sends a final rumble-0 and the endless player
                     // latches its last intensity: silence the pad ourselves.
@@ -558,8 +596,15 @@ final class StreamingService: ObservableObject {
         if let session = metricsSession {
             metrics.endSession(session)
             VideoDelivery.shared.endSession(session)
+            #if !DISABLE_PERFORMANCE_COLLECTION
             VideoQueueMetrics.shared.endSession(session)
+            #endif
         }
+        overheadProbe?.stop()
+        overheadProbe = nil
+        collectorBenchmark?.stop()
+        collectorBenchmark = nil
+        stopSustainedBaseline()
         videoQueueReportTask?.cancel()
         videoQueueReportTask = nil
         stopThermalMonitoring()
@@ -591,6 +636,11 @@ final class StreamingService: ObservableObject {
             // Native callbacks are joined before resetting producer-owned audio buffers.
             self.audioPlayer?.stop()
             self.audioPlayer = nil
+            #if !DISABLE_PERFORMANCE_COLLECTION
+            if let decoder = self.videoDecoder, let session = self.reportConfiguration?.session {
+                self.lastDecoderReport = self.captureDecoderReport(decoder, session: session)
+            }
+            #endif
             self.videoDecoder = nil
             self.configuration = nil
             self.connectionStatusMessage = ""
@@ -603,6 +653,90 @@ final class StreamingService: ObservableObject {
         DebugLog.info("StreamingService", "Streaming stopped")
     }
     
+    /// Called only by the explicit export action. Copies are bounded and contain
+    /// no connection configuration, credentials, account values or raw logs.
+    func makePerformanceReport() async throws -> String {
+        let snapshot = try capturePerformanceSnapshot()
+        return try await Task.detached(priority: .utility) {
+            try Task.checkCancellation()
+            return try PerformanceReportFormatter.render(snapshot)
+        }.value
+    }
+
+    /// Shared bounded capture for explicit export and opt-in baseline recording.
+    /// Each source is read independently before formatting leaves the main actor.
+    private func capturePerformanceSnapshot() throws -> PerformanceReportSnapshot {
+        #if DISABLE_PERFORMANCE_COLLECTION
+        throw PerformanceReportError.collectionDisabled
+        #else
+        guard let video = metrics.snapshot() else { throw PerformanceReportError.noSession }
+        return PerformanceReportSnapshot(capturedAt: StreamingMetricsClock.now(), video: video,
+            configuration: reportConfiguration, input: inputMetrics?.snapshot(),
+            renderer: VideoQueueMetrics.shared.snapshot(), mailbox: VideoDelivery.shared.diagnostics,
+            decoder: videoDecoder.map { captureDecoderReport($0, session: video.session) } ?? lastDecoderReport,
+            audioThermal: audioThermalMetrics?.snapshot())
+        #endif
+    }
+
+    private func startSustainedBaselineIfRequested(session: MetricSessionID) {
+        #if !DISABLE_PERFORMANCE_COLLECTION
+        let arguments = Set(ProcessInfo.processInfo.arguments)
+        let incompatibleDiagnostics: Set<String> = ["-InstrumentationOverheadProbe",
+            "-InstrumentationCollectorBenchmark", "-InputMetricsVideoLoad", "-VideoQueueMetricsStress"]
+        guard arguments.contains("-NativeBaselineCapture"),
+              arguments.isDisjoint(with: incompatibleDiagnostics),
+              sustainedBaselineCapture == nil else { return }
+        let capture = SustainedBaselineCapture(session: session) { [weak self] in
+            guard let self, self.metricsSession == session, self.isStreaming, !self.isStopping,
+                  UpscalingPipeline.shared.upscalerType == .native else {
+                throw PerformanceReportError.noSession
+            }
+            return try self.capturePerformanceSnapshot()
+        }
+        sustainedBaselineCapture = capture
+        // The pipeline is main-actor isolated. Its synchronous publisher cancels
+        // on every non-native selection, including switches between checkpoints.
+        // It observes settings only and never changes the user's processing mode.
+        baselineModeObserver = UpscalingPipeline.shared.$upscalerType.sink { [weak capture] mode in
+            if mode != .native { capture?.stop(reason: .modeChanged) }
+        }
+        capture.start()
+        #endif
+    }
+
+    private func stopSustainedBaseline() {
+        baselineModeObserver?.cancel()
+        baselineModeObserver = nil
+        sustainedBaselineCapture?.stop(reason: .sessionEnded)
+        sustainedBaselineCapture = nil
+    }
+
+    private func startOverheadProbeIfRequested(session: MetricSessionID) {
+        if ProcessInfo.processInfo.arguments.contains("-InstrumentationCollectorBenchmark"),
+           collectorBenchmark == nil {
+            let benchmark = InstrumentationCollectorBenchmark(session: session)
+            collectorBenchmark = benchmark
+            benchmark.start()
+        }
+        guard ProcessInfo.processInfo.arguments.contains("-InstrumentationOverheadProbe"),
+              overheadProbe == nil else { return }
+        let probe = InstrumentationOverheadProbe(session: session)
+        overheadProbe = probe
+        probe.start()
+    }
+
+    private func captureDecoderReport(_ decoder: StreamVideoDecoder,
+                                      session: MetricSessionID) -> PerformanceDecoderSnapshot {
+        let totals = decoder.diagnostics
+        let queue = decoder.queueDiagnostics
+        return PerformanceDecoderSnapshot(session: session, accepted: totals.accepted,
+            rejectedNew: totals.rejected, outputs: totals.outputs, errors: totals.errors,
+            admittedSubmissions: queue.admittedSubmissions, peakAdmittedSubmissions: queue.peakAdmittedSubmissions,
+            admittedPayloadBytes: queue.admittedBytes, peakAdmittedPayloadBytes: queue.peakAdmittedBytes,
+            rejectedInvalid: queue.rejectInvalid, rejectedStopped: queue.rejectStopped,
+            cancelledBeforeDecode: queue.cancelledBeforeDecode, capturedAt: StreamingMetricsClock.now())
+    }
+
     private func startThermalMonitoring(session: MetricSessionID) {
         stopThermalMonitoring()
         let recorder = AudioThermalMetrics(session: session)
@@ -634,29 +768,27 @@ final class StreamingService: ObservableObject {
     /// outside producer, renderer and controller callbacks.
     private func startVideoQueueReporting() {
         videoQueueReportTask?.cancel()
-        #if DEBUG
+        #if !DISABLE_PERFORMANCE_COLLECTION
         guard let session = metricsSession, let decoder = videoDecoder,
               let audioPlayer, let audioRecorder = audioThermalMetrics,
               let device = MTLCreateSystemDefaultDevice() else { return }
         videoQueueReportTask = Task { @MainActor in
+            #if DEBUG
             var previousThermalEvent: UInt64 = 0
+            #endif
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(5)) } catch { return }
                 let mailbox = VideoDelivery.shared.diagnostics
                 let renderer = VideoQueueMetrics.shared.snapshot()
                 guard renderer.isActive, renderer.session == session, mailbox.session == session else { return }
                 let queue = decoder.queueDiagnostics
-                let decode = decoder.diagnostics
-                var correlation = "session=\(session.logIdentifier) hostUs=unavailable"
                 if let now = StreamingMetricsClock.now() {
                     let audio = audioPlayer.diagnostics
                     let thermal = ThermalReading(ProcessInfo.processInfo.thermalState)
-                    guard let sample = audioRecorder.recordSample(audio: .init(
+                    guard let _ = audioRecorder.recordSample(audio: .init(
                         sampleRate: audio.sampleRate, channels: audio.channels,
                         targetSamples: audio.targetSamples, buffer: audio.buffer,
                         oversizedRenderRequests: audio.oversizedRenderRequests), thermal: thermal, at: now) else { continue }
-                    correlation = "session=\(session.logIdentifier) sample=\(sample.sequence) intervalStartUs=\(sample.intervalStart.map { String($0.microseconds) } ?? "unavailable") hostUs=\(now.microseconds)"
-                    let audioHistory = audioRecorder.snapshot()
                     let memory = VideoQueueMetrics.MemorySample(hostUs: now.microseconds,
                         physicalFootprint: VideoQueueMetrics.physicalFootprint(),
                         deviceAllocatedBytes: device.currentAllocatedSize,
@@ -666,6 +798,11 @@ final class StreamingService: ObservableObject {
                         decoderPayloadBytes: queue.admittedBytes,
                         mailboxPixelBytes: mailbox.retainedPixelBytes)
                     VideoQueueMetrics.shared.recordMemory(memory, session: session)
+                    #if DEBUG
+                    let decode = decoder.diagnostics
+                    let audioHistory = audioRecorder.snapshot()
+                    guard let sample = audioHistory.samples.last, sample.at == now else { continue }
+                    let correlation = "session=\(session.logIdentifier) sample=\(sample.sequence) intervalStartUs=\(sample.intervalStart.map { String($0.microseconds) } ?? "unavailable") hostUs=\(now.microseconds)"
                     let history = VideoQueueMetrics.shared.snapshot()
                     let footprints = history.memorySamples.compactMap(\.physicalFootprint)
                     let delta = footprints.first.flatMap { first in footprints.last.map { Int64($0) - Int64(first) } }
@@ -677,8 +814,9 @@ final class StreamingService: ObservableObject {
                     }
                     previousThermalEvent = audioHistory.thermalEventCount
                     DebugLog.print("[VideoMemory] \(correlation) footprintBytes=\(memory.physicalFootprint.map(String.init) ?? "unavailable") windowDeltaBytes=\(delta.map(String.init) ?? "unavailable") windowPeakBytes=\(footprints.max().map(String.init) ?? "unavailable") deviceAllocatedBytes=\(memory.deviceAllocatedBytes) renderer=\(renderer.rendererID?.uuidString ?? "unavailable") ownedTextures=\(memory.ownedTextureCount) ownedTextureBytes=\(memory.ownedTextureBytes) retainedSamples=\(history.memorySamples.count) overwrittenSamples=\(history.overwrittenMemorySamples) (overlapping scopes; no leak verdict)")
+                    DebugLog.print("[VideoQueues] \(correlation) decoderSlots=\(queue.admittedSubmissions) peakSlots=\(queue.peakAdmittedSubmissions) payloadBytes=\(queue.admittedBytes) peakPayloadBytes=\(queue.peakAdmittedBytes) rejectedNew=\(decode.rejected) invalid=\(queue.rejectInvalid) stopped=\(queue.rejectStopped) cancelled=\(queue.cancelledBeforeDecode) mailbox=\(mailbox.occupancy) peakMailbox=\(mailbox.peakOccupancy) mailboxBytes=\(mailbox.retainedPixelBytes) published=\(mailbox.published) overwrittenBeforeAcquire=\(mailbox.overwrittenBeforeAcquire) acquired=\(mailbox.acquiredFrames) cleared=\(mailbox.clearedBeforeAcquire) disabled=\(mailbox.disabledSubmissions) stale=\(mailbox.staleSubmissions) busyDraw=\(renderer.busyDraws) idleDraw=\(renderer.idleDraws) throttledDraw=\(renderer.throttledDraws) drawableUnavailable=\(renderer.drawableUnavailable) encodeFailed=\(renderer.encodeFailures) submitted=\(renderer.submitted) completed=\(renderer.completed) gpuFailed=\(renderer.gpuFailures) inFlight=\(renderer.inFlight) peakInFlight=\(renderer.peakInFlight) reusedOutputs=\(renderer.reusedOutputs)")
+                    #endif
                 }
-                DebugLog.print("[VideoQueues] \(correlation) decoderSlots=\(queue.admittedSubmissions) peakSlots=\(queue.peakAdmittedSubmissions) payloadBytes=\(queue.admittedBytes) peakPayloadBytes=\(queue.peakAdmittedBytes) rejectedNew=\(decode.rejected) invalid=\(queue.rejectInvalid) stopped=\(queue.rejectStopped) cancelled=\(queue.cancelledBeforeDecode) mailbox=\(mailbox.occupancy) peakMailbox=\(mailbox.peakOccupancy) mailboxBytes=\(mailbox.retainedPixelBytes) published=\(mailbox.published) overwrittenBeforeAcquire=\(mailbox.overwrittenBeforeAcquire) acquired=\(mailbox.acquiredFrames) cleared=\(mailbox.clearedBeforeAcquire) disabled=\(mailbox.disabledSubmissions) stale=\(mailbox.staleSubmissions) busyDraw=\(renderer.busyDraws) idleDraw=\(renderer.idleDraws) throttledDraw=\(renderer.throttledDraws) drawableUnavailable=\(renderer.drawableUnavailable) encodeFailed=\(renderer.encodeFailures) submitted=\(renderer.submitted) completed=\(renderer.completed) gpuFailed=\(renderer.gpuFailures) inFlight=\(renderer.inFlight) peakInFlight=\(renderer.peakInFlight) reusedOutputs=\(renderer.reusedOutputs)")
             }
         }
         #endif
@@ -920,10 +1058,12 @@ final class StreamVideoDecoder: @unchecked Sendable {
     }
 
     private func recordDecodeError(_ status: OSStatus) {
+        #if !DISABLE_PERFORMANCE_COLLECTION
         let count = lifecycle.withLock { $0.errors &+= 1; return $0.errors }
         if count <= 3 || count % 60 == 0 {
             DebugLog.print("[VideoDecoder] Decode error=\(status), count=\(count)")
         }
+        #endif
         // Lost references are repaired by Chiaki. Only a genuinely invalid VT
         // session requires recreation; never flush a working reference pool on loss.
         if status == kVTInvalidSessionErr {
@@ -939,42 +1079,56 @@ final class StreamVideoDecoder: @unchecked Sendable {
     func submit(pointer: UnsafeRawPointer, size: Int, framesLost: Int32, recovered: Bool,
                 completion: @escaping (CVPixelBuffer, UInt64) -> Void) -> Bool {
         guard size > 4, size <= 10_000_000 else {
+            #if !DISABLE_PERFORMANCE_COLLECTION
             lifecycle.withLock { $0.queues.rejectInvalid &+= 1 }
+            #endif
             return false
         }
         let state = lifecycle.withLock { $0 }
         guard state.running else {
+            #if !DISABLE_PERFORMANCE_COLLECTION
             lifecycle.withLock { $0.queues.rejectStopped &+= 1 }
+            #endif
             return false
         }
         guard capacity.wait(timeout: .now()) == .success else {
+            #if !DISABLE_PERFORMANCE_COLLECTION
             let count = lifecycle.withLock { $0.rejected &+= 1; return $0.rejected }
             if count <= 3 || count % 60 == 0 {
                 DebugLog.print("[VideoDecoder] Submission queue full; rejected=\(count)")
             }
+            #endif
             // Keep existing references so Chiaki can remap the next P frame to them.
             return false
         }
+        #if !DISABLE_PERFORMANCE_COLLECTION
         lifecycle.withLock {
             $0.queues.admittedSubmissions += 1
             $0.queues.admittedBytes += size
             $0.queues.peakAdmittedSubmissions = max($0.queues.peakAdmittedSubmissions, $0.queues.admittedSubmissions)
             $0.queues.peakAdmittedBytes = max($0.queues.peakAdmittedBytes, $0.queues.admittedBytes)
         }
+        #endif
         let data = Data(bytes: pointer, count: size)
         let receivedAt = UInt64(CACurrentMediaTime() * 1_000_000)
+        #if !DISABLE_PERFORMANCE_COLLECTION
         lifecycle.withLock { $0.accepted &+= 1; if recovered { $0.repairedReferences &+= 1 } }
+        #endif
         queue.async {
             defer {
+                #if !DISABLE_PERFORMANCE_COLLECTION
                 self.lifecycle.withLock {
                     $0.queues.admittedSubmissions -= 1
                     $0.queues.admittedBytes -= size
                 }
+                #endif
                 self.capacity.signal()
             }
             let current = self.lifecycle.withLock { $0 }
             guard current.running, current.generation == state.generation else {
+                #if !DISABLE_PERFORMANCE_COLLECTION
                 self.lifecycle.withLock { $0.queues.cancelledBeforeDecode &+= 1 }
+                #endif
                 return
             }
             // recovered is a reference remap, NOT FEC. framesLost is metadata,
@@ -982,10 +1136,13 @@ final class StreamVideoDecoder: @unchecked Sendable {
             let finished = ContinuationGate()
             let finish: (CVPixelBuffer?) -> Void = { buffer in
                 guard finished.tryResume(), let buffer else { return }
+                #if !DISABLE_PERFORMANCE_COLLECTION
                 self.lifecycle.withLock { $0.outputs &+= 1 }
+                #endif
                 completion(buffer, receivedAt)
             }
             self.decodeAccessUnit(data, receivedAt: receivedAt, generation: state.generation, finish: finish)
+            #if !DISABLE_PERFORMANCE_COLLECTION
             let report = self.lifecycle.withLock { value -> String? in
                 let now = CACurrentMediaTime()
                 guard now - value.lastReport >= 2 else { return nil }
@@ -993,6 +1150,7 @@ final class StreamVideoDecoder: @unchecked Sendable {
                 return "[VideoDecoder] accepted=\(value.accepted) outputs=\(value.outputs) rejected=\(value.rejected) errors=\(value.errors) sessions=\(value.sessions) referenceRepairs=\(value.repairedReferences)"
             }
             if let report { DebugLog.print(report) }
+            #endif
         }
         return true
     }
@@ -1199,7 +1357,9 @@ final class StreamVideoDecoder: @unchecked Sendable {
         
         if decodeStatus == noErr, let session = session {
             self.decompressionSession = session
+            #if !DISABLE_PERFORMANCE_COLLECTION
             lifecycle.withLock { $0.sessions &+= 1 }
+            #endif
             // Configure for low-latency real-time decoding
             VTSessionSetProperty(session, key: kVTDecompressionPropertyKey_RealTime, value: kCFBooleanTrue)
             VTSessionSetProperty(session, key: kVTDecompressionPropertyKey_MaximizePowerEfficiency, value: kCFBooleanFalse)

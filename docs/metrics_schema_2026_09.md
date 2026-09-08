@@ -8,7 +8,8 @@ the user waived its unavailable physical presentation endpoint validation.
 Completed task 01.04 uses a [dedicated bounded input recorder](input_metrics_2026_09.md).
 Task 01.05 adds [queue, reuse and memory observations](video_queue_metrics_2026_09.md)
 with the same captured session identity. Task01.06 adds [audio and thermal observations](audio_thermal_metrics_2026_09.md)
-with matching video reporting timestamps and intervals.
+with matching video reporting timestamps and intervals. Task01.07 provides
+[explicit report export](performance_report_export_2026_09.md) over the retained populations.
 
 ## Contract
 
