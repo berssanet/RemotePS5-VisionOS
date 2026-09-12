@@ -17,22 +17,26 @@ import SwiftUI
 
 struct StreamingVideoWindow: View {
     @EnvironmentObject var appState: AppState
+    @Environment(\.openImmersiveSpace) private var openImmersiveSpace
+    @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
     @ObservedObject private var upscalingPipeline = UpscalingPipeline.shared
     @ObservedObject private var streamingService = StreamingService.shared
     /// handlesGameControllerEvents only acts while the view holds focus, so the
     /// stream surface is focusable and claims focus as soon as it appears.
     @FocusState private var streamHasFocus: Bool
 
-    let console: Console
+    let surface: PresentationCoordinator.Surface
+    @ObservedObject var viewModel: StreamingViewModel
 
     @State private var hasVideo = false
     @State private var processingStatus = "Waiting for video…"
 
     var body: some View {
         ZStack {
-            MetalTextureView(frames: upscalingPipeline.frames, onFirstFrame: {
+            MetalTextureView(frames: upscalingPipeline.frames, surfaceID: surface.id, onFirstFrame: {
                 hasVideo = true
             }, onProcessingStatus: { processingStatus = $0 })
+            .id(surface.id)
             .aspectRatio(16/9, contentMode: .fit)
             .cornerRadius(16)
 
@@ -42,25 +46,33 @@ struct StreamingVideoWindow: View {
         }
         .ornament(attachmentAnchor: .scene(.bottom)) {
             VStack(spacing: 8) {
-                Picker("Video quality", selection: $upscalingPipeline.upscalerType) {
-                    ForEach(UpscalerType.allCases, id: \.self) { mode in
-                        Text(mode.rawValue).tag(mode)
+                HStack {
+                    Label("Window", systemImage: "macwindow")
+                    Spacer()
+                    if appState.presentationState == .opening {
+                        ProgressView().controlSize(.small)
+                        Button("Cancel") { appState.returnToWindow() }
+                    } else {
+                        Button {
+                            appState.enterCinema(open: openImmersiveSpace, dismiss: dismissImmersiveSpace)
+                        } label: {
+                            Label("Enter Cinema", systemImage: "visionpro")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!appState.canEnterCinema)
                     }
                 }
-                .pickerStyle(.segmented)
-                if upscalingPipeline.upscalerType == .enhanced {
-                    HStack {
-                        Text("Sharpness")
-                        Slider(value: $upscalingPipeline.sharpenStrength, in: 0...1)
-                        Text(upscalingPipeline.sharpenStrength, format: .percent.precision(.fractionLength(0)))
-                            .monospacedDigit()
-                            .frame(width: 44)
-                    }
+                VideoQualityControls { streamHasFocus = true }
+                if let message = appState.presentationError {
+                    Text(message).font(.caption).foregroundStyle(.orange)
                 }
                 Text(processingStatus)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text("Upscaling changes image detail; the screen size stays the same.")
+                PerformanceReportExportButton(compact: true) {
+                    streamHasFocus = true
+                }
+                Text("Compare the received image with MetalFX. Change source quality before connecting.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -81,32 +93,29 @@ struct StreamingVideoWindow: View {
         .onChange(of: streamHasFocus) { _, focused in
             DebugLog.print("[Controller] Stream window focus: \(focused)")
         }
-        .onAppear { streamHasFocus = true }
-        .task {
-            // Initialize upscaling pipeline
-            upscalingPipeline.initialize()
-            hasVideo = false
-            upscalingPipeline.enable()
-            streamHasFocus = true
-
-            if !appState.streamingViewModel.isConnected {
-                await appState.streamingViewModel.startStreaming(console: console, auth: appState.psnAuthService)
+        .onChange(of: appState.selectedSurface) { _, selected in
+            if selected == surface { streamHasFocus = true }
+        }
+        .onChange(of: appState.presentationState) { _, state in
+            if (state == .windowed || state == .error), appState.selectedSurface == surface {
+                streamHasFocus = true
             }
         }
+        .onAppear {
+            streamHasFocus = true
+            appState.presentationDriver.windowMounted(surface)
+            appState.presentationDriver.consumerPrepared(surface)
+        }
         .onDisappear {
-            // Closing the window ends the session and brings the console list back.
-            appState.streamingViewModel.stopStreaming()
-            upscalingPipeline.disable()
-            appState.selectedConsole = nil
-            appState.isConnected = false
-            appState.connectionStatus = .disconnected
-            appState.isInStreamingSession = false
+            // The immutable surface token distinguishes authorized retirement
+            // from losing the required window. Global cleanup belongs to S.
+            appState.presentationDriver.surfaceDetached(surface)
         }
     }
 
     @ViewBuilder
     private var statusOverlay: some View {
-        if appState.streamingViewModel.isConnected {
+        if viewModel.isConnected {
             VStack(spacing: 10) {
                 ProgressView()
                     .scaleEffect(1.5)
@@ -138,9 +147,9 @@ struct StreamingVideoWindow: View {
             return "Error: \(reason)"
         case .connecting, .negotiating:
             return streamingService.connectionStatusMessage.isEmpty
-                ? appState.streamingViewModel.statusMessage : streamingService.connectionStatusMessage
+                ? viewModel.statusMessage : streamingService.connectionStatusMessage
         default:
-            return appState.streamingViewModel.statusMessage
+            return viewModel.statusMessage
         }
     }
 }

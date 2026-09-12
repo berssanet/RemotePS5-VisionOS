@@ -122,25 +122,79 @@ for _ in 0..<12 {
     }
     check(accepted, "admit up to the bounded queue capacity")
 }
+let fullQueue = decoder.queueDiagnostics
+check(fullQueue.admittedSubmissions == 12 && fullQueue.peakAdmittedSubmissions == 12,
+      "CPU submission gauge and peak match the semaphore capacity")
+check(fullQueue.admittedBytes == 12 * encoded.parameterSets.count,
+      "CPU byte gauge includes every admitted input copy")
+check(fullQueue.peakAdmittedBytes >= fullQueue.admittedBytes,
+      "CPU input byte peak covers the saturated queue")
 let rejected = encoded.frames[20].withUnsafeBytes { bytes in
     decoder.submit(pointer: bytes.baseAddress!, size: bytes.count, framesLost: 0, recovered: false) { _, _ in
         fatalError("rejected frame must never execute")
     }
 }
 check(!rejected, "full queue rejects without enqueueing")
+let stillFull = decoder.queueDiagnostics
+check(stillFull.admittedSubmissions == fullQueue.admittedSubmissions &&
+      stillFull.admittedBytes == fullQueue.admittedBytes,
+      "rejected new frame does not enter the CPU submission or byte gauges")
+check(stillFull.rejectInvalid == 0 && stillFull.rejectStopped == 0,
+      "capacity rejection is distinct from invalid input and stopped decoder")
 release.signal()
 submissionQueue.sync {}
+let drained = decoder.queueDiagnostics
+check(drained.admittedSubmissions == 0 && drained.admittedBytes == 0,
+      "drained CPU queue releases all submission and input-byte gauges")
 decode(encoded.frames[20], loss: 1)
 for index in 21..<30 { decode(encoded.frames[index], loss: 0) }
 check(decoder.diagnostics.rejected == 1, "a single rejection must not poison following frames")
 check(decoder.diagnostics.sessions == 1, "overload must not destroy references")
 check(decoder.diagnostics.errors == 0, "decode errors")
+let invalid = encoded.frames[0].withUnsafeBytes { bytes in
+    decoder.submit(pointer: bytes.baseAddress!, size: 4, framesLost: 0, recovered: false) { _, _ in
+        fatalError("invalid input must never execute")
+    }
+}
+check(!invalid && decoder.queueDiagnostics.rejectInvalid == 1,
+      "invalid input rejection is counted before allocation or admission")
+
+// Stop while accepted input remains queued. Closing a session must not reset
+// live gauges: each pending closure owns one eventual release, even if cancelled.
+let heldBeforeStop = DispatchSemaphore(value: 0)
+let releaseAfterStop = DispatchSemaphore(value: 0)
+submissionQueue.async { heldBeforeStop.signal(); releaseAfterStop.wait() }
+check(heldBeforeStop.wait(timeout: .now() + 2) == .success, "hold queue before stop")
+for _ in 0..<2 {
+    let accepted = encoded.parameterSets.withUnsafeBytes { bytes in
+        decoder.submit(pointer: bytes.baseAddress!, size: bytes.count, framesLost: 0, recovered: false) { _, _ in
+            fatalError("cancelled CPU submission must never output video")
+        }
+    }
+    check(accepted, "input accepted before stop remains admitted until drained")
+}
 decoder.stop()
+check(decoder.queueDiagnostics.admittedSubmissions == 2 &&
+      decoder.queueDiagnostics.admittedBytes == 2 * encoded.parameterSets.count,
+      "stop preserves gauges for accepted closures that still own their input")
 let stopped = encoded.frames[29].withUnsafeBytes { bytes in
     decoder.submit(pointer: bytes.baseAddress!, size: bytes.count, framesLost: 0, recovered: false) { _, _ in fatalError("output after stop") }
 }
 check(!stopped, "stopped decoder rejects input")
+releaseAfterStop.signal()
+submissionQueue.sync {}
+let stoppedQueue = decoder.queueDiagnostics
+check(stoppedQueue.rejectStopped == 1 && stoppedQueue.rejectInvalid == 1 &&
+      decoder.diagnostics.rejected == 1,
+      "stopped, invalid and capacity rejection counters remain distinct")
+check(stoppedQueue.cancelledBeforeDecode == 2,
+      "stop counts accepted submissions cancelled before decoding")
+check(stoppedQueue.admittedSubmissions == 0 && stoppedQueue.admittedBytes == 0,
+      "cancelled submissions release gauges exactly once")
+check(stoppedQueue.peakAdmittedSubmissions == 12,
+      "lifetime CPU admission peak remains bounded after drain and stop")
 print("PASS: \(isHEVC ? "HEVC" : "H.264") dependent frames; reference preservation; bounded overflow recovery; stop gate")
+print("PASS: \(isHEVC ? "HEVC" : "H.264") CPU queue count/bytes, separate rejection reasons and cancellation accounting")
 }
 testCodec(isHEVC: false)
 testCodec(isHEVC: true)

@@ -50,7 +50,7 @@ struct PSNConsolesSection: View {
                 ForEach(sessionManager.devices) { device in
                     deviceRow(device)
                 }
-                Text("On the same network? Use Local Network above. Connect via PSN uses a separate remote session, without a local PIN.")
+                Text("On the same network? Select Local network. Connecting through PSN uses a separate remote session, without a local PIN.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

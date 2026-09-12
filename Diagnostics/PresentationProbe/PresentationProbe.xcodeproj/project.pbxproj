@@ -1,0 +1,25 @@
+// !$*UTF8*$!
+{
+ archiveVersion = 1;
+ classes = {};
+ objectVersion = 56;
+ objects = {
+  A001 = {isa = PBXBuildFile; fileRef = A002; };
+  A002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PresentationProbe.swift; sourceTree = "<group>"; };
+  A003 = {isa = PBXFileReference; explicitFileType = wrapper.application; path = PresentationProbe.app; sourceTree = BUILT_PRODUCTS_DIR; };
+  A004 = {isa = PBXGroup; children = (A002, A005); sourceTree = "<group>"; };
+  A005 = {isa = PBXGroup; children = (A003); name = Products; sourceTree = "<group>"; };
+  A006 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A001); runOnlyForDeploymentPostprocessing = 0; };
+  A007 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+  A008 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+  A009 = {isa = PBXNativeTarget; buildConfigurationList = A012; buildPhases = (A006, A007, A008); buildRules = (); dependencies = (); name = PresentationProbe; productName = PresentationProbe; productReference = A003; productType = "com.apple.product-type.application"; };
+  A010 = {isa = PBXProject; attributes = {LastUpgradeCheck = 2700; }; buildConfigurationList = A011; compatibilityVersion = "Xcode 14.0"; developmentRegion = en; knownRegions = (en, Base); mainGroup = A004; productRefGroup = A005; projectDirPath = ""; projectRoot = ""; targets = (A009); };
+  A011 = {isa = XCConfigurationList; buildConfigurations = (A013, A014); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug; };
+  A012 = {isa = XCConfigurationList; buildConfigurations = (A015, A016); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug; };
+  A013 = {isa = XCBuildConfiguration; name = Debug; buildSettings = {ALWAYS_SEARCH_USER_PATHS = NO; SDKROOT = xros; XROS_DEPLOYMENT_TARGET = 2.0; SWIFT_OPTIMIZATION_LEVEL = "-Onone"; DEBUG_INFORMATION_FORMAT = dwarf; }; };
+  A014 = {isa = XCBuildConfiguration; name = Release; buildSettings = {ALWAYS_SEARCH_USER_PATHS = NO; SDKROOT = xros; XROS_DEPLOYMENT_TARGET = 2.0; SWIFT_COMPILATION_MODE = wholemodule; }; };
+  A015 = {isa = XCBuildConfiguration; name = Debug; buildSettings = {CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES; INFOPLIST_KEY_CFBundleDisplayName = "Metal Presentation Probe"; PRODUCT_BUNDLE_IDENTIFIER = com.visionremote.ps5.presentationprobe; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = 7; SUPPORTED_PLATFORMS = "xros xrsimulator"; MARKETING_VERSION = 1.0; CURRENT_PROJECT_VERSION = 1; }; };
+  A016 = {isa = XCBuildConfiguration; name = Release; buildSettings = {CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES; INFOPLIST_KEY_CFBundleDisplayName = "Metal Presentation Probe"; PRODUCT_BUNDLE_IDENTIFIER = com.visionremote.ps5.presentationprobe; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = 7; SUPPORTED_PLATFORMS = "xros xrsimulator"; MARKETING_VERSION = 1.0; CURRENT_PROJECT_VERSION = 1; }; };
+ };
+ rootObject = A010;
+}

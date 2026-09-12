@@ -4,11 +4,28 @@ struct SettingsView: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.dismiss) private var dismiss
     @AppStorage("enableHaptics") private var enableHaptics = true
+    @AppStorage(StreamProfile.preferenceKey) private var streamProfile = StreamProfile.minimum.rawValue
     @State private var manualAccountId: String = UserDefaults.standard.string(forKey: "psn_account_id") ?? ""
     
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    Picker("Source quality", selection: $streamProfile) {
+                        ForEach(StreamProfile.allCases) { profile in
+                            Text(profile.title).tag(profile.rawValue)
+                        }
+                    }
+                    .disabled(appState.isInStreamingSession)
+                    Text("60 fps in every profile")
+                        .foregroundStyle(.secondary)
+                } header: {
+                    Text("Streaming")
+                } footer: {
+                    Text(appState.isInStreamingSession
+                         ? "End the current session before changing source quality."
+                         : "360p uses the least bandwidth. Higher profiles preserve more source detail. MetalFX is selected during playback.")
+                }
                 Section("Controller") {
                     Toggle("Haptic Feedback", isOn: $enableHaptics)
                 }
@@ -53,6 +70,14 @@ struct SettingsView: View {
                     }
                 }
                 
+                Section {
+                    PerformanceReportExportButton()
+                } header: {
+                    Text("Performance")
+                } footer: {
+                    Text("Save a report of the current or most recent session.")
+                }
+
                 // About Section
                 Section("About") {
                     LabeledContent("Version", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Unknown")

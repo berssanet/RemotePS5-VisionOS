@@ -106,7 +106,7 @@ ChiakiErrorCode chiaki_fullsession_start_wrapper(
     uint32_t width,                      // Video width (e.g. 1920)
     uint32_t height,                     // Video height (e.g. 1080)
     uint32_t fps,                        // Frames per second (30 or 60)
-    uint32_t bitrate,                    // Bitrate in bps
+    uint32_t bitrate,                    // Bitrate in kbps
     bool is_ps5,                         // true for PS5, false for PS4
     ChiakiWrapperVideoCallback video_cb, // Called when video frame received
     ChiakiWrapperAudioCallback audio_cb, // Called when audio samples received

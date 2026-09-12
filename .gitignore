@@ -24,6 +24,13 @@ xcuserdata/
 Package.resolved
 .swiftpm/
 
+# Python analysis/test caches
+__pycache__/
+
+# Local screenshots used for manual image comparisons
+/test_img/
+/test_metal_fx/
+
 # ===== Local-only build configuration (per-developer secrets) =====
 Local.xcconfig
 *.local.xcconfig

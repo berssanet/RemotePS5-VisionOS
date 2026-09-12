@@ -32,7 +32,7 @@ final class HighFrequencyInputController {
     private let state = OSAllocatedUnfairLock(uncheckedState: State())
     private var inputThread: Thread?
 
-    func start() {
+    func start(metrics: InputMetricsRecorder? = nil) {
         let generation: UInt64? = state.withLockUnchecked { current -> UInt64? in
             if current.running { return nil }
             current.running = true
@@ -41,7 +41,7 @@ final class HighFrequencyInputController {
         }
         guard let generation else { return }
         let thread = Thread { [weak self] in
-            self?.runLoop(generation: generation)
+            self?.runLoop(generation: generation, metrics: metrics)
         }
         thread.name = "VisionRemotePS5.input.120hz"
         thread.qualityOfService = .userInteractive
@@ -57,18 +57,30 @@ final class HighFrequencyInputController {
 
     /// stop() never joins (a tick may be parked behind a UDP send in libchiaki), so a
     /// stop()/start() pair can briefly overlap two threads; the stale one exits here.
-    private func runLoop(generation: UInt64) {
+    private func runLoop(generation: UInt64, metrics: InputMetricsRecorder?) {
         var timebase = mach_timebase_info_data_t()
         mach_timebase_info(&timebase)
         let tickNanos = UInt64(Self.tickInterval * 1_000_000_000)
         let tickTicks = tickNanos * UInt64(timebase.denom) / UInt64(timebase.numer)
         var deadline = mach_absolute_time()
+        #if !DISABLE_PERFORMANCE_COLLECTION
+        var previousTick: MetricTimestamp?
+        #endif
         while true {
             let snapshot = state.withLockUnchecked { current in
                 (current.running && current.generation == generation, current.tick)
             }
             guard snapshot.0 else { return }
+            #if !DISABLE_PERFORMANCE_COLLECTION
+            let tickStart = metrics == nil ? nil : StreamingMetricsClock.now()
+            #endif
             snapshot.1?()
+            #if !DISABLE_PERFORMANCE_COLLECTION
+            if let metrics {
+                metrics.recordTick(previous: previousTick, start: tickStart, end: StreamingMetricsClock.now())
+                previousTick = tickStart
+            }
+            #endif
             deadline &+= tickTicks
             let now = mach_absolute_time()
             if deadline > now {
