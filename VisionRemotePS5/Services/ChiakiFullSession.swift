@@ -190,7 +190,7 @@ final class ChiakiFullSession: ObservableObject {
         
         DebugLog.print("[ChiakiFullSession] Starting session to \(host)")
         DebugLog.print("[ChiakiFullSession]   Resolution: \(width)x\(height)@\(fps)fps")
-        DebugLog.print("[ChiakiFullSession]   Bitrate: \(bitrate) bps")
+        DebugLog.print("[ChiakiFullSession]   Bitrate: \(bitrate) kbps")
         DebugLog.print("[ChiakiFullSession]   PS5: \(isPS5)")
         
         // Register rumble callback

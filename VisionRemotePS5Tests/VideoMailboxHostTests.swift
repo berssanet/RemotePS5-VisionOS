@@ -1,5 +1,6 @@
 import Foundation
 import CoreVideo
+import os
 
 func check(_ condition: @autoclosure () -> Bool, _ message: String) {
     guard condition() else { fatalError(message) }
@@ -188,3 +189,103 @@ stress.endSession(stressSession)
 check(stress.diagnostics.retainedPixelBytes == 0 && stress.diagnostics.clearedBeforeAcquire == 0,
       "Clearing an already acquired frame adds no unseen drop")
 print("PASS: four concurrent producers, two consumers, exact publication conservation and bounded logical memory")
+
+let inspection = VideoFrameMailbox()
+let inspectionEvents = OSAllocatedUnfairLock(initialState: [Bool]())
+inspection.observeInspectionChanges {
+    // Reentrant snapshot verifies the callback is outside the mailbox lock.
+    let actual = inspection.snapshot().isInspectionFrozen
+    inspectionEvents.withLock { $0.append(actual) }
+}
+let inspectionSession = recorder.beginSession()
+inspection.beginSession(inspectionSession)
+inspection.configure(enabled: true, mode: .enhanced, sharpness: 0.5)
+check(!inspection.setInspectionFrozen(true), "No image means no reported freeze")
+let inspectionTiming = VideoFrameMetrics(recorder: recorder, session: inspectionSession,
+                                         receivedAt: MetricTimestamp(microseconds: 1))!
+inspection.submit(small, timestamp: 1, metrics: inspectionTiming, session: inspectionSession)
+let originalInspection = inspection.snapshot().frame!
+check(inspection.setInspectionFrozen(true), "Pin the available frame exactly once")
+check(inspection.snapshotForRendering().frame?.metrics == nil,
+      "Even the first frozen draw cannot record an old delivery timing")
+check(inspection.acquireForRendering().frame?.id == originalInspection.id
+      && inspection.diagnostics.acquiredFrames == 1,
+      "A pinned frame still matching latest can be acquired once")
+let firstConsumer = UUID(), nextConsumer = UUID()
+inspection.selectConsumer(firstConsumer)
+for index in 2...101 {
+    inspection.submit(large, timestamp: UInt64(index), session: inspectionSession)
+    let liveID = inspection.snapshot().frame!.id
+    check(liveID > originalInspection.id, "Live publication continues during image inspection")
+    check(inspection.acquireForRendering(consumerID: firstConsumer).frame?.id == originalInspection.id,
+          "Rendering continues using only the pinned image")
+    check(inspection.diagnostics.acquiredFrames == 1,
+          "Frozen redraw cannot consume a distinct latest frame")
+    check(inspection.diagnostics.inspectionFrameCount == 1
+          && inspection.diagnostics.inspectionPixelBytes == smallBytes
+          && inspection.diagnostics.occupancy == 1
+          && inspection.diagnostics.retainedPixelBytes == largeBytes,
+          "Inspection retains exactly one additional logical buffer as live video advances")
+    check(inspection.setInspectionFrozen(true), "Repeated freeze requests never replace the pinned image")
+}
+inspection.selectConsumer(nextConsumer)
+check(inspection.snapshotForRendering(consumerID: firstConsumer).frame == nil,
+      "A deselected surface cannot read the inspection frame")
+check(inspection.snapshotForRendering(consumerID: nextConsumer).frame?.id == originalInspection.id,
+      "The same generation carries one inspection frame across surface handoff")
+inspection.configure(enabled: true, mode: .metalFX, sharpness: 0.8,
+    comparisonEnabled: true, comparisonPosition: 0.7, inspectionZoom: 4,
+    inspectionCenter: SIMD2<Float>(0.8, 0.2))
+let inspected = inspection.snapshotForRendering(consumerID: nextConsumer)
+check(inspected.frame?.id == originalInspection.id && inspected.isInspectionFrozen
+      && inspected.inspectionZoom == 4 && inspected.inspectionCenter == SIMD2<Float>(0.8, 0.2),
+      "Mode, split and crop changes preserve the same frozen frame")
+check(inspection.setInspectionFrozen(false) == false, "Explicit resume releases inspection ownership")
+check(inspection.diagnostics.inspectionFrameCount == 0 && inspection.diagnostics.inspectionPixelBytes == 0,
+      "Resume releases all inspection-owned bytes")
+_ = inspection.acquireForRendering(consumerID: nextConsumer)
+let afterResume = inspection.diagnostics
+check(afterResume.published == 101 && afterResume.acquiredFrames == 2
+      && afterResume.overwrittenBeforeAcquire == 99,
+      "Live publication conservation remains exact across a hundred frozen redraws")
+check(inspectionEvents.withLock { $0 } == [true, false],
+      "Only actual freeze transitions notify, never frame publication or repeated requests")
+
+check(inspection.setInspectionFrozen(true), "Pin before session invalidation")
+let replacementSession = recorder.beginSession()
+inspection.beginSession(replacementSession)
+check(!inspection.snapshot().isInspectionFrozen && inspection.diagnostics.inspectionFrameCount == 0,
+      "Reconnect always clears the frozen old generation")
+check(!inspection.permitsRendering(consumerID: nextConsumer, session: inspectionSession),
+      "An admitted old frame cannot encode after generation replacement")
+inspection.submit(small, timestamp: 102, session: replacementSession)
+check(inspection.setInspectionFrozen(true), "Replacement session can pin its own frame")
+inspection.endSession(inspectionSession)
+check(inspection.snapshot().isInspectionFrozen, "A late end cannot release the new session's frozen image")
+inspection.endSession(replacementSession)
+check(!inspection.snapshot().isInspectionFrozen && inspection.snapshotForRendering(consumerID: nextConsumer).frame == nil,
+      "Matching end clears both live and frozen references")
+check(!inspection.permitsRendering(consumerID: nextConsumer, session: replacementSession),
+      "Ended generation is no longer valid for encoding")
+inspection.beginSession(recorder.beginSession())
+let finalSession = inspection.diagnostics.session!
+inspection.submit(small, timestamp: 103, session: finalSession)
+check(inspection.setInspectionFrozen(true), "Pin before disable")
+inspection.configure(enabled: false, mode: .native, sharpness: 0.5)
+check(!inspection.snapshot().isInspectionFrozen && inspection.diagnostics.inspectionPixelBytes == 0,
+      "Disabling releases the frozen image and notifies real state")
+
+for zoom: Float in [-10, 0, 1, 2, 3, 4, 100, .nan, .infinity, -.infinity] {
+    inspection.configure(enabled: true, mode: .native, sharpness: 0.5,
+        inspectionZoom: zoom, inspectionCenter: SIMD2<Float>(.nan, .infinity))
+    let state = inspection.snapshot()
+    check([Float(1), 2, 4].contains(state.inspectionZoom), "Zoom is limited to finite 1×/2×/4×")
+    check(state.inspectionCenter == SIMD2<Float>(repeating: 0.5), "Non-finite crop center resets to center")
+    inspection.configure(enabled: true, mode: .native, sharpness: 0.5,
+        inspectionZoom: zoom, inspectionCenter: SIMD2<Float>(-100, 100))
+    let bounded = inspection.snapshot()
+    let inset: Float = 0.5 / bounded.inspectionZoom
+    check(bounded.inspectionCenter == SIMD2<Float>(inset, 1 - inset),
+          "Crop edges always remain inside the source image")
+}
+print("PASS: one-frame inspection ownership, exact live counters, same-G handoff, lifecycle release and finite crop bounds")

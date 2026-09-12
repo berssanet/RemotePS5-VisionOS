@@ -43,59 +43,198 @@ struct InstrumentationProbeCPUDelta: Equatable, Sendable {
     }
 }
 
-/// Common observer for the enabled and disabled collection variants. Production
-/// sessions only instantiate this when explicitly launched with the probe flag.
-/// It measures process CPU and footprint, not GPU time or causal overhead.
+enum InstrumentationProbeFailure: String, Sendable {
+    case sessionEnded, modeChanged, videoUnavailable, videoStalled
+    case incompatibleDiagnostics, invalidClock, invalidCPU, sampleGap
+    case durationOutOfBounds, invalidConfiguration, interrupted
+}
+
+struct InstrumentationProbeConfiguration: Equatable, Sendable {
+    let width: Int
+    let height: Int
+    let fps: Int
+    let bitrate: Int
+
+    var isValid: Bool {
+        (1...16_384).contains(width) && (1...16_384).contains(height)
+            && (1...240).contains(fps) && (1...1_000_000).contains(bitrate)
+    }
+}
+
+enum InstrumentationProbePhase: String, Sendable {
+    case warmup, measureStart, sample, complete, failed, stopped
+}
+
+/// One bounded, allowlisted console record. No external strings or payloads.
+struct InstrumentationProbeRecord: Sendable {
+    let session: MetricSessionID
+    let configuration: InstrumentationProbeConfiguration
+    let phase: InstrumentationProbePhase
+    let reason: InstrumentationProbeFailure?
+    let index: Int
+    let startedHostUs: UInt64?
+    let hostUs: UInt64?
+    let first: InstrumentationProbeSample?
+    let last: InstrumentationProbeSample?
+    let delta: InstrumentationProbeCPUDelta?
+
+    func line() -> String {
+        #if DISABLE_PERFORMANCE_COLLECTION
+        let mode = "disabled"
+        #else
+        let mode = "enabled"
+        #endif
+        func number(_ value: UInt64?) -> String { value.map(String.init) ?? "unavailable" }
+        func setting(_ value: Int) -> String { configuration.isValid ? String(value) : "unavailable" }
+        let percent = delta.map {
+            String(format: "%.3f", locale: Locale(identifier: "en_US_POSIX"), $0.processPercent)
+        } ?? "unavailable"
+        return "[InstrumentationProbe] schema=2 session=\(session.logIdentifier) mode=\(mode) processingMode=native phase=\(phase.rawValue) reason=\(reason?.rawValue ?? "none") index=\(index) requestedWidth=\(setting(configuration.width)) requestedHeight=\(setting(configuration.height)) requestedFPS=\(setting(configuration.fps)) requestedBitrateKbps=\(setting(configuration.bitrate)) startedHostUs=\(number(startedHostUs)) hostUs=\(number(hostUs)) firstHostUs=\(number(first?.hostUs)) lastHostUs=\(number(last?.hostUs)) firstWallTicks=\(number(first?.wallTicks)) firstUserTicks=\(number(first?.userTicks)) firstSystemTicks=\(number(first?.systemTicks)) lastWallTicks=\(number(last?.wallTicks)) lastUserTicks=\(number(last?.userTicks)) lastSystemTicks=\(number(last?.systemTicks)) cpuProcessPercent=\(percent) footprintBytes=\(number(last?.footprintBytes)) thermalRaw=\(last.map { String($0.thermalRaw) } ?? "unavailable")"
+    }
+}
+
+/// Common observer for the enabled and disabled collection variants. This class
+/// retains only initial/latest observations, and never changes the live pipeline.
 @MainActor
 final class InstrumentationOverheadProbe {
+    /// Injected only by host tests; production uses the same OS queries and
+    /// monotonic clock in both builds. No real-time waiting is required in tests.
+    struct Environment {
+        var now: @MainActor () -> UInt64?
+        var observe: @MainActor () -> InstrumentationProbeSample
+        var sleep: @MainActor (UInt64) async throws -> Void
+        var emit: @MainActor (String) -> Void
+
+        static var live: Self {
+            Self(now: { StreamingMetricsClock.now()?.microseconds },
+                 observe: { InstrumentationOverheadProbe.observe() },
+                 sleep: { try await Task.sleep(nanoseconds: $0) },
+                 emit: { Swift.print($0) })
+        }
+    }
+
     private let session: MetricSessionID
+    private let configuration: InstrumentationProbeConfiguration
+    private let validate: @MainActor (Bool) -> InstrumentationProbeFailure?
+    private let environment: Environment
     private var task: Task<Void, Never>?
     private var hasStarted = false
+    private var terminal = false
+    private var startedHostUs: UInt64?
+    private var first: InstrumentationProbeSample?
+    private var previous: InstrumentationProbeSample?
+    private var index = 0
 
-    init(session: MetricSessionID) { self.session = session }
+    init(session: MetricSessionID, configuration: InstrumentationProbeConfiguration,
+         validate: @escaping @MainActor (Bool) -> InstrumentationProbeFailure?,
+         environment: Environment? = nil) {
+        self.session = session
+        self.configuration = configuration
+        self.validate = validate
+        self.environment = environment ?? .live
+    }
 
-    /// One finite run per instance. Repeated starts cannot create more observers.
+    /// One finite run per instance. A stop before start is also terminal.
     func start() {
-        guard !hasStarted else { return }
+        guard !hasStarted, !terminal else { return }
         hasStarted = true
-        let session = session
-        Self.emit(session: session, phase: "warmup", index: 0,
-                  first: nil, last: nil, delta: nil)
-        task = Task {
+        startedHostUs = environment.now()
+        guard configuration.isValid else { finish(.failed, reason: .invalidConfiguration); return }
+        guard let startedHostUs, startedHostUs > 0 else { finish(.failed, reason: .invalidClock); return }
+        if let failure = validate(false) { finish(.failed, reason: failure); return }
+        emit(.warmup, at: startedHostUs)
+        let environment = environment
+        task = Task { [weak self] in
             do {
-                try await Task.sleep(nanoseconds: 15_000_000_000)
-                try Task.checkCancellation()
-                let first = Self.observe()
-                var previous = first
-                Self.emit(session: session, phase: "measureStart", index: 0,
-                          first: first, last: first, delta: nil)
-                for index in 1...12 {
-                    try await Task.sleep(nanoseconds: 5_000_000_000)
+                for step in 0...12 {
+                    try await environment.sleep(step == 0 ? 30_000_000_000 : 5_000_000_000)
                     try Task.checkCancellation()
-                    let current = Self.observe()
-                    Self.emit(session: session, phase: "sample", index: index,
-                              first: previous, last: current,
-                              delta: InstrumentationProbeCPUDelta.between(previous, current))
-                    previous = current
+                    guard let owner = self, !owner.terminal else { return }
+                    guard owner.acceptObservation(step: step) else { return }
                 }
-                Self.emit(session: session, phase: "complete", index: 12,
-                          first: first, last: previous,
-                          delta: InstrumentationProbeCPUDelta.between(first, previous))
             } catch {
-                // Cancellation does not wait for any CPU/GPU work or add another
-                // OS observation. An interrupted run has no complete measurement.
+                // Explicit stop already emitted its terminal. An unexpected
+                // interrupted wait must never become a completed measurement.
+                self?.finish(.failed, reason: .interrupted)
             }
         }
     }
 
-    /// Terminal for this session-owned instance; a replacement owns a new probe.
-    func stop() {
-        hasStarted = true
-        task?.cancel()
-        task = nil
+    func stop(reason: InstrumentationProbeFailure = .sessionEnded) {
+        finish(.stopped, reason: reason)
     }
 
     deinit { task?.cancel() }
+
+    /// Invoked after each wait on main, so validation and observation cannot be
+    /// interleaved with a mode selection on that actor.
+    private func acceptObservation(step: Int) -> Bool {
+        if let failure = validate(true) { finish(.failed, reason: failure); return false }
+        let current = environment.observe()
+        guard let host = current.hostUs, host > 0,
+              let startedHostUs, host > startedHostUs else {
+            finish(.failed, reason: .invalidClock); return false
+        }
+        guard current.wallTicks.map({ $0 > 0 }) == true,
+              current.userTicks != nil, current.systemTicks != nil else {
+            finish(.failed, reason: .invalidCPU); return false
+        }
+        if step == 0 {
+            let warmup = host - startedHostUs
+            guard (30_000_000...45_000_000).contains(warmup) else {
+                finish(.failed, reason: .durationOutOfBounds); return false
+            }
+            first = current
+            previous = current
+            emit(.measureStart, at: host, first: current, last: current)
+            return true
+        }
+        guard let previous, let previousHost = previous.hostUs, host > previousHost else {
+            finish(.failed, reason: .invalidClock); return false
+        }
+        guard host - previousHost <= 15_000_000 else {
+            finish(.failed, reason: .sampleGap); return false
+        }
+        guard let first, let firstHost = first.hostUs else {
+            finish(.failed, reason: .invalidClock); return false
+        }
+        let elapsed = host - firstHost
+        guard elapsed <= 90_000_000, step != 12 || elapsed >= 60_000_000 else {
+            finish(.failed, reason: .durationOutOfBounds); return false
+        }
+        guard let delta = InstrumentationProbeCPUDelta.between(previous, current),
+              let total = InstrumentationProbeCPUDelta.between(first, current) else {
+            finish(.failed, reason: .invalidCPU); return false
+        }
+        index = step
+        self.previous = current
+        emit(.sample, at: host, first: previous, last: current, delta: delta)
+        if step == 12 {
+            terminal = true
+            task = nil
+            emit(.complete, at: host, first: first, last: current, delta: total)
+            return false
+        }
+        return true
+    }
+
+    private func finish(_ phase: InstrumentationProbePhase, reason: InstrumentationProbeFailure) {
+        guard !terminal else { return }
+        terminal = true
+        task?.cancel()
+        task = nil
+        emit(phase, at: environment.now(), first: first, last: previous, reason: reason)
+    }
+
+    private func emit(_ phase: InstrumentationProbePhase, at host: UInt64?,
+                      first: InstrumentationProbeSample? = nil,
+                      last: InstrumentationProbeSample? = nil,
+                      delta: InstrumentationProbeCPUDelta? = nil,
+                      reason: InstrumentationProbeFailure? = nil) {
+        environment.emit(InstrumentationProbeRecord(session: session, configuration: configuration,
+            phase: phase, reason: reason, index: index, startedHostUs: startedHostUs,
+            hostUs: host, first: first, last: last, delta: delta).line())
+    }
 
     /// These calls deliberately bypass all performance-collection compile gates.
     /// Run at the same low frequency in both variants and retain no history.
@@ -134,21 +273,4 @@ final class InstrumentationOverheadProbe {
             thermalRaw: ProcessInfo.processInfo.thermalState.rawValue)
     }
 
-    private static func emit(session: MetricSessionID, phase: String, index: Int,
-                             first: InstrumentationProbeSample?, last: InstrumentationProbeSample?,
-                             delta: InstrumentationProbeCPUDelta?) {
-        #if DISABLE_PERFORMANCE_COLLECTION
-        let mode = "disabled"
-        #else
-        let mode = "enabled"
-        #endif
-        func number(_ value: UInt64?) -> String { value.map(String.init) ?? "unavailable" }
-        let percent = delta.map {
-            String(format: "%.3f", locale: Locale(identifier: "en_US_POSIX"), $0.processPercent)
-        } ?? "unavailable"
-        let hostUs = last == nil ? StreamingMetricsClock.now()?.microseconds : last?.hostUs
-        // Only fixed labels, numeric OS data and the opaque random session ID.
-        // Printing is opt-in even in Release so the observer is common to A/B.
-        print("[InstrumentationProbe] session=\(session.logIdentifier) mode=\(mode) phase=\(phase) index=\(index) hostUs=\(number(hostUs)) cpuProcessPercent=\(percent) footprintBytes=\(number(last?.footprintBytes)) thermalRaw=\(last.map { String($0.thermalRaw) } ?? "unavailable") firstWallTicks=\(number(first?.wallTicks)) firstUserTicks=\(number(first?.userTicks)) firstSystemTicks=\(number(first?.systemTicks)) lastWallTicks=\(number(last?.wallTicks)) lastUserTicks=\(number(last?.userTicks)) lastSystemTicks=\(number(last?.systemTicks)) cpuScope=process oneCorePercent=100 snapshots=independent")
-    }
 }

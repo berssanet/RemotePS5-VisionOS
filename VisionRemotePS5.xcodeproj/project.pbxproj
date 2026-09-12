@@ -7,6 +7,14 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		B360A11C0000000000000001 /* StreamProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = B360A11C0000000000000002 /* StreamProfile.swift */; };
+		C109A11C0000000000000001 /* VideoFrameProcessor.swift in Sources */ = {isa = PBXBuildFile; fileRef = C109A11C0000000000000002 /* VideoFrameProcessor.swift */; };
+		C109A11C0000000000000003 /* ImmersiveCinemaRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C109A11C0000000000000004 /* ImmersiveCinemaRenderer.swift */; };
+		C111A11C0000000000000001 /* CinemaScreenGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = C111A11C0000000000000002 /* CinemaScreenGeometry.swift */; };
+		C109A11C0000000000000005 /* ImmersiveCinemaView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C109A11C0000000000000006 /* ImmersiveCinemaView.swift */; };
+		C109A11C0000000000000007 /* VideoQualityControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = C109A11C0000000000000008 /* VideoQualityControls.swift */; };
+		D023B8D1740240F8B1780101 /* PresentationSessionDriver.swift in Sources */ = {isa = PBXBuildFile; fileRef = D023B8D1740240F8B1780102 /* PresentationSessionDriver.swift */; };
+		A67D2FBA931E4CE9B0D20301 /* PresentationCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A67D2FBA931E4CE9B0D20302 /* PresentationCoordinator.swift */; };
 		SUSTAINBASEBUILD001 /* SustainedBaselineCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = SUSTAINBASEREF001 /* SustainedBaselineCapture.swift */; };
 		COLLECTORBENCHBUILD001 /* InstrumentationCollectorBenchmark.swift in Sources */ = {isa = PBXBuildFile; fileRef = COLLECTORBENCHREF001 /* InstrumentationCollectorBenchmark.swift */; };
 		OVERHEADPROBEBUILD001 /* InstrumentationOverheadProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = OVERHEADPROBEREF001 /* InstrumentationOverheadProbe.swift */; };
@@ -75,6 +83,22 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		B360A11C0000000000000002 /* StreamProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamProfile.swift; sourceTree = "<group>"; };
+		D309A11C0000000000000010 /* DepthModelSmokeTest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DepthModelSmokeTest.swift; sourceTree = "<group>"; };
+		D309A11C0000000000000002 /* StereoVideoProcessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StereoVideoProcessor.swift; sourceTree = "<group>"; };
+		D309A11C0000000000000004 /* StereoVideoMaterial.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StereoVideoMaterial.swift; sourceTree = "<group>"; };
+		D309A11C0000000000000006 /* DepthEstimationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DepthEstimationService.swift; sourceTree = "<group>"; };
+		D309A11C0000000000000008 /* DepthAnythingV2SmallF16.mlpackage */ = {isa = PBXFileReference; lastKnownFileType = folder.mlpackage; path = DepthAnythingV2SmallF16.mlpackage; sourceTree = "<group>"; };
+		D309A11C000000000000000A /* StereoVideo.usda */ = {isa = PBXFileReference; lastKnownFileType = text; path = StereoVideo.usda; sourceTree = "<group>"; };
+		D309A11C000000000000000C /* DepthAnythingV2-LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "DepthAnythingV2-LICENSE.txt"; sourceTree = "<group>"; };
+		D309A11C000000000000000E /* DepthAnythingV2-PROVENANCE.md */ = {isa = PBXFileReference; lastKnownFileType = text; path = "DepthAnythingV2-PROVENANCE.md"; sourceTree = "<group>"; };
+		C109A11C0000000000000002 /* VideoFrameProcessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoFrameProcessor.swift; sourceTree = "<group>"; };
+		C109A11C0000000000000004 /* ImmersiveCinemaRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImmersiveCinemaRenderer.swift; sourceTree = "<group>"; };
+		C111A11C0000000000000002 /* CinemaScreenGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CinemaScreenGeometry.swift; sourceTree = "<group>"; };
+		C109A11C0000000000000006 /* ImmersiveCinemaView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImmersiveCinemaView.swift; sourceTree = "<group>"; };
+		C109A11C0000000000000008 /* VideoQualityControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoQualityControls.swift; sourceTree = "<group>"; };
+		D023B8D1740240F8B1780102 /* PresentationSessionDriver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PresentationSessionDriver.swift; sourceTree = "<group>"; };
+		A67D2FBA931E4CE9B0D20302 /* PresentationCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PresentationCoordinator.swift; sourceTree = "<group>"; };
 		SUSTAINBASEREF001 /* SustainedBaselineCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SustainedBaselineCapture.swift; sourceTree = "<group>"; };
 		COLLECTORBENCHREF001 /* InstrumentationCollectorBenchmark.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstrumentationCollectorBenchmark.swift; sourceTree = "<group>"; };
 		OVERHEADPROBEREF001 /* InstrumentationOverheadProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstrumentationOverheadProbe.swift; sourceTree = "<group>"; };
@@ -184,6 +208,8 @@
 		GRP003 /* Views */ = {
 			isa = PBXGroup;
 			children = (
+				C109A11C0000000000000006 /* ImmersiveCinemaView.swift */,
+				C109A11C0000000000000008 /* VideoQualityControls.swift */,
 				EF3CB6A62F29066A005E85E1 /* StreamingVideoWindow.swift */,
 				EF5C41982F0645D2007A7B67 /* PSNConnectionView.swift */,
 				SRC002 /* ContentView.swift */,
@@ -202,6 +228,7 @@
 		GRP004 /* Models */ = {
 			isa = PBXGroup;
 			children = (
+				B360A11C0000000000000002 /* StreamProfile.swift */,
 				SRC008 /* Console.swift */,
 				SRC070 /* ControllerInput.swift */,
 			);
@@ -221,6 +248,8 @@
 				SRC009 /* ConsoleDiscoveryService.swift */,
 				SRC016 /* ChiakiCrypto.swift */,
 				STRMSRCSVC001 /* StreamingService.swift */,
+				A67D2FBA931E4CE9B0D20302 /* PresentationCoordinator.swift */,
+				D023B8D1740240F8B1780102 /* PresentationSessionDriver.swift */,
 				CNSSRC001 /* ConsoleStorageService.swift */,
 				CGATESRC001 /* ContinuationGate.swift */,
 				METRICREF001 /* StreamingMetrics.swift */,
@@ -243,6 +272,10 @@
 		GRP006 /* Resources */ = {
 			isa = PBXGroup;
 			children = (
+				D309A11C0000000000000008 /* DepthAnythingV2SmallF16.mlpackage */,
+				D309A11C000000000000000A /* StereoVideo.usda */,
+				D309A11C000000000000000C /* DepthAnythingV2-LICENSE.txt */,
+				D309A11C000000000000000E /* DepthAnythingV2-PROVENANCE.md */,
 				RES001 /* Assets.xcassets */,
 				CACERTREF001 /* cacert.pem */,
 			);
@@ -261,6 +294,13 @@
 		GRP008 /* Streaming */ = {
 			isa = PBXGroup;
 			children = (
+				D309A11C0000000000000010 /* DepthModelSmokeTest.swift */,
+				D309A11C0000000000000002 /* StereoVideoProcessor.swift */,
+				D309A11C0000000000000004 /* StereoVideoMaterial.swift */,
+				D309A11C0000000000000006 /* DepthEstimationService.swift */,
+				C109A11C0000000000000002 /* VideoFrameProcessor.swift */,
+				C109A11C0000000000000004 /* ImmersiveCinemaRenderer.swift */,
+				C111A11C0000000000000002 /* CinemaScreenGeometry.swift */,
 				UPSPIPEREF001 /* UpscalingPipeline.swift */,
 				MFXUPREF001 /* MetalFXUpscaler.swift */,
 				ENHUPREF001 /* EnhancedUpscaler.swift */,
@@ -393,6 +433,12 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				B360A11C0000000000000001 /* StreamProfile.swift in Sources */,
+				C109A11C0000000000000001 /* VideoFrameProcessor.swift in Sources */,
+				C109A11C0000000000000003 /* ImmersiveCinemaRenderer.swift in Sources */,
+				C111A11C0000000000000001 /* CinemaScreenGeometry.swift in Sources */,
+				C109A11C0000000000000005 /* ImmersiveCinemaView.swift in Sources */,
+				C109A11C0000000000000007 /* VideoQualityControls.swift in Sources */,
 				APP001 /* VisionRemotePS5App.swift in Sources */,
 				APP002 /* ContentView.swift in Sources */,
 				EF5C41992F0645D2007A7B67 /* PSNConnectionView.swift in Sources */,
@@ -418,6 +464,8 @@
 				APP010 /* ConsoleDiscoveryService.swift in Sources */,
 				APP017 /* ChiakiCrypto.swift in Sources */,
 				STRMSVC001 /* StreamingService.swift in Sources */,
+				A67D2FBA931E4CE9B0D20301 /* PresentationCoordinator.swift in Sources */,
+				D023B8D1740240F8B1780101 /* PresentationSessionDriver.swift in Sources */,
 				STRMVIEW001 /* StreamingView.swift in Sources */,
 				CNSSTO001 /* ConsoleStorageService.swift in Sources */,
 				CGATE001 /* ContinuationGate.swift in Sources */,

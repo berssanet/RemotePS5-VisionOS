@@ -10,18 +10,33 @@ import GameController
 import SwiftUI
 import MetalKit
 import CoreGraphics
+import CoreVideo
 import QuartzCore
+import os
+
+/// A narrow bridge for the Objective-C drawable queue, not general layer access.
+/// The view configures its layer on MainActor. Only the shared serial render
+/// queue calls nextDrawable(), then revalidates the returned texture size and
+/// retains admitted drawables through their GPU command's lifetime.
+private final class MetalDrawableSource: @unchecked Sendable {
+    private let layer: CAMetalLayer
+
+    @MainActor init(layer: CAMetalLayer) { self.layer = layer }
+
+    func nextDrawable() -> CAMetalDrawable? { layer.nextDrawable() }
+}
 
 /// A SwiftUI view that renders an MTLTexture directly on GPU.
 /// Optimized for high-resolution content with minimal CPU overhead.
 struct MetalTextureView: UIViewRepresentable {
     let frames: VideoFrameMailbox
+    var surfaceID: UUID? = nil
     var onFirstFrame: () -> Void = {}
     var onProcessingStatus: (String) -> Void = { _ in }
 
     func makeUIView(context: Context) -> MTKView {
         let mtkView = MTKView()
-        mtkView.device = MTLCreateSystemDefaultDevice()
+        mtkView.device = VideoGPUContext.shared.device
         mtkView.delegate = context.coordinator
         mtkView.framebufferOnly = true
         
@@ -40,11 +55,13 @@ struct MetalTextureView: UIViewRepresentable {
         if let layer = mtkView.layer as? CAMetalLayer {
             layer.maximumDrawableCount = 3
             layer.allowsNextDrawableTimeout = true
+            context.coordinator.configureDrawableLayer(layer)
         }
-        mtkView.autoResizeDrawable = true
-        
-        // High resolution for visionOS
-        mtkView.contentScaleFactor = 2.0
+        // Presentation resolution is selected from the decoded source and the
+        // native size recommendation. Window points must not downscale a 4K
+        // processed image to a smaller app-owned drawable.
+        mtkView.autoResizeDrawable = false
+        mtkView.drawableSize = CGSize(width: 2560, height: 1440)
         
         // visionOS turns gamepad presses into gaze + pinch events unless the view
         // hosting the CAMetalLayer declares that it handles them itself. Without
@@ -58,36 +75,42 @@ struct MetalTextureView: UIViewRepresentable {
     
     func updateUIView(_ mtkView: MTKView, context: Context) {}
 
+    static func dismantleUIView(_ uiView: MTKView, coordinator: Coordinator) {
+        coordinator.invalidate()
+        uiView.isPaused = true
+        uiView.delegate = nil
+    }
+
     func makeCoordinator() -> Coordinator {
-        Coordinator(frames: frames, onFirstFrame: onFirstFrame, onProcessingStatus: onProcessingStatus)
+        Coordinator(frames: frames, surfaceID: surfaceID, onFirstFrame: onFirstFrame, onProcessingStatus: onProcessingStatus)
     }
 
     class Coordinator: NSObject, MTKViewDelegate, @unchecked Sendable {
         private let frames: VideoFrameMailbox
+        private let surfaceID: UUID?
+        private let active = OSAllocatedUnfairLock(initialState: true)
         private let onFirstFrame: () -> Void
         private let onProcessingStatus: (String) -> Void
         private var lastProcessingStatus: String?
         private var lastMode: UpscalerType?
         private var lastSharpness: Float?
-        private let renderQueue = DispatchQueue(label: "video.render", qos: .userInteractive)
+        private var lastComparisonEnabled: Bool?
+        private var lastComparisonPosition: Float?
+        private var lastInspectionFrozen: Bool?
+        private var lastInspectionZoom: Float?
+        private var lastInspectionCenter: SIMD2<Float>?
+        private var lastDrawableSize: CGSize?
+        private let renderQueue = VideoGPUContext.shared.renderQueue
         // Never wait on main for GPU capacity. At most two command buffers in flight.
         private let capacity = DispatchSemaphore(value: 2)
-        private var commandQueue: MTLCommandQueue?
-        private var pipelineState: MTLRenderPipelineState?
-        private var sampler: MTLSamplerState?
-        private var vertexBuffer: MTLBuffer?
-        private var textureCache: CVMetalTextureCache?
-        private var metalFX: MetalFXUpscaler?
-        private var enhanced: EnhancedUpscaler?
-        private var attemptedMetalFX = false
-        private var attemptedEnhanced = false
-        private var isSetup = false
+        private let commandQueue = VideoGPUContext.shared.commandQueue
+        @MainActor private var drawableSource: MetalDrawableSource?
+        private var processor: VideoFrameProcessor?
+        private var attemptedSetup = false
         private var lastFrameID: UInt64 = 0
         #if !DISABLE_PERFORMANCE_COLLECTION
         private var lastTimingReport: Double = 0
         private let rendererID = UUID()
-        private var lastMetalFXOutput: ObjectIdentifier?
-        private var lastEnhancedOutput: ObjectIdentifier?
         #endif
         private var lastDrawableWarning: Double = 0
         private var announcedFirstFrame = false
@@ -97,95 +120,51 @@ struct MetalTextureView: UIViewRepresentable {
         private let queueStressEnabled = ProcessInfo.processInfo.arguments.contains("-VideoQueueMetricsStress")
         #endif
 
-        init(frames: VideoFrameMailbox, onFirstFrame: @escaping () -> Void, onProcessingStatus: @escaping (String) -> Void) {
+        init(frames: VideoFrameMailbox, surfaceID: UUID?, onFirstFrame: @escaping () -> Void, onProcessingStatus: @escaping (String) -> Void) {
             self.frames = frames
+            self.surfaceID = surfaceID
             self.onFirstFrame = onFirstFrame
             self.onProcessingStatus = onProcessingStatus
             super.init()
         }
 
-        func setupPipeline(device: MTLDevice, pixelFormat: MTLPixelFormat = .bgra10_xr) {
-            guard !isSetup else { return }
-            
-            commandQueue = device.makeCommandQueue()
-            CVMetalTextureCacheCreate(nil, nil, device, nil, &textureCache)
-            
-            // Create shader library from source
-            // HDR-aware shader: handles both SDR and EDR textures
-            let shaderSource = """
-            #include <metal_stdlib>
-            using namespace metal;
-            
-            struct VertexOut {
-                float4 position [[position]];
-                float2 texCoord;
-            };
-            
-            vertex VertexOut textureVertex(uint vertexID [[vertex_id]],
-                                           constant float4 *vertices [[buffer(0)]]) {
-                float4 vertexData = vertices[vertexID];
-                VertexOut out;
-                out.position = float4(vertexData.xy, 0.0, 1.0);
-                out.texCoord = vertexData.zw;
-                return out;
-            }
-            
-            // HDR-aware fragment shader
-            // Supports both BGRA8 (SDR) and RGBA16Float/BGRA10_XR (HDR) textures
-            // Output values >1.0 enable Extended Dynamic Range on Vision Pro
-            fragment float4 textureFragment(VertexOut in [[stage_in]],
-                                           texture2d<float> tex [[texture(0)]],
-                                           sampler samp [[sampler(0)]]) {
-                float4 color = tex.sample(samp, in.texCoord);
-                // Pass through - EDR values >1.0 are preserved for HDR display
-                return color;
-            }
-            """
-            
-            do {
-                let library = try device.makeLibrary(source: shaderSource, options: nil)
-                let vertexFunc = library.makeFunction(name: "textureVertex")
-                let fragmentFunc = library.makeFunction(name: "textureFragment")
-                
-                let pipelineDesc = MTLRenderPipelineDescriptor()
-                pipelineDesc.vertexFunction = vertexFunc
-                pipelineDesc.fragmentFunction = fragmentFunc
-                // Use HDR-capable pixel format
-                pipelineDesc.colorAttachments[0].pixelFormat = pixelFormat
-                
-                pipelineState = try device.makeRenderPipelineState(descriptor: pipelineDesc)
-                DebugLog.print("[MetalTextureView] ✅ Pipeline created (format: \(pixelFormat.rawValue))")
-            } catch {
-                DebugLog.print("[MetalTextureView] ❌ Failed to create pipeline: \(error)")
-                return
-            }
-            
-            // Create sampler with linear filtering for smooth scaling
-            let samplerDesc = MTLSamplerDescriptor()
-            samplerDesc.magFilter = .linear
-            samplerDesc.minFilter = .linear
-            samplerDesc.mipFilter = .notMipmapped
-            samplerDesc.sAddressMode = .clampToEdge
-            samplerDesc.tAddressMode = .clampToEdge
-            sampler = device.makeSamplerState(descriptor: samplerDesc)
-            
-            // Create fullscreen quad vertices: (x, y, u, v)
-            let vertices: [Float] = [
-                -1.0, -1.0, 0.0, 1.0,  // Bottom-left
-                 1.0, -1.0, 1.0, 1.0,  // Bottom-right
-                -1.0,  1.0, 0.0, 0.0,  // Top-left
-                 1.0,  1.0, 1.0, 0.0,  // Top-right
-            ]
-            vertexBuffer = device.makeBuffer(bytes: vertices, length: vertices.count * MemoryLayout<Float>.size, options: .storageModeShared)
-            
-            isSetup = true
+        func invalidate() { active.withLock { $0 = false } }
+
+        @MainActor func configureDrawableLayer(_ layer: CAMetalLayer) {
+            drawableSource = MetalDrawableSource(layer: layer)
         }
-        
+
+        private func canRender() -> Bool {
+            active.withLock { $0 } && frames.isSelectedConsumer(surfaceID)
+        }
+
+        private func canNotify(for frame: VideoFrameMailbox.Frame) -> Bool {
+            active.withLock { $0 } && frames.permitsRendering(consumerID: surfaceID, session: frame.session)
+        }
+
         func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
             // Handle resize if needed
         }
+
+        private static func presentationSize(for frame: VideoFrameMailbox.Frame,
+                                             preferredSize: CGSize) -> CGSize? {
+            // Clamp before converting to Int. A temporarily unavailable native
+            // recommendation retains the already validated 1440p floor.
+            func dimension(_ value: CGFloat, minimum: Int, maximum: Int) -> Int {
+                guard value.isFinite else { return minimum }
+                return Int(min(max(value, CGFloat(minimum)), CGFloat(maximum)).rounded(.up))
+            }
+            guard let dimensions = MetalFXUpscaler.outputDimensions(
+                inputWidth: CVPixelBufferGetWidth(frame.pixelBuffer),
+                inputHeight: CVPixelBufferGetHeight(frame.pixelBuffer),
+                targetWidth: dimension(preferredSize.width, minimum: 2560, maximum: 3840),
+                targetHeight: dimension(preferredSize.height, minimum: 1440, maximum: 2160)) else { return nil }
+            return CGSize(width: dimensions.width, height: dimensions.height)
+        }
         
+        @MainActor
         func draw(in view: MTKView) {
+            guard canRender() else { return }
             guard capacity.wait(timeout: .now()) == .success else {
                 #if !DISABLE_PERFORMANCE_COLLECTION
                 if let session = frames.diagnostics.session {
@@ -195,13 +174,28 @@ struct MetalTextureView: UIViewRepresentable {
                 return
             }
             guard let device = view.device,
-                  let layer = view.layer as? CAMetalLayer else {
+                  let drawableSource else {
                 capacity.signal()
                 return
             }
+            let candidate = frames.snapshotForRendering(consumerID: surfaceID)
+            guard candidate.enabled, let candidateFrame = candidate.frame,
+                  canNotify(for: candidateFrame) else { capacity.signal(); return }
+            let preferredSize = view.preferredDrawableSize
+            if let target = Self.presentationSize(for: candidateFrame, preferredSize: preferredSize),
+               view.drawableSize != target {
+                view.drawableSize = target
+            }
+            // A source outside the 2x allocation budget retains this bounded
+            // target. The processor explicitly falls back to Native for it.
+            let drawableSize = view.drawableSize
             renderQueue.async { [self] in
                 autoreleasepool {
-                    setupPipeline(device: device, pixelFormat: .bgra8Unorm)
+                    guard canRender() else { capacity.signal(); return }
+                    if !attemptedSetup {
+                        attemptedSetup = true
+                        processor = VideoFrameProcessor(device: device)
+                    }
                     #if DEBUG && !DISABLE_PERFORMANCE_COLLECTION
                     if queueStressEnabled, let session = frames.snapshot().frame?.session {
                         if queueStressSession != session {
@@ -219,9 +213,15 @@ struct MetalTextureView: UIViewRepresentable {
                         }
                     }
                     #endif
-                    let state = frames.acquireForRendering()
+                    let state = frames.acquireForRendering(consumerID: surfaceID)
                     guard state.enabled, let frame = state.frame,
-                          (frame.id != lastFrameID || state.mode != lastMode || state.sharpness != lastSharpness) else {
+                          (frame.id != lastFrameID || state.mode != lastMode || state.sharpness != lastSharpness
+                           || state.comparisonEnabled != lastComparisonEnabled
+                           || state.comparisonPosition != lastComparisonPosition
+                           || state.isInspectionFrozen != lastInspectionFrozen
+                           || state.inspectionZoom != lastInspectionZoom
+                           || state.inspectionCenter != lastInspectionCenter
+                           || drawableSize != lastDrawableSize) else {
                         #if !DISABLE_PERFORMANCE_COLLECTION
                         if let session = state.frame?.session {
                             VideoQueueMetrics.shared.record(.idleDraw, session: session)
@@ -242,14 +242,14 @@ struct MetalTextureView: UIViewRepresentable {
                         return VideoQueueMetrics.shared.record(event, session: session)
                         #endif
                     }
-                    guard let pipelineState, let sampler, let vertexBuffer,
+                    guard let processor,
                           let commandBuffer = commandQueue?.makeCommandBuffer() else {
                         record(.encodeFailed)
                         capacity.signal()
                         return
                     }
                     // Drawable acquisition may block; it belongs on the renderer queue too.
-                    guard let drawable = layer.nextDrawable() else {
+                    guard let drawable = drawableSource.nextDrawable() else {
                         record(.drawableUnavailable)
                         let now = CACurrentMediaTime()
                         if now - lastDrawableWarning >= 2 {
@@ -262,90 +262,34 @@ struct MetalTextureView: UIViewRepresentable {
                     let reportTiming = CACurrentMediaTime() - lastTimingReport >= 2
                     if reportTiming { lastTimingReport = CACurrentMediaTime() }
                     #endif
-                    let renderPass = MTLRenderPassDescriptor()
-                    renderPass.colorAttachments[0].texture = drawable.texture
-                    renderPass.colorAttachments[0].loadAction = .clear
-                    renderPass.colorAttachments[0].storeAction = .store
-                    renderPass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
-                    let buffer = frame.pixelBuffer
-                    var cvTexture: CVMetalTexture?
-                    guard let textureCache,
-                          CVMetalTextureCacheCreateTextureFromImage(nil, textureCache, buffer, nil,
-                            .bgra8Unorm, CVPixelBufferGetWidth(buffer), CVPixelBufferGetHeight(buffer),
-                            0, &cvTexture) == kCVReturnSuccess,
-                          let cvTexture, let native = CVMetalTextureGetTexture(cvTexture) else {
+                    // Revalidate after drawable acquisition, which can block while
+                    // the coordinator synchronously selects another consumer.
+                    guard canNotify(for: frame) else { capacity.signal(); return }
+                    let expectedSize = Self.presentationSize(for: frame, preferredSize: preferredSize) ?? drawableSize
+                    let actualSize = CGSize(width: drawable.texture.width, height: drawable.texture.height)
+                    // A new decoded size or native recommendation may have changed
+                    // the layer while this submission was queued. Retry on the next
+                    // draw without caching this frame as rendered at the wrong size.
+                    guard actualSize == expectedSize else { capacity.signal(); return }
+                    guard let result = processor.encode(frame: frame, state: state,
+                        commandBuffer: commandBuffer, target: drawable.texture) else {
                         record(.encodeFailed)
                         capacity.signal()
                         return
                     }
-                    var texture = native
-                    var appliedMode: UpscalerType = .native
-                    var fallbackReason: String?
-                    // Thermal pressure always falls back to native, never to the heavier Lanczos pass.
-                    let thermal = ProcessInfo.processInfo.thermalState
-                    let mode = thermal == .serious || thermal == .critical ? .native : state.mode
-                    if mode == .metalFX && CVPixelBufferGetWidth(buffer) == 1920 && CVPixelBufferGetHeight(buffer) == 1080 {
-                        if !attemptedMetalFX { attemptedMetalFX = true; metalFX = MetalFXUpscaler() }
-                        if let output = metalFX?.encode(buffer, commandBuffer: commandBuffer) {
-                            #if !DISABLE_PERFORMANCE_COLLECTION
-                            let identity = ObjectIdentifier(output)
-                            if identity == lastMetalFXOutput { record(.reusedOutput) }
-                            lastMetalFXOutput = identity
-                            #endif
-                            texture = output
-                            appliedMode = .metalFX
-                        } else {
-                            fallbackReason = "MetalFX unavailable"
-                        }
-                    } else if mode == .enhanced {
-                        if !attemptedEnhanced { attemptedEnhanced = true; enhanced = EnhancedUpscaler() }
-                        enhanced?.sharpenStrength = state.sharpness
-                        if let output = enhanced?.encode(buffer, commandBuffer: commandBuffer) {
-                            #if !DISABLE_PERFORMANCE_COLLECTION
-                            let identity = ObjectIdentifier(output)
-                            if identity == lastEnhancedOutput { record(.reusedOutput) }
-                            lastEnhancedOutput = identity
-                            #endif
-                            texture = output
-                            appliedMode = .enhanced
-                        } else {
-                            fallbackReason = "Enhanced unavailable"
-                        }
-                    }
-                    if mode != state.mode {
-                        fallbackReason = "Temperature protection"
-                    } else if mode == .metalFX && appliedMode == .native && fallbackReason == nil {
-                        fallbackReason = "MetalFX requires a 1080p stream"
-                    }
-                    let name = appliedMode == .native ? "Native" : appliedMode.rawValue
                     #if !DISABLE_PERFORMANCE_COLLECTION
+                    if result.reusedOutput { record(.reusedOutput) }
                     if let session {
                         VideoQueueMetrics.shared.resources(session: session, renderer: rendererID,
-                            count: (metalFX?.ownedTextureCount ?? 0) + (enhanced?.ownedTextureCount ?? 0),
-                            bytes: (metalFX?.ownedTextureBytes ?? 0) + (enhanced?.ownedTextureBytes ?? 0))
+                            count: result.ownedTextureCount, bytes: result.ownedTextureBytes)
                     }
                     #endif
-                    var processingStatus = "\(name) · \(native.width)×\(native.height) → \(texture.width)×\(texture.height)"
-                    if let fallbackReason { processingStatus += " · \(fallbackReason)" }
-                    let status = processingStatus
-                    guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPass) else {
-                        record(.encodeFailed)
-                        capacity.signal()
-                        return
-                    }
-                    encoder.setRenderPipelineState(pipelineState)
-                    encoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
-                    encoder.setFragmentTexture(texture, index: 0)
-                    encoder.setFragmentSamplerState(sampler, index: 0)
-                    encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
-                    encoder.endEncoding()
+                    let status = result.status
                     let capacity = self.capacity
                     #if !DISABLE_PERFORMANCE_COLLECTION
                     let recordedSubmission = record(.submitted)
                     #endif
                     commandBuffer.addCompletedHandler { completed in
-                        // Retain the decoder's IOSurface until the GPU has stopped reading it.
-                        withExtendedLifetime((buffer, cvTexture)) {}
                         #if !DISABLE_PERFORMANCE_COLLECTION
                         if recordedSubmission, let session {
                             VideoQueueMetrics.shared.record(completed.status == .completed ? .completed : .gpuFailed,
@@ -359,14 +303,21 @@ struct MetalTextureView: UIViewRepresentable {
                         #endif
                         if completed.status == .completed {
                             self.renderQueue.async {
+                                guard self.canNotify(for: frame) else { return }
                                 if self.lastProcessingStatus != status {
                                     self.lastProcessingStatus = status
                                     DebugLog.print("[Video] Processing: \(status)")
-                                    DispatchQueue.main.async { self.onProcessingStatus(status) }
+                                    DispatchQueue.main.async {
+                                        guard self.canNotify(for: frame) else { return }
+                                        self.onProcessingStatus(status)
+                                    }
                                 }
                                 if !self.announcedFirstFrame {
                                     self.announcedFirstFrame = true
-                                    DispatchQueue.main.async(execute: self.onFirstFrame)
+                                    DispatchQueue.main.async {
+                                        guard self.canNotify(for: frame) else { return }
+                                        self.onFirstFrame()
+                                    }
                                 }
                             }
                             #if !DISABLE_PERFORMANCE_COLLECTION
@@ -378,12 +329,18 @@ struct MetalTextureView: UIViewRepresentable {
                             self.renderQueue.async {
                                 if self.lastFrameID == frame.id { self.lastFrameID = 0 }
                             }
-                            DebugLog.print("[Video] GPU command failed: \(String(describing: completed.error))")
+                            DebugLog.print("[Video] GPU command failed")
                         }
                     }
                     lastFrameID = frame.id
                     lastMode = state.mode
                     lastSharpness = state.sharpness
+                    lastComparisonEnabled = state.comparisonEnabled
+                    lastComparisonPosition = state.comparisonPosition
+                    lastInspectionFrozen = state.isInspectionFrozen
+                    lastInspectionZoom = state.inspectionZoom
+                    lastInspectionCenter = state.inspectionCenter
+                    lastDrawableSize = actualSize
                     #if !DISABLE_PERFORMANCE_COLLECTION
                     drawable.addPresentedHandler { presented in
                         guard let timing = frame.metrics else { return }

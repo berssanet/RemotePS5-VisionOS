@@ -2,8 +2,13 @@
 
 Task 00.04: source inspection at revision
 `cc7e911` on branch `docs/active-streaming-paths`. The initial working tree was
-clean. This map describes the current windowed app; it does not validate a PS5
+clean. This map describes the windowed app at that inspection; it does not validate a PS5
 session or introduce an immersive renderer.
+
+The startup, callback and window-cleanup ownership below is historical. The
+[02.03 integration](presentation_window_lifecycle_2026_09.md), completed on
+2026-09-09, routes that lifetime through the app-owned coordinator/driver and
+records the confirmed physical close/reconnect result. It adds no immersive renderer.
 
 ## Connection and ownership
 

@@ -1,0 +1,83 @@
+#usda 1.0
+(
+    defaultPrim = "Root"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+# Public MaterialX nodes and RealityKit's Camera Index Switch, supported by
+# visionOS 2. The dynamic sRGB texture is bound by StereoVideoMaterial.make.
+# Camera Index Switch reference:
+# https://developer.apple.com/documentation/visionos/displaying-a-stereoscopic-image-in-visionos
+def Xform "Root"
+{
+    def Material "StereoVideo"
+    {
+        asset inputs:StereoTexture
+        float2 inputs:EyeUVMin = (0, 0)
+        float2 inputs:EyeUVMax = (1, 1)
+        token outputs:mtlx:surface.connect = </Root/StereoVideo/Unlit.outputs:out>
+
+        def Shader "UV"
+        {
+            uniform token info:id = "ND_texcoord_vector2"
+            int inputs:index = 0
+            float2 outputs:out
+        }
+
+        def Shader "ClampEyeUV"
+        {
+            uniform token info:id = "ND_clamp_vector2"
+            float2 inputs:in.connect = </Root/StereoVideo/UV.outputs:out>
+            float2 inputs:low.connect = </Root/StereoVideo.inputs:EyeUVMin>
+            float2 inputs:high.connect = </Root/StereoVideo.inputs:EyeUVMax>
+            float2 outputs:out
+        }
+
+        def Shader "HalfWidthUV"
+        {
+            uniform token info:id = "ND_multiply_vector2"
+            float2 inputs:in1.connect = </Root/StereoVideo/ClampEyeUV.outputs:out>
+            float2 inputs:in2 = (0.5, 1)
+            float2 outputs:out
+        }
+
+        def Shader "EyeOffset"
+        {
+            uniform token info:id = "ND_realitykit_geometry_switch_cameraindex_vector2"
+            float2 inputs:mono = (0, 0)
+            float2 inputs:left = (0, 0)
+            float2 inputs:right = (0.5, 0)
+            float2 outputs:out
+        }
+
+        def Shader "PackedUV"
+        {
+            uniform token info:id = "ND_add_vector2"
+            float2 inputs:in1.connect = </Root/StereoVideo/HalfWidthUV.outputs:out>
+            float2 inputs:in2.connect = </Root/StereoVideo/EyeOffset.outputs:out>
+            float2 outputs:out
+        }
+
+        def Shader "VideoImage"
+        {
+            uniform token info:id = "ND_image_color3"
+            asset inputs:file.connect = </Root/StereoVideo.inputs:StereoTexture>
+            color3f inputs:default = (0, 0, 0)
+            float2 inputs:texcoord.connect = </Root/StereoVideo/PackedUV.outputs:out>
+            string inputs:uaddressmode = "clamp"
+            string inputs:vaddressmode = "clamp"
+            string inputs:filtertype = "linear"
+            color3f outputs:out
+        }
+
+        def Shader "Unlit"
+        {
+            uniform token info:id = "ND_realitykit_unlit_surfaceshader"
+            color3f inputs:color.connect = </Root/StereoVideo/VideoImage.outputs:out>
+            float inputs:opacity = 1
+            bool inputs:applyPostProcessToneMap = false
+            token outputs:out
+        }
+    }
+}

@@ -94,12 +94,33 @@ final class StreamingService: ObservableObject {
     /// Previously, `state` and `isStreaming` were mutated independently and
     /// drifted (controller input enabled before chiaki acknowledged the session).
     var isStreaming: Bool { state == .streaming }
+
+    typealias StateObserver = @MainActor @Sendable (StreamingState, MetricSessionID) -> Void
+
+    /// Transport ownership, independent of any window or presentation driver.
+    var activeGeneration: MetricSessionID? { metricsSession }
+    var isQuiescent: Bool {
+        (state == .idle || state == .stopped) && !isStopping && stopTask == nil
+            && metricsSession == nil && psnStartTask == nil
+            && videoDecoder == nil && audioPlayer == nil && controllerManager == nil
+    }
     
     weak var delegate: StreamingServiceDelegate?
     
     private var configuration: StreamingConfiguration?
+
+    /// Immutable request for this session. Negotiated/decoded sizes may differ.
+    var requestedVideoSize: (width: Int, height: Int) {
+        (configuration?.width ?? StreamProfile.selected.width,
+         configuration?.height ?? StreamProfile.selected.height)
+    }
+    var requestedVideoDescription: String {
+        guard let configuration else { return StreamProfile.selected.summary }
+        return "\(configuration.width)×\(configuration.height) · \(configuration.fps) fps · \(configuration.bitrate / 1000) Mbps requested"
+    }
     nonisolated let metrics = StreamingMetricsRecorder()
     private var metricsSession: MetricSessionID?
+    private var stateObserver: StateObserver?
     private(set) var inputMetrics: InputMetricsRecorder?
     private var inputMetricsReportTask: Task<Void, Never>?
     private var videoQueueReportTask: Task<Void, Never>?
@@ -108,6 +129,7 @@ final class StreamingService: ObservableObject {
     private var reportConfiguration: PerformanceReportConfiguration?
     private var lastDecoderReport: PerformanceDecoderSnapshot?
     private var overheadProbe: InstrumentationOverheadProbe?
+    private var overheadModeObserver: AnyCancellable?
     private var collectorBenchmark: InstrumentationCollectorBenchmark?
     private var sustainedBaselineCapture: SustainedBaselineCapture?
     private var baselineModeObserver: AnyCancellable?
@@ -116,6 +138,8 @@ final class StreamingService: ObservableObject {
     private var inputMetricsLoad: InputMetricsVideoLoad?
     #endif
     private var psnStartTask: Task<Void, Error>?
+    private var psnStartGeneration: MetricSessionID?
+    private var stopTask: Task<Void, Never>?
     private var isStopping = false
     @Published private(set) var connectionStatusMessage = ""
 
@@ -140,8 +164,10 @@ final class StreamingService: ObservableObject {
     
     // MARK: - Public Methods
     
-    func startStreaming(configuration: StreamingConfiguration) async throws {
-        guard (state == .idle || state == .stopped), psnStartTask == nil, !isStopping else {
+    func startStreaming(configuration: StreamingConfiguration,
+                        onStateChange: StateObserver? = nil) async throws {
+        try Task.checkCancellation()
+        guard isQuiescent else {
             throw StreamingError.alreadyStreaming
         }
         
@@ -152,6 +178,7 @@ final class StreamingService: ObservableObject {
         self.configuration = configuration
         let session = metrics.beginSession()
         metricsSession = session
+        stateObserver = onStateChange
         #if !DISABLE_PERFORMANCE_COLLECTION
         reportConfiguration = PerformanceReportConfiguration(session: session,
             width: configuration.width, height: configuration.height,
@@ -167,32 +194,38 @@ final class StreamingService: ObservableObject {
         connectionStatusMessage = configuration.psnConnection == nil
             ? "Connecting on the local network…" : "Connecting through PlayStation Network…"
         
-        await MainActor.run {
-            self.state = .connecting
-            self.delegate?.streamingService(self, didChangeState: .connecting)
-        }
-        
-        DebugLog.print("[StreamingService] Starting streaming to \(configuration.host)")
-        
-        // WAKEUP: Send wakeup packet first (PS5 might be in standby)
-        // The PS5 refuses connections on port 9295 when in standby mode.
-        // We need to wake it first, then wait a bit for it to become ready.
-        if configuration.psnConnection == nil {
-            await wakeupConsoleIfNeeded(configuration: configuration)
-        }
-        
-        // Use ChiakiFullSession (chiaki-ng library)
         do {
-            try Task.checkCancellation()
-            try await startStreamingV2()
+            state = .connecting
+            delegate?.streamingService(self, didChangeState: .connecting)
+            onStateChange?(.connecting, session)
+            try requireActiveStart(session)
+
+            DebugLog.print("[StreamingService] Starting streaming to \(configuration.host)")
+            // Wake and network readiness can outlive a closed presentation. Check
+            // the captured generation before creating any transport resources.
+            if configuration.psnConnection == nil {
+                await wakeupConsoleIfNeeded(configuration: configuration, generation: session)
+            }
+            try requireActiveStart(session)
+            try await startStreamingV2(generation: session, observer: onStateChange)
+            try requireActiveStart(session)
         } catch {
-            stopStreaming()
+            // A resumed old start must never stop a replacement session.
+            if metricsSession == session { stopStreaming() }
             throw error
+        }
+    }
+
+    private func requireActiveStart(_ generation: MetricSessionID) throws {
+        try Task.checkCancellation()
+        guard metricsSession == generation, !isStopping, stopTask == nil else {
+            throw CancellationError()
         }
     }
     
     /// Send wakeup packet to console if it might be in standby
-    private func wakeupConsoleIfNeeded(configuration: StreamingConfiguration) async {
+    private func wakeupConsoleIfNeeded(configuration: StreamingConfiguration,
+                                       generation: MetricSessionID) async {
         // Parse registKey to Data for wakeup
         let registKeyData = parseRegistKey(configuration.registKey)
         
@@ -208,6 +241,7 @@ final class StreamingService: ObservableObject {
             registKey: registKeyData,
             isPS5: configuration.isPS5
         )
+        guard !Task.isCancelled, metricsSession == generation, !isStopping else { return }
         
         if success {
             DebugLog.info("StreamingService", "✅ WAKEUP sent successfully")
@@ -215,7 +249,8 @@ final class StreamingService: ObservableObject {
             // fixed 4-second sleep. PS5 cold-wake can take 6-10 seconds; the
             // old fixed sleep often hit a half-awake console with
             // "RP-Application-Reason 0x80108b15" busy/not-ready errors.
-            await waitForCtrlPort(host: configuration.host, port: 9295, timeoutSeconds: 15)
+            await waitForCtrlPort(host: configuration.host, port: 9295,
+                                  timeoutSeconds: 15, generation: generation)
         } else {
             DebugLog.error("StreamingService", "⚠️ WAKEUP failed, attempting connection anyway...")
         }
@@ -223,18 +258,22 @@ final class StreamingService: ObservableObject {
 
     /// Phase 5.18: probe a TCP port until it accepts a connection or timeout elapses.
     /// Returns when the port responds (PS5 ctrl ready) or when timeout hits — never throws.
-    private func waitForCtrlPort(host: String, port: UInt16, timeoutSeconds: TimeInterval) async {
+    private func waitForCtrlPort(host: String, port: UInt16, timeoutSeconds: TimeInterval,
+                                 generation: MetricSessionID) async {
         let deadline = Date().addingTimeInterval(timeoutSeconds)
         let pollIntervalNs: UInt64 = 500_000_000  // 500ms
         var attempt = 0
         while Date() < deadline {
+            guard !Task.isCancelled, metricsSession == generation, !isStopping else { return }
             attempt += 1
             let opened = await probeTCP(host: host, port: port, attemptTimeoutSeconds: 1.0)
+            guard !Task.isCancelled, metricsSession == generation, !isStopping else { return }
             if opened {
                 DebugLog.print("[StreamingService] ✅ CTRL port \(port) ready after \(attempt) probe(s)")
                 return
             }
-            try? await Task.sleep(nanoseconds: pollIntervalNs)
+            do { try await Task.sleep(nanoseconds: pollIntervalNs) }
+            catch { return }
         }
         DebugLog.print("[StreamingService] ⚠️ CTRL port \(port) not ready after \(timeoutSeconds)s; proceeding anyway")
     }
@@ -272,17 +311,19 @@ final class StreamingService: ObservableObject {
     }
     
     /// Start streaming using chiaki-ng library (V2)
-    private func startStreamingV2() async throws {
+    private func startStreamingV2(generation: MetricSessionID, observer: StateObserver?) async throws {
+        try requireActiveStart(generation)
         guard let config = configuration else {
             throw StreamingError.invalidConfiguration
         }
         
         DebugLog.info("StreamingService", "Using ChiakiFullSession for streaming")
         
-        await MainActor.run {
-            self.state = .negotiating
-            self.delegate?.streamingService(self, didChangeState: .negotiating)
-        }
+        state = .negotiating
+        delegate?.streamingService(self, didChangeState: .negotiating)
+        observer?(.negotiating, generation)
+        // Observers may synchronously request stop while handling this state.
+        try requireActiveStart(generation)
         
         // Setup callbacks
         
@@ -337,10 +378,10 @@ final class StreamingService: ObservableObject {
 
         }
         
-        setupChiakiCallbacks()
+        setupChiakiCallbacks(observer: observer)
 
         if let psnConnection = config.psnConnection {
-            try await startPSNStreaming(connection: psnConnection, config: config)
+            try await startPSNStreaming(connection: psnConnection, config: config, generation: generation)
             return
         }
 
@@ -381,7 +422,9 @@ final class StreamingService: ObservableObject {
         }
     }
     
-    private func startPSNStreaming(connection: PSNStreamingConnection, config: StreamingConfiguration) async throws {
+    private func startPSNStreaming(connection: PSNStreamingConnection, config: StreamingConfiguration,
+                                   generation: MetricSessionID) async throws {
+        try requireActiveStart(generation)
         let session = ChiakiFullSession.shared
         connectionStatusMessage = "Connecting through PlayStation Network…"
         let startTask = Task.detached(priority: .userInitiated) {
@@ -396,25 +439,35 @@ final class StreamingService: ObservableObject {
             try Task.checkCancellation()
         }
         psnStartTask = startTask
+        psnStartGeneration = generation
         var timedOut = false
         let timeoutTask = Task {
             do {
                 try await Task.sleep(nanoseconds: 120_000_000_000)
             } catch { return }
+            guard self.metricsSession == generation, self.psnStartGeneration == generation,
+                  !self.isStopping else { return }
             timedOut = true
             session.cancelPSN()
         }
         defer {
             timeoutTask.cancel()
-            psnStartTask = nil
+            if psnStartGeneration == generation {
+                psnStartTask = nil
+                psnStartGeneration = nil
+            }
         }
         do {
             try await withTaskCancellationHandler {
                 try await startTask.value
-                try Task.checkCancellation()
+                try requireActiveStart(generation)
             } onCancel: {
                 startTask.cancel()
-                session.cancelPSN()
+                Task { @MainActor [weak self] in
+                    guard let self, self.metricsSession == generation,
+                          self.psnStartGeneration == generation, !self.isStopping else { return }
+                    session.cancelPSN()
+                }
             }
         } catch {
             if timedOut {
@@ -428,7 +481,7 @@ final class StreamingService: ObservableObject {
     }
 
     /// Setup callbacks from ChiakiFullSession
-    private func setupChiakiCallbacks() {
+    private func setupChiakiCallbacks(observer: StateObserver?) {
         // Capture session-owned decoder, never read actor state from the network thread.
         let decoder = videoDecoder
         let recorder = metrics
@@ -487,6 +540,7 @@ final class StreamingService: ObservableObject {
                         }
                     }
                     self.delegate?.streamingService(self, didChangeState: .streaming)
+                    if let session { observer?(.streaming, session) }
                 }
 
             case .quit:
@@ -508,8 +562,7 @@ final class StreamingService: ObservableObject {
                         self.videoQueueReportTask?.cancel()
                         self.videoQueueReportTask = nil
                         self.stopThermalMonitoring()
-                        self.overheadProbe?.stop()
-                        self.overheadProbe = nil
+                        self.stopOverheadProbe()
                         self.collectorBenchmark?.stop()
                         self.collectorBenchmark = nil
                         self.stopSustainedBaseline()
@@ -518,13 +571,16 @@ final class StreamingService: ObservableObject {
                     // latches its last intensity: silence the pad ourselves.
                     self.controllerManager?.triggerRumble(left: 0, right: 0)
                     guard !self.isStopping, self.state != .stopped else { return }
-                    self.state = .error(reason ?? "The console ended the session")
-                    self.delegate?.streamingService(self, didChangeState: self.state)
+                    let endedState = StreamingState.error(reason ?? "The console ended the session")
+                    self.state = endedState
+                    self.delegate?.streamingService(self, didChangeState: endedState)
+                    if let session { observer?(endedState, session) }
                 }
 
             case .holepunch:
                 if let reason, let stage = PSNConnectionStage(rawValue: reason) {
                     Task { @MainActor in
+                        guard self.metricsSession == session, !self.isStopping else { return }
                         self.connectionStatusMessage = stage.message
                     }
                 }
@@ -540,6 +596,7 @@ final class StreamingService: ObservableObject {
             
             // Trigger haptic feedback on connected controller
             Task { @MainActor in
+                guard self.metricsSession == session, !self.isStopping else { return }
                 self.controllerManager?.triggerRumble(left: left, right: right)
             }
         }
@@ -591,7 +648,13 @@ final class StreamingService: ObservableObject {
     }
     
     func stopStreaming() {
-        guard !isStopping else { return }
+        guard !isStopping, stopTask == nil, !isQuiescent else { return }
+        let stoppedGeneration = metricsSession
+        let stoppedObserver = stateObserver
+        let stoppedDelegate = delegate
+        // The terminal notification belongs to this attempt, even if its caller
+        // installs another observer after native teardown completes.
+        stateObserver = nil
         isStopping = true
         if let session = metricsSession {
             metrics.endSession(session)
@@ -600,8 +663,7 @@ final class StreamingService: ObservableObject {
             VideoQueueMetrics.shared.endSession(session)
             #endif
         }
-        overheadProbe?.stop()
-        overheadProbe = nil
+        stopOverheadProbe()
         collectorBenchmark?.stop()
         collectorBenchmark = nil
         stopSustainedBaseline()
@@ -628,7 +690,7 @@ final class StreamingService: ObservableObject {
         
         videoDecoder?.stop()
 
-        Task { @MainActor in
+        stopTask = Task { @MainActor in
             _ = await startTask?.result
             await Task.detached(priority: .userInitiated) {
                 ChiakiFullSession.shared.teardown()
@@ -644,13 +706,31 @@ final class StreamingService: ObservableObject {
             self.videoDecoder = nil
             self.configuration = nil
             self.connectionStatusMessage = ""
+            self.psnStartTask = nil
+            self.psnStartGeneration = nil
+            // Clear ownership before notifying: an observer may start the next
+            // attempt synchronously, and this task must not clear its observer.
+            self.stopTask = nil
             self.isStopping = false
             // Phase 5.21: state drives isStreaming.
             self.state = .stopped
-            self.delegate?.streamingService(self, didChangeState: .stopped)
+            DebugLog.info("StreamingService", "Streaming stopped")
+            stoppedDelegate?.streamingService(self, didChangeState: .stopped)
+            if let stoppedGeneration { stoppedObserver?(.stopped, stoppedGeneration) }
         }
-        
-        DebugLog.info("StreamingService", "Streaming stopped")
+    }
+
+    /// Closes input immediately, then waits for the retained native teardown.
+    func stopStreamingAndWait() async {
+        stopStreaming()
+        await waitForStopCompletion()
+    }
+
+    /// Waits only for an existing stop, including one requested by a failed
+    /// start. The presentation driver separately awaits its own auth/start task.
+    func waitForStopCompletion() async {
+        let pendingStop = stopTask
+        await pendingStop?.value
     }
     
     /// Called only by the explicit export action. Copies are bounded and contain
@@ -686,20 +766,43 @@ final class StreamingService: ObservableObject {
         guard arguments.contains("-NativeBaselineCapture"),
               arguments.isDisjoint(with: incompatibleDiagnostics),
               sustainedBaselineCapture == nil else { return }
+        // The existing 01.09 reference fixes the requested source. A smaller
+        // stream is a different quality/network tradeoff, not a faster baseline.
+        guard let configuration, configuration.width == 1920,
+              configuration.height == 1080, configuration.fps == 60,
+              configuration.bitrate == 15_000 else {
+            print("[NativeBaselineStatus] state=refused reason=incompatibleConfiguration")
+            return
+        }
+        let pipeline = UpscalingPipeline.shared
         let capture = SustainedBaselineCapture(session: session) { [weak self] in
             guard let self, self.metricsSession == session, self.isStreaming, !self.isStopping,
-                  UpscalingPipeline.shared.upscalerType == .native else {
+                  pipeline.upscalerType == .native, !pipeline.inspectionFrozen,
+                  pipeline.inspectionZoom == 1 else {
                 throw PerformanceReportError.noSession
+            }
+            // The server may resize the source independently of our request.
+            // Initial warmup may precede a frame, but an observed lower source
+            // must never be recorded as the fixed 1080p reference.
+            if let frame = pipeline.frames.snapshot().frame {
+                guard frame.session == session,
+                      CVPixelBufferGetWidth(frame.pixelBuffer) == 1920,
+                      CVPixelBufferGetHeight(frame.pixelBuffer) == 1080 else {
+                    throw StreamingError.invalidConfiguration
+                }
             }
             return try self.capturePerformanceSnapshot()
         }
         sustainedBaselineCapture = capture
         // The pipeline is main-actor isolated. Its synchronous publisher cancels
-        // on every non-native selection, including switches between checkpoints.
+        // on any non-native/frozen/zoomed inspection, even between checkpoints.
         // It observes settings only and never changes the user's processing mode.
-        baselineModeObserver = UpscalingPipeline.shared.$upscalerType.sink { [weak capture] mode in
-            if mode != .native { capture?.stop(reason: .modeChanged) }
-        }
+        baselineModeObserver = pipeline.$upscalerType
+            .combineLatest(pipeline.$inspectionFrozen, pipeline.$inspectionZoom)
+            .sink { [weak capture] settings in
+                let (mode, frozen, zoom) = settings
+                if mode != .native || frozen || zoom != 1 { capture?.stop(reason: .modeChanged) }
+            }
         capture.start()
         #endif
     }
@@ -712,17 +815,72 @@ final class StreamingService: ObservableObject {
     }
 
     private func startOverheadProbeIfRequested(session: MetricSessionID) {
-        if ProcessInfo.processInfo.arguments.contains("-InstrumentationCollectorBenchmark"),
-           collectorBenchmark == nil {
+        let arguments = Set(ProcessInfo.processInfo.arguments)
+        let otherDiagnostics: Set<String> = ["-NativeBaselineCapture",
+            "-InputMetricsVideoLoad", "-VideoQueueMetricsStress"]
+        let wantsProbe = arguments.contains("-InstrumentationOverheadProbe")
+        let wantsBenchmark = arguments.contains("-InstrumentationCollectorBenchmark")
+        guard wantsProbe || wantsBenchmark else { return }
+        guard arguments.isDisjoint(with: otherDiagnostics), !(wantsProbe && wantsBenchmark) else {
+            print("[InstrumentationProbeStatus] state=refused reason=incompatibleDiagnostics")
+            return
+        }
+        // Keep the predeclared ON/OFF study on its original stream request.
+        // Reduced-bandwidth profiles remain available for normal play.
+        guard let configuration, configuration.width == 1920,
+              configuration.height == 1080, configuration.fps == 60,
+              configuration.bitrate == 15_000 else {
+            print("[InstrumentationProbeStatus] state=refused reason=incompatibleConfiguration")
+            return
+        }
+        if wantsBenchmark, collectorBenchmark == nil {
             let benchmark = InstrumentationCollectorBenchmark(session: session)
             collectorBenchmark = benchmark
             benchmark.start()
         }
-        guard ProcessInfo.processInfo.arguments.contains("-InstrumentationOverheadProbe"),
-              overheadProbe == nil else { return }
-        let probe = InstrumentationOverheadProbe(session: session)
+        guard wantsProbe, overheadProbe == nil else { return }
+        let pipeline = UpscalingPipeline.shared
+        let requested = InstrumentationProbeConfiguration(width: configuration.width,
+            height: configuration.height, fps: configuration.fps, bitrate: configuration.bitrate)
+        var previousFrameID: UInt64?
+        let probe = InstrumentationOverheadProbe(session: session, configuration: requested) {
+            [weak self] requireVideo in
+            guard let self, self.metricsSession == session, self.isStreaming, !self.isStopping else {
+                return .sessionEnded
+            }
+            guard pipeline.upscalerType == .native, !pipeline.inspectionFrozen,
+                  pipeline.inspectionZoom == 1 else { return .modeChanged }
+            guard requireVideo else { return nil }
+            // Functional mailbox identities survive in both compile variants.
+            // This is a non-consuming snapshot; it neither marks acquisition nor
+            // measures delivered cadence or physical presentation.
+            let delivery = VideoDelivery.shared.snapshot()
+            guard delivery.enabled, delivery.mode == .native,
+                  let frame = delivery.frame, frame.session == session else { return .videoUnavailable }
+            guard CVPixelBufferGetWidth(frame.pixelBuffer) == requested.width,
+                  CVPixelBufferGetHeight(frame.pixelBuffer) == requested.height else {
+                return .invalidConfiguration
+            }
+            guard previousFrameID.map({ frame.id > $0 }) ?? true else { return .videoStalled }
+            previousFrameID = frame.id
+            return nil
+        }
         overheadProbe = probe
+        // Catch inspection or non-Native settings even if restored between samples.
+        overheadModeObserver = pipeline.$upscalerType
+            .combineLatest(pipeline.$inspectionFrozen, pipeline.$inspectionZoom)
+            .sink { [weak probe] settings in
+                let (mode, frozen, zoom) = settings
+                if mode != .native || frozen || zoom != 1 { probe?.stop(reason: .modeChanged) }
+            }
         probe.start()
+    }
+
+    private func stopOverheadProbe() {
+        overheadModeObserver?.cancel()
+        overheadModeObserver = nil
+        overheadProbe?.stop(reason: .sessionEnded)
+        overheadProbe = nil
     }
 
     private func captureDecoderReport(_ decoder: StreamVideoDecoder,

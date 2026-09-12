@@ -3,8 +3,7 @@
 //  VisionRemotePS5
 //
 //  Custom Metal shader upscaler with Lanczos resampling and
-//  Contrast Adaptive Sharpening (CAS) for improved 4K quality.
-//  Lower latency alternative to CoreML-based upscaling.
+//  contrast-adaptive unsharp masking. No neural reconstruction is performed.
 //
 
 import Foundation
@@ -12,7 +11,7 @@ import Metal
 import CoreVideo
 
 /// Enhanced GPU upscaler using custom Metal shaders.
-/// Applies Lanczos-3 resampling followed by CAS sharpening.
+/// Applies Lanczos-3 resampling followed by a custom adaptive unsharp mask.
 final class EnhancedUpscaler {
     
     // MARK: - Constants
@@ -47,15 +46,26 @@ final class EnhancedUpscaler {
     
     // MARK: - Settings
     
-    /// CAS sharpening strength (0.0 = off, 1.0 = maximum)
+    /// Adaptive sharpening strength (0.0 = off, 1.0 = maximum)
     var sharpenStrength: Float = 0.5
     
-    /// Enable/disable CAS pass
+    /// Enable/disable sharpening pass
     var enableSharpening: Bool = true
     
     // MARK: - Stats
     
     private var frameCount: UInt64 = 0
+
+    #if VIDEO_GPU_TESTING
+    var makeEncoderForTesting: ((MTLCommandBuffer) -> MTLComputeCommandEncoder?)?
+    #endif
+
+    private func makeEncoder(_ commandBuffer: MTLCommandBuffer) -> MTLComputeCommandEncoder? {
+        #if VIDEO_GPU_TESTING
+        if let makeEncoderForTesting { return makeEncoderForTesting(commandBuffer) }
+        #endif
+        return commandBuffer.makeComputeCommandEncoder()
+    }
     
     // MARK: - Shader Source
     
@@ -111,7 +121,7 @@ final class EnhancedUpscaler {
         output.write(result, gid);
     }
     
-    // AMD FidelityFX CAS (Contrast Adaptive Sharpening) - simplified for mobile
+    // Custom contrast-adaptive unsharp mask; not the AMD FidelityFX CAS implementation.
     kernel void casSharpening(
         texture2d<float, access::read> input [[texture(0)]],
         texture2d<float, access::write> output [[texture(1)]],
@@ -133,7 +143,7 @@ final class EnhancedUpscaler {
         float4 h = input.read(uint2(clamp(p + int2( 0,  1), int2(0), limit)));
         float4 i = input.read(uint2(clamp(p + int2( 1,  1), int2(0), limit)));
 
-        // Compute local contrast (simplified CAS)
+        // Compute local contrast for the adaptive sharpening weight.
         float4 minNeighbor = min(min(min(a, b), min(c, d)), min(min(f, g), min(h, i)));
         float4 maxNeighbor = max(max(max(a, b), max(c, d)), max(max(f, g), max(h, i)));
         
@@ -155,10 +165,10 @@ final class EnhancedUpscaler {
     
     // MARK: - Initialization
     
-    init?() {
+    init?(device: MTLDevice? = MTLCreateSystemDefaultDevice()) {
         DebugLog.print("[EnhancedUpscaler] 🚀 Starting initialization...")
         
-        guard let device = MTLCreateSystemDefaultDevice() else {
+        guard let device else {
             DebugLog.print("[EnhancedUpscaler] ❌ No Metal device available")
             return nil
         }
@@ -268,8 +278,15 @@ final class EnhancedUpscaler {
         }
         
         
+        // Install retention before encoding: the first pass may have been
+        // encoded even if the second encoder cannot be created.
+        commandBuffer.addCompletedHandler { _ in
+            withExtendedLifetime((pixelBuffer, cvTexture)) {}
+        }
+
         // Pass 1: Lanczos upscaling
-        if let encoder = commandBuffer.makeComputeCommandEncoder() {
+        do {
+            guard let encoder = makeEncoder(commandBuffer) else { return nil }
             encoder.setComputePipelineState(lanczosUpscalePipeline)
             encoder.setTexture(inputTexture, index: 0)
             
@@ -288,28 +305,24 @@ final class EnhancedUpscaler {
         }
         
         // Pass 2: CAS sharpening (optional)
-        if enableSharpening, let casSharpenPipeline = casSharpenPipeline {
-            if let encoder = commandBuffer.makeComputeCommandEncoder() {
-                encoder.setComputePipelineState(casSharpenPipeline)
-                encoder.setTexture(intermediateTexture, index: 0)
-                encoder.setTexture(outputTexture, index: 1)
-                
-                var sharpness = sharpenStrength
-                encoder.setBytes(&sharpness, length: MemoryLayout<Float>.size, index: 0)
-                
-                let threadGroupSize = MTLSize(width: 16, height: 16, depth: 1)
-                let threadGroups = MTLSize(
-                    width: (Self.outputWidth + 15) / 16,
-                    height: (Self.outputHeight + 15) / 16,
-                    depth: 1
-                )
-                encoder.dispatchThreadgroups(threadGroups, threadsPerThreadgroup: threadGroupSize)
-                encoder.endEncoding()
-            }
-        }
-        
-        commandBuffer.addCompletedHandler { _ in
-            withExtendedLifetime((pixelBuffer, cvTexture)) {}
+        if enableSharpening {
+            guard let casSharpenPipeline,
+                  let encoder = makeEncoder(commandBuffer) else { return nil }
+            encoder.setComputePipelineState(casSharpenPipeline)
+            encoder.setTexture(intermediateTexture, index: 0)
+            encoder.setTexture(outputTexture, index: 1)
+
+            var sharpness = sharpenStrength.isFinite ? min(max(sharpenStrength, 0), 1) : 0.5
+            encoder.setBytes(&sharpness, length: MemoryLayout<Float>.size, index: 0)
+
+            let threadGroupSize = MTLSize(width: 16, height: 16, depth: 1)
+            let threadGroups = MTLSize(
+                width: (Self.outputWidth + 15) / 16,
+                height: (Self.outputHeight + 15) / 16,
+                depth: 1
+            )
+            encoder.dispatchThreadgroups(threadGroups, threadsPerThreadgroup: threadGroupSize)
+            encoder.endEncoding()
         }
         
         if frameCount == 1 {

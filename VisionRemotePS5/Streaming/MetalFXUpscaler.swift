@@ -2,11 +2,9 @@
 //  MetalFXUpscaler.swift
 //  VisionRemotePS5
 //
-//  GPU upscaling from 1080p to 4K using MetalFX Spatial Scaler.
-//  NOTE: MTLFXTemporalScaler is NOT available on visionOS, only Spatial Scaler is supported.
-//  Uses perceptual color processing for high-quality upscaling.
-//  Supports HDR with .bgra10_xr (Extended Range) pixel format.
-//  Zero-copy: output texture is private (GPU-only) for maximum performance.
+//  GPU upscaling using a MetalFX Spatial Scaler configured for the actual
+//  decoded frame dimensions. Output defaults to 2x in each dimension.
+//  The active streaming path is SDR BGRA; output stays private on the GPU.
 //
 
 import Foundation
@@ -94,15 +92,57 @@ struct HDRColorMetadata: @unchecked Sendable {
 }
 
 /// MetalFX-based upscaler for PS5 Remote Play video stream.
-/// Upscales 1080p BGRA frames to 4K resolution with optional HDR support.
+/// Immutable dimensions let the renderer replace a scaler when the decoded
+/// source changes, while in-flight command buffers retain its GPU resources.
 final class MetalFXUpscaler {
     
     // MARK: - Constants
     
-    static let inputWidth = 1920
-    static let inputHeight = 1080
-    static let outputWidth = 3840
-    static let outputHeight = 2160
+    static let defaultInputWidth = 1920
+    static let defaultInputHeight = 1080
+    // App allocation limits, deliberately below the supported GPUs' texture
+    // limits. They keep a malformed stream from requesting an unbounded target.
+    static let maximumOutputWidth = 3840
+    static let maximumOutputHeight = 2160
+    let inputWidth: Int
+    let inputHeight: Int
+    let outputWidth: Int
+    let outputHeight: Int
+
+    struct OutputDimensions: Equatable {
+        let width: Int
+        let height: Int
+    }
+
+    /// Covers the destination without a second linear enlargement, up to the
+    /// app's 4K allocation budget. Whole multiples of the reduced source aspect
+    /// ratio preserve exact proportions when the drawable rounds to odd pixels.
+    /// Keep at least the existing 2x source processing size for small targets.
+    static func outputDimensions(inputWidth: Int, inputHeight: Int,
+                                 targetWidth: Int, targetHeight: Int) -> OutputDimensions? {
+        guard inputWidth > 0, inputHeight > 0, targetWidth > 0, targetHeight > 0,
+              inputWidth <= maximumOutputWidth, inputHeight <= maximumOutputHeight else { return nil }
+        var divisor = inputWidth, remainder = inputHeight
+        while remainder != 0 {
+            let next = divisor % remainder
+            divisor = remainder
+            remainder = next
+        }
+        let unitWidth = inputWidth / divisor, unitHeight = inputHeight / divisor
+        let minimumMultiple = divisor * 2
+        let maximumMultiple = min(maximumOutputWidth / unitWidth, maximumOutputHeight / unitHeight)
+        guard minimumMultiple <= maximumMultiple else { return nil }
+        // Division before addition avoids overflow even for malformed Int.max
+        // targets supplied to this helper; the result is capped before multiply.
+        func coveringMultiple(_ value: Int, unit: Int) -> Int {
+            value / unit + (value % unit == 0 ? 0 : 1)
+        }
+        let desired = max(minimumMultiple,
+                          coveringMultiple(targetWidth, unit: unitWidth),
+                          coveringMultiple(targetHeight, unit: unitHeight))
+        let multiple = min(desired, maximumMultiple)
+        return OutputDimensions(width: unitWidth * multiple, height: unitHeight * multiple)
+    }
     
     // MARK: - Metal Resources
     
@@ -140,12 +180,29 @@ final class MetalFXUpscaler {
     
     // MARK: - Initialization
     
-    init?(hdrEnabled: Bool = false) {
+    init?(inputWidth: Int = MetalFXUpscaler.defaultInputWidth,
+          inputHeight: Int = MetalFXUpscaler.defaultInputHeight,
+          outputWidth: Int? = nil, outputHeight: Int? = nil,
+          hdrEnabled: Bool = false, device: MTLDevice? = MTLCreateSystemDefaultDevice()) {
+        // Validate before doubling or allocating; limits also prevent integer
+        // overflow when an invalid source/output size reaches this API.
+        guard inputWidth > 0, inputHeight > 0,
+              inputWidth <= Self.maximumOutputWidth, inputHeight <= Self.maximumOutputHeight else { return nil }
+        let destinationWidth = outputWidth ?? inputWidth * 2
+        let destinationHeight = outputHeight ?? inputHeight * 2
+        guard destinationWidth >= inputWidth, destinationHeight >= inputHeight,
+              destinationWidth <= Self.maximumOutputWidth,
+              destinationHeight <= Self.maximumOutputHeight,
+              destinationWidth * inputHeight == destinationHeight * inputWidth else { return nil }
+        self.inputWidth = inputWidth
+        self.inputHeight = inputHeight
+        self.outputWidth = destinationWidth
+        self.outputHeight = destinationHeight
         self.hdrConfig = MetalFXHDRConfig(hdrEnabled: hdrEnabled)
         
         DebugLog.info("MetalFXUpscaler", "🚀 Starting initialization (HDR: \(hdrEnabled ? "enabled" : "disabled"))...")
         
-        guard let device = MTLCreateSystemDefaultDevice() else {
+        guard let device else {
             DebugLog.error("MetalFXUpscaler", "No Metal device available")
             return nil
         }
@@ -165,17 +222,21 @@ final class MetalFXUpscaler {
         self.textureCache = textureCache
         DebugLog.info("MetalFXUpscaler", "✅ Texture cache created")
         
+        // Query the scaler's actual texture-usage requirements before allocating
+        // its persistent output or wrapping a decoder buffer.
+        guard initializeSpatialScaler(), let spatialScaler else { return nil }
+
         // Create output texture - private storage for MetalFX (required)
         // Use HDR format (.bgra10_xr) if HDR enabled, otherwise SDR (.bgra8Unorm)
         let outputPixelFormat = hdrConfig.outputFormat
         
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: outputPixelFormat,
-            width: Self.outputWidth,
-            height: Self.outputHeight,
+            width: self.outputWidth,
+            height: self.outputHeight,
             mipmapped: false
         )
-        descriptor.usage = [.shaderRead, .shaderWrite, .renderTarget]
+        descriptor.usage = spatialScaler.outputTextureUsage.union(.shaderRead)
         descriptor.storageMode = .private
         
         guard let output = device.makeTexture(descriptor: descriptor) else {
@@ -184,17 +245,11 @@ final class MetalFXUpscaler {
         }
         self.outputTexture = output
         let formatName = hdrEnabled ? "bgra10_xr (HDR)" : "bgra8Unorm (SDR)"
-        DebugLog.info("MetalFXUpscaler", "✅ Output texture: \(Self.outputWidth)x\(Self.outputHeight) [\(formatName)]")
-        
-        // Initialize Spatial Scaler (only option on visionOS)
-        // NOTE: MTLFXTemporalScaler is NOT available on visionOS
-        guard initializeSpatialScaler() else {
-            return nil
-        }
+        DebugLog.info("MetalFXUpscaler", "✅ Output texture: \(self.outputWidth)x\(self.outputHeight) [\(formatName)]")
         self.mode = .spatial
         
         let hdrStatus = hdrEnabled ? "HDR (bgra10_xr)" : "SDR (bgra8Unorm)"
-        DebugLog.info("MetalFXUpscaler", "✅ Initialized (SPATIAL mode, \(Self.inputWidth)x\(Self.inputHeight) → \(Self.outputWidth)x\(Self.outputHeight), \(hdrStatus))")
+        DebugLog.info("MetalFXUpscaler", "✅ Initialized (SPATIAL mode, \(inputWidth)x\(inputHeight) → \(self.outputWidth)x\(self.outputHeight), \(hdrStatus))")
     }
     
     // MARK: - Scaler Initialization
@@ -207,10 +262,10 @@ final class MetalFXUpscaler {
         DebugLog.info("MetalFXUpscaler", "✅ MetalFX Spatial Scaler supported")
         
         let descriptor = MTLFXSpatialScalerDescriptor()
-        descriptor.inputWidth = Self.inputWidth
-        descriptor.inputHeight = Self.inputHeight
-        descriptor.outputWidth = Self.outputWidth
-        descriptor.outputHeight = Self.outputHeight
+        descriptor.inputWidth = inputWidth
+        descriptor.inputHeight = inputHeight
+        descriptor.outputWidth = outputWidth
+        descriptor.outputHeight = outputHeight
         
         // Use HDR-capable format when HDR is enabled
         // .bgra10_xr supports Extended Range (values > 1.0) for HDR content
@@ -262,6 +317,10 @@ final class MetalFXUpscaler {
     
     /// Encode before the render pass on the renderer command buffer.
     func encode(_ pixelBuffer: CVPixelBuffer, commandBuffer: MTLCommandBuffer) -> MTLTexture? {
+        guard commandBuffer.device.registryID == device.registryID,
+              CVPixelBufferGetWidth(pixelBuffer) == inputWidth,
+              CVPixelBufferGetHeight(pixelBuffer) == inputHeight,
+              hdrConfig.hdrEnabled || CVPixelBufferGetPixelFormatType(pixelBuffer) == kCVPixelFormatType_32BGRA else { return nil }
         guard let spatialScaler = spatialScaler,
               let textureCache = textureCache,
               let outputTexture = self.outputTexture else {
@@ -291,7 +350,8 @@ final class MetalFXUpscaler {
         var cvTexture: CVMetalTexture?
         let inputFormat = hdrConfig.colorFormat
         let status = CVMetalTextureCacheCreateTextureFromImage(
-            nil, textureCache, pixelBuffer, nil,
+            nil, textureCache, pixelBuffer,
+            [kCVMetalTextureUsage: spatialScaler.colorTextureUsage.rawValue] as CFDictionary,
             inputFormat, width, height, 0, &cvTexture
         )
         
@@ -303,16 +363,18 @@ final class MetalFXUpscaler {
             return nil
         }
         
-        // Create command buffer
-        
         // Apply Spatial Scaler
         spatialScaler.colorTexture = inputTexture
+        spatialScaler.inputContentWidth = width
+        spatialScaler.inputContentHeight = height
         spatialScaler.outputTexture = outputTexture
         spatialScaler.encode(commandBuffer: commandBuffer)
         
         let frameNum = frameCount
         commandBuffer.addCompletedHandler { _ in
-            withExtendedLifetime((pixelBuffer, cvTexture)) {}
+            // A source-size change can replace this upscaler before the GPU
+            // finishes. Keep its output/scaler and this exact input alive.
+            withExtendedLifetime((pixelBuffer, cvTexture, inputTexture, outputTexture, spatialScaler)) {}
         }
         
         DebugLog.every(frameNum, interval: 60, "MetalFXUpscaler", "📊 Frame \(frameNum) processed (SPATIAL)")
